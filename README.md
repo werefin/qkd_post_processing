@@ -11,6 +11,7 @@ Library package (`import "qkdpostproc"`); `cmd/qkdpostproc` is a thin CLI driver
 | `events.go` | shared `DetectionEvent`/`Basis` types |
 | `sifting.go` | coincidence-window sifting |
 | `blockdetect.go` | generator-matrix block parity detection (parallel, bit-packed) |
+| `bch.go` | BCH-code generator matrices, a guaranteed-detection alternative |
 | `crcverify.go` | CRC-32 chunk verification (parallel) |
 | `qber.go` | QBER from discarded blocks over the whole sifted key |
 | `toeplitz.go` | bit-packed, parallel Toeplitz universal hash (portable) |
@@ -18,7 +19,7 @@ Library package (`import "qkdpostproc"`); `cmd/qkdpostproc` is a thin CLI driver
 | `privacyamp.go` | secure key length + privacy amplification |
 | `encryption.go` | AEAD encrypt/decrypt with the distilled key |
 | `pipeline.go` | `Run()`: orchestrates steps 1-5 |
-| `cmd/tuneblock` | compares the three generator matrices for the highest key rate |
+| `cmd/tuneblock` | compares the generator matrices for the highest key rate |
 
 ### Quick start
 
@@ -47,6 +48,8 @@ plaintext, err = qkd.DecryptWithKey(res.FinalKeyBytes, ciphertext)
 The sifted key is split into fixed `m`-bit blocks; at each side, `p` parity bits are computed independently as $P = M \cdot G^{T}$ (mod 2) from a shared `p x m` generator matrix `G`. Only the parity bits ever need to cross the public channel; if they disagree the whole block is discarded, never flipped. `GeneratorMatrixEx1`/`Ex2`/`Ex3` are three example matrices with different code-rate/detection-rate tradeoffs; pass any `p x m` `[][]byte` of your own via `Config.GeneratorMatrix`. `ComputeBlockParity` and `ReconcileBlocks` expose this as two one-sided calls - one side never needs the other's raw bits, only its parity - so two independently deployed nodes can run step 2 without a shared process; `BlockErrorDetect(alice, bob, g)` is a convenience wrapper over both for simulation and testing. QBER (step 4) is erroneous bits in the discarded blocks over *all* bits of the sifted key, not just the discarded portion.
 
 Any single matrix has blind spots: two different blocks can land on the same parity (a collision), so an error between them goes undetected. `CascadeGeneratorMatrices(g1, g2)` stacks a second matrix's rows onto the first, so a block only survives if it matches under *both* --> catching errors invisible to `g1` alone, at essentially no extra cost since it reuses the exact same word-packed pass instead of a second scan. Needs `g1`/`g2` to share a block size and `p1+p2 < m`, or the combined leak would exceed the block and leave no secret.
+
+`BCHGeneratorMatrix(gfBits, t, blockSize)` builds a matrix a different way: instead of an empirically tabulated code, it's a shortened binary BCH parity-check matrix over `GF(2^gfBits)`, which comes with a proven guarantee (the BCH bound) that every error pattern of Hamming weight `<= t` is caught, not just most of them, the same kind of guarantee the block-detection step made before it was rebuilt around this patent's tunable matrices, just derived from coding theory instead of an ad hoc extended-Hamming construction. `GeneratorMatrixBCHt2` is a ready-to-use instance (32-bit block, catches every 1-4 bit error, rate 0.44) wired into `-matrix bch` and `make tune` alongside `ex1`/`ex2`/`ex3`. It doesn't automatically win: a stronger per-block guarantee over a larger block means more blocks contain at least one error in the first place, so at a given QBER it can lose on overall key rate to a smaller, weaker-but-tighter matrix, `make tune` shows this trade honestly rather than picking a side. Plugs into every existing step-2 function unchanged, since it's just another `GeneratorMatrix`.
 
 ### Running as two independent nodes
 

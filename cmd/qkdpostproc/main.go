@@ -13,12 +13,13 @@ import (
 	qkd "qkdpostproc"
 )
 
-// generatorMatrices maps -matrix flag values to the three example
-// step 2 generator matrices
+// generatorMatrices maps -matrix flag values to the example step 2
+// generator matrices
 var generatorMatrices = map[string]qkd.GeneratorMatrix{
 	"ex1": qkd.GeneratorMatrixEx1,
 	"ex2": qkd.GeneratorMatrixEx2,
 	"ex3": qkd.GeneratorMatrixEx3,
+	"bch": qkd.GeneratorMatrixBCHt2,
 }
 
 // ANSI color codes for status tags, arnika-style: raw escapes inlined at the
@@ -86,14 +87,14 @@ func main() {
 	mpRate := flag.Float64("multiphoton", 0.01, "probability a given click is flagged multi-photon")
 	windowPS := flag.Int64("window", 500, "coincidence window in picoseconds")
 	jitterPS := flag.Int64("jitter", 300, "simulated detector timing jitter in picoseconds")
-	matrixName := flag.String("matrix", "ex3", "step 2 generator matrix: ex1, ex2, or ex3")
+	matrixName := flag.String("matrix", "ex3", "step 2 generator matrix: ex1, ex2, ex3, or bch")
 	chunkSize := flag.Int("chunk", 2048, "step 3 CRC chunk size (bits)")
 	seed := flag.Int64("seed", 1, "PRNG seed for the simulation")
 	flag.Parse()
 
 	g, ok := generatorMatrices[*matrixName]
 	if !ok {
-		fmt.Printf("%s unknown -matrix %q, expected ex1, ex2, or ex3\n", tag(colorErr, "ERROR"), *matrixName)
+		fmt.Printf("%s unknown -matrix %q, expected ex1, ex2, ex3, or bch\n", tag(colorErr, "ERROR"), *matrixName)
 		return
 	}
 

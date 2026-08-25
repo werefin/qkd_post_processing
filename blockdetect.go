@@ -121,9 +121,8 @@ func parityEqual(a, b []byte) bool {
 // small enough to stay resident in L1/L2 cache
 const maxTableBits = 16
 
-// parityTable precomputes P=M*G^T for every possible m-bit block value,
-// turning per-block parity into a single array lookup instead of p
-// AND+POPCNT passes - exact, since a block code has finitely many inputs
+// parityTable precomputes P=M*G^T for every possible m-bit block value
+// turns per-block parity into one array lookup instead of p AND+POPCNT
 type parityTable struct {
 	entries []uint8 // one packed byte per possible block value, bit i = parity bit i
 	m       int
@@ -257,9 +256,8 @@ type BlockReconcileResult struct {
 	LeakedBits    int // classical-channel bits spent announcing parity of surviving blocks
 }
 
-// ReconcileBlocks drops (never flips) any block whose own parity disagrees
-// with the peer's, in parallel via a prefix-sum destination offset per block
-// no append, no reallocation, no peer bits ever needed
+// ReconcileBlocks drops (never flips) any block whose parity disagrees
+// a prefix sum gives each block its own write offset, no peer bits needed
 func ReconcileBlocks(ownBits []byte, ownParity, peerParity [][]byte, blockSize int) BlockReconcileResult {
 	if len(ownParity) != len(peerParity) {
 		panic("ownParity and peerParity must cover the same number of blocks")

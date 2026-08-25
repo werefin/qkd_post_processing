@@ -89,9 +89,8 @@ func TestCascadeGeneratorMatricesRejectsNoRemainingSecret(t *testing.T) {
 	}
 }
 
-// TestParityTableMatchesPopcountReference: the lookup-table fast path in
-// ComputeBlockParity must agree bit-for-bit with the POPCNT reference
-// path (parityInto) for every possible block value under each matrix
+// TestParityTableMatchesPopcountReference: the lookup-table fast path
+// must agree bit-for-bit with the POPCNT reference for every block value
 func TestParityTableMatchesPopcountReference(t *testing.T) {
 	for _, g := range []GeneratorMatrix{GeneratorMatrixEx1, GeneratorMatrixEx2, GeneratorMatrixEx3} {
 		m := g.BlockSize()
@@ -145,9 +144,8 @@ func TestBuildParityTableRejectsOversizedMatrix(t *testing.T) {
 	}
 }
 
-// TestComputeBlockParityLargeScaleMatchesReference forces ComputeBlockParity
-// past minParallelBlockWork, so multiple workers each pack their own byte range
-// exactly where an off-by-one at a worker boundary would hide
+// TestComputeBlockParityLargeScaleMatchesReference forces multiple workers
+// each packing their own byte range, where a boundary off-by-one would hide
 func TestComputeBlockParityLargeScaleMatchesReference(t *testing.T) {
 	for _, g := range []GeneratorMatrix{GeneratorMatrixEx1, GeneratorMatrixEx3} {
 		blockSize := g.BlockSize()
