@@ -89,6 +89,148 @@ func TestCascadeGeneratorMatricesRejectsNoRemainingSecret(t *testing.T) {
 	}
 }
 
+// TestParityTableMatchesPopcountReference: the lookup-table fast path in
+// ComputeBlockParity must agree bit-for-bit with the POPCNT reference
+// path (parityInto) for every possible block value under each matrix
+func TestParityTableMatchesPopcountReference(t *testing.T) {
+	for _, g := range []GeneratorMatrix{GeneratorMatrixEx1, GeneratorMatrixEx2, GeneratorMatrixEx3} {
+		m := g.BlockSize()
+		table, ok := buildParityTable(g)
+		if !ok {
+			t.Fatalf("expected a table for m=%d", m)
+		}
+		masks := buildParityMasks(g)
+		words := make([]uint64, masks.words)
+		scratch := make([]byte, g.ParityBits())
+		for idx := range 1 << uint(m) {
+			block := make([]byte, m)
+			for j := range block {
+				block[j] = byte(idx>>uint(j)) & 1
+			}
+			want := append([]byte(nil), masks.parityInto(block, words, scratch)...)
+
+			pr := table.entries[idx]
+			got := make([]byte, g.ParityBits())
+			for i := range got {
+				got[i] = byte(pr>>uint(i)) & 1
+			}
+
+			if !bytes.Equal(want, got) {
+				t.Fatalf("matrix m=%d, block index %d (%v): popcount=%v, table=%v", m, idx, block, want, got)
+			}
+		}
+	}
+}
+
+// TestBuildParityTableRejectsOversizedMatrix confirms ComputeBlockParity
+// still falls back to the POPCNT path when m exceeds the table limit
+func TestBuildParityTableRejectsOversizedMatrix(t *testing.T) {
+	row := make([]byte, maxTableBits+1)
+	row[0] = 1
+	big := GeneratorMatrix{row}
+	if _, ok := buildParityTable(big); ok {
+		t.Fatalf("expected no table for m=%d (> maxTableBits=%d)", maxTableBits+1, maxTableBits)
+	}
+
+	r := rand.New(rand.NewSource(21))
+	n := maxTableBits + 1
+	alice := make([]byte, n)
+	for i := range alice {
+		alice[i] = byte(r.Intn(2))
+	}
+	bob := append([]byte(nil), alice...)
+	res := BlockErrorDetect(alice, bob, big)
+	if res.BlocksDropped != 0 || len(res.SurvivingAlice) != n {
+		t.Fatalf("expected the fallback path to keep the single identical block, got %+v", res)
+	}
+}
+
+// TestComputeBlockParityLargeScaleMatchesReference forces ComputeBlockParity
+// past minParallelBlockWork, so multiple workers each pack their own byte range
+// exactly where an off-by-one at a worker boundary would hide
+func TestComputeBlockParityLargeScaleMatchesReference(t *testing.T) {
+	for _, g := range []GeneratorMatrix{GeneratorMatrixEx1, GeneratorMatrixEx3} {
+		blockSize := g.BlockSize()
+		n := minParallelBlockWork + 777 // past the threshold, not block-aligned
+		r := rand.New(rand.NewSource(31))
+		data := make([]byte, n)
+		for i := range data {
+			data[i] = byte(r.Intn(2))
+		}
+
+		got := ComputeBlockParity(data, g)
+
+		masks := buildParityMasks(g)
+		words := make([]uint64, masks.words)
+		scratch := make([]byte, g.ParityBits())
+		numBlocks := (n + blockSize - 1) / blockSize
+		if len(got) != numBlocks {
+			t.Fatalf("m=%d: expected %d blocks, got %d", blockSize, numBlocks, len(got))
+		}
+		for bi := range numBlocks {
+			bs := bi * blockSize
+			be := min(bs+blockSize, n)
+			want := masks.parityInto(data[bs:be], words, scratch)
+			if !bytes.Equal(want, got[bi]) {
+				t.Fatalf("m=%d, block %d: reference=%v, got=%v", blockSize, bi, want, got[bi])
+			}
+		}
+	}
+}
+
+// TestReconcileBlocksLargeScaleMatchesReference forces ReconcileBlocks
+// past minParallelBlockWork, checked against a naive serial append
+func TestReconcileBlocksLargeScaleMatchesReference(t *testing.T) {
+	g := GeneratorMatrixEx3
+	blockSize := g.BlockSize()
+	n := minParallelBlockWork + 777
+	r := rand.New(rand.NewSource(41))
+	alice := make([]byte, n)
+	bob := make([]byte, n)
+	for i := range alice {
+		b := byte(r.Intn(2))
+		alice[i] = b
+		bob[i] = b
+		if r.Float64() < 0.02 {
+			bob[i] ^= 1
+		}
+	}
+
+	aliceParity := ComputeBlockParity(alice, g)
+	bobParity := ComputeBlockParity(bob, g)
+	got := ReconcileBlocks(alice, aliceParity, bobParity, blockSize)
+
+	// naive serial reference: append in block order, no parallelism
+	var wantSurviving, wantDiscarded []byte
+	wantKept, wantDropped, wantLeaked := 0, 0, 0
+	numBlocks := (n + blockSize - 1) / blockSize
+	for bi := range numBlocks {
+		bs := bi * blockSize
+		be := min(bs+blockSize, n)
+		if parityEqual(aliceParity[bi], bobParity[bi]) {
+			wantKept++
+			wantLeaked += len(aliceParity[bi])
+			wantSurviving = append(wantSurviving, alice[bs:be]...)
+		} else {
+			wantDropped++
+			wantDiscarded = append(wantDiscarded, alice[bs:be]...)
+		}
+	}
+
+	if !bytes.Equal(got.Surviving, wantSurviving) {
+		t.Fatal("Surviving diverged from the serial reference")
+	}
+	if !bytes.Equal(got.Discarded, wantDiscarded) {
+		t.Fatal("Discarded diverged from the serial reference")
+	}
+	if got.BlocksKept != wantKept || got.BlocksDropped != wantDropped {
+		t.Fatalf("expected kept=%d dropped=%d, got kept=%d dropped=%d", wantKept, wantDropped, got.BlocksKept, got.BlocksDropped)
+	}
+	if got.LeakedBits != wantLeaked {
+		t.Fatalf("expected %d leaked bits, got %d", wantLeaked, got.LeakedBits)
+	}
+}
+
 func TestBlockErrorDetectDropsErroredBlocksOnly(t *testing.T) {
 	g := GeneratorMatrixEx3
 	blockSize := g.BlockSize() // 6, 100% 2-bit-error detection

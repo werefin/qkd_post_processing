@@ -7,8 +7,7 @@ import (
 	"sync"
 )
 
-// step 2 detects errors only, never corrects a bit - each side computes
-// p parity bits per m-bit block as P = M*G^T and drops mismatches
+// step 2 detects errors only, never corrects a bit, each side computes p parity bits per m-bit block
 
 // GeneratorMatrix is the p x m parity matrix G: row i computes parity
 // bit i as the XOR of the message bits it selects
@@ -118,6 +117,52 @@ func parityEqual(a, b []byte) bool {
 	return true
 }
 
+// maxTableBits bounds the table to 2^16 entries (<=64KB at 1 byte each)
+// small enough to stay resident in L1/L2 cache
+const maxTableBits = 16
+
+// parityTable precomputes P=M*G^T for every possible m-bit block value,
+// turning per-block parity into a single array lookup instead of p
+// AND+POPCNT passes - exact, since a block code has finitely many inputs
+type parityTable struct {
+	entries []uint8 // one packed byte per possible block value, bit i = parity bit i
+	m       int
+}
+
+// buildParityTable enumerates every 2^m block value once; ok is false
+// when the matrix is too large for a table (m>maxTableBits or p>8)
+func buildParityTable(g GeneratorMatrix) (t parityTable, ok bool) {
+	m := g.BlockSize()
+	p := g.ParityBits()
+	if m > maxTableBits || m == 0 || p > 8 {
+		return parityTable{}, false
+	}
+	rowMasks := make([]uint64, p)
+	for i, row := range g {
+		var mask uint64
+		for j, bit := range row {
+			if bit != 0 {
+				mask |= 1 << uint(j)
+			}
+		}
+		rowMasks[i] = mask
+	}
+	size := 1 << uint(m)
+	entries := make([]uint8, size)
+	for idx := range size {
+		var pr uint8
+		for i, mask := range rowMasks {
+			pr |= byte(bits.OnesCount64(uint64(idx)&mask)&1) << uint(i)
+		}
+		entries[idx] = pr
+	}
+	return parityTable{entries: entries, m: m}, true
+}
+
+// minParallelBlockWork is the block-count*blockSize below which
+// goroutine dispatch costs more than the (very cheap) table lookups save
+const minParallelBlockWork = 262144
+
 // ComputeBlockParity computes the parity vector for every m-bit block,
 // using only this side's own bits --> a peer only ever needs the result
 func ComputeBlockParity(bits []byte, g GeneratorMatrix) [][]byte {
@@ -127,15 +172,59 @@ func ComputeBlockParity(bits []byte, g GeneratorMatrix) [][]byte {
 	}
 	n := len(bits)
 	numBlocks := (n + blockSize - 1) / blockSize
-	parities := make([][]byte, numBlocks)
-
-	workers := max(min(runtime.GOMAXPROCS(0), numBlocks), 1)
-
-	masks := buildParityMasks(g)
 	p := g.ParityBits()
+
+	// one flat backing array for every block's parity bits, instead of
+	// numBlocks separate small heap allocations
+	flat := make([]byte, numBlocks*p)
+	parities := make([][]byte, numBlocks)
+	for bi := range numBlocks {
+		parities[bi] = flat[bi*p : bi*p+p]
+	}
+
+	workers := runtime.GOMAXPROCS(0)
+	if n < minParallelBlockWork {
+		workers = 1
+	}
+	workers = max(min(workers, numBlocks), 1)
+
+	table, useTable := buildParityTable(g)
 
 	var wg sync.WaitGroup
 	chunk := (numBlocks + workers - 1) / workers
+	if useTable {
+		entries := table.entries
+		for w := range workers {
+			start := w * chunk
+			end := min(start+chunk, numBlocks)
+			if start >= end {
+				continue
+			}
+			wg.Add(1)
+			// index built straight from the byte slice, same cost as the
+			// POPCNT path's packing loop --> only the lookup itself is new
+			go func(startBlk, endBlk int) {
+				defer wg.Done()
+				for bi := startBlk; bi < endBlk; bi++ {
+					bs := bi * blockSize
+					be := min(bs+blockSize, n)
+					var idx uint64
+					for j, b := range bits[bs:be] {
+						idx |= uint64(b&1) << uint(j)
+					}
+					pr := entries[idx]
+					dst := parities[bi]
+					for i := range p {
+						dst[i] = byte(pr>>uint(i)) & 1
+					}
+				}
+			}(start, end)
+		}
+		wg.Wait()
+		return parities
+	}
+
+	masks := buildParityMasks(g)
 	for w := range workers {
 		start := w * chunk
 		end := min(start+chunk, numBlocks)
@@ -146,14 +235,10 @@ func ComputeBlockParity(bits []byte, g GeneratorMatrix) [][]byte {
 		go func(startBlk, endBlk int) {
 			defer wg.Done()
 			words := make([]uint64, masks.words)
-			scratch := make([]byte, p)
 			for bi := startBlk; bi < endBlk; bi++ {
 				bs := bi * blockSize
 				be := min(bs+blockSize, n)
-				out := masks.parityInto(bits[bs:be], words, scratch)
-				pb := make([]byte, p)
-				copy(pb, out)
-				parities[bi] = pb
+				masks.parityInto(bits[bs:be], words, parities[bi])
 			}
 		}(start, end)
 	}
@@ -173,7 +258,8 @@ type BlockReconcileResult struct {
 }
 
 // ReconcileBlocks drops (never flips) any block whose own parity disagrees
-// with the peer's - never needs to know the peer's raw key material
+// with the peer's, in parallel via a prefix-sum destination offset per block
+// no append, no reallocation, no peer bits ever needed
 func ReconcileBlocks(ownBits []byte, ownParity, peerParity [][]byte, blockSize int) BlockReconcileResult {
 	if len(ownParity) != len(peerParity) {
 		panic("ownParity and peerParity must cover the same number of blocks")
@@ -183,36 +269,77 @@ func ReconcileBlocks(ownBits []byte, ownParity, peerParity [][]byte, blockSize i
 
 	var res BlockReconcileResult
 	res.BlocksTotal = numBlocks
+	if numBlocks == 0 {
+		return res
+	}
 
 	kept := make([]bool, numBlocks)
+	workers := runtime.GOMAXPROCS(0)
+	if n < minParallelBlockWork {
+		workers = 1
+	}
+	workers = max(min(workers, numBlocks), 1)
+
+	var wg sync.WaitGroup
+	chunk := (numBlocks + workers - 1) / workers
+	for w := range workers {
+		start := w * chunk
+		end := min(start+chunk, numBlocks)
+		if start >= end {
+			continue
+		}
+		wg.Add(1)
+		go func(startBlk, endBlk int) {
+			defer wg.Done()
+			for bi := startBlk; bi < endBlk; bi++ {
+				kept[bi] = parityEqual(ownParity[bi], peerParity[bi])
+			}
+		}(start, end)
+	}
+	wg.Wait()
+
+	// cheap serial pass: pure arithmetic, no byte copying, turns kept[]
+	// into a destination offset per block for the parallel copy below
+	offset := make([]int, numBlocks)
 	var survivingLen, discardedLen int
 	for bi := range numBlocks {
-		bs := bi * blockSize
-		be := min(bs+blockSize, n)
-		blen := be - bs
-		ok := parityEqual(ownParity[bi], peerParity[bi])
-		kept[bi] = ok
-		if ok {
+		blen := min(blockSize, n-bi*blockSize)
+		if kept[bi] {
+			offset[bi] = survivingLen
 			survivingLen += blen
+			res.BlocksKept++
 			res.LeakedBits += len(ownParity[bi])
 		} else {
+			offset[bi] = discardedLen
 			discardedLen += blen
-		}
-	}
-	res.Surviving = make([]byte, 0, survivingLen)
-	res.Discarded = make([]byte, 0, discardedLen)
-
-	for bi := range numBlocks {
-		bs := bi * blockSize
-		be := min(bs+blockSize, n)
-		if kept[bi] {
-			res.BlocksKept++
-			res.Surviving = append(res.Surviving, ownBits[bs:be]...)
-		} else {
 			res.BlocksDropped++
-			res.Discarded = append(res.Discarded, ownBits[bs:be]...)
 		}
 	}
+	res.Surviving = make([]byte, survivingLen)
+	res.Discarded = make([]byte, discardedLen)
+
+	surviving, discarded := res.Surviving, res.Discarded
+	for w := range workers {
+		start := w * chunk
+		end := min(start+chunk, numBlocks)
+		if start >= end {
+			continue
+		}
+		wg.Add(1)
+		go func(startBlk, endBlk int) {
+			defer wg.Done()
+			for bi := startBlk; bi < endBlk; bi++ {
+				bs := bi * blockSize
+				be := min(bs+blockSize, n)
+				if kept[bi] {
+					copy(surviving[offset[bi]:], ownBits[bs:be])
+				} else {
+					copy(discarded[offset[bi]:], ownBits[bs:be])
+				}
+			}
+		}(start, end)
+	}
+	wg.Wait()
 	return res
 }
 
