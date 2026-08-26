@@ -1,6 +1,7 @@
 package qkdpostproc
 
 import (
+	"encoding/binary"
 	"hash/crc32"
 	"runtime"
 	"sync"
@@ -19,33 +20,41 @@ type CRCVerifyResult struct {
 }
 
 // bitsToBytes packs 0/1 bits (MSB-first) into bytes, zero-padding the
-// last byte - both sides pad identically so it never causes a mismatch
+// last byte --> both sides pad identically so it never causes a mismatch
 func bitsToBytes(bits []byte) []byte {
 	return bitsToBytesInto(bits, nil)
 }
 
-// bitsToBytesInto is bitsToBytes but reuses dst's backing array instead
-// of allocating, so a worker can pack every chunk through one buffer
+// bitsToBytesInto reuses dst instead of allocating, packing 8 bits per
+// word load, branch-free, instead of one bit at a time
 func bitsToBytesInto(bits []byte, dst []byte) []byte {
-	need := (len(bits) + 7) / 8
+	n := len(bits)
+	need := (n + 7) / 8
 	if cap(dst) < need {
 		dst = make([]byte, need)
 	} else {
 		dst = dst[:need]
-		for i := range dst {
-			dst[i] = 0
-		}
 	}
-	for i, b := range bits {
-		if b != 0 {
-			dst[i/8] |= 1 << uint(7-i%8)
+
+	full := n &^ 7 // largest multiple of 8 <= n
+	i := 0
+	for ; i < full; i += 8 {
+		v := binary.BigEndian.Uint64(bits[i : i+8])
+		dst[i>>3] = byte(v>>56)&1<<7 | byte(v>>48)&1<<6 | byte(v>>40)&1<<5 | byte(v>>32)&1<<4 |
+			byte(v>>24)&1<<3 | byte(v>>16)&1<<2 | byte(v>>8)&1<<1 | byte(v)&1
+	}
+	if i < n {
+		var b byte
+		for k := i; k < n; k++ {
+			b |= (bits[k] & 1) << uint(7-(k-i))
 		}
+		dst[i>>3] = b
 	}
 	return dst
 }
 
 // ComputeChunkCRC computes the CRC-32 of every chunkSize-bit chunk, using
-// only this side's own bits - a peer only ever needs the result
+// only this side's own bits --> a peer only ever needs the result
 func ComputeChunkCRC(bits []byte, chunkSize int) []uint32 {
 	if chunkSize <= 0 {
 		panic("chunkSize must be > 0")
@@ -92,7 +101,7 @@ type ChunkReconcileResult struct {
 }
 
 // ReconcileChunks drops any chunk whose own CRC disagrees with the
-// peer's - never needs to know the peer's raw bits
+// peer's --> never needs to know the peer's raw bits
 func ReconcileChunks(ownBits []byte, ownCRC, peerCRC []uint32, chunkSize int) ChunkReconcileResult {
 	if len(ownCRC) != len(peerCRC) {
 		panic("ownCRC and peerCRC must cover the same number of chunks")

@@ -6,6 +6,41 @@ import (
 	"testing"
 )
 
+// naiveBitsToBytes is the original one-bit-at-a-time reference, kept only
+// here as an independent oracle for TestBitsToBytesIntoMatchesNaive
+func naiveBitsToBytes(bits []byte) []byte {
+	dst := make([]byte, (len(bits)+7)/8)
+	for i, b := range bits {
+		if b != 0 {
+			dst[i/8] |= 1 << uint(7-i%8)
+		}
+	}
+	return dst
+}
+
+// TestBitsToBytesIntoMatchesNaive checks the branch-free packer against
+// the naive reference across every tail size (0-7 bits) and a dirty dst
+func TestBitsToBytesIntoMatchesNaive(t *testing.T) {
+	r := rand.New(rand.NewSource(21))
+	for _, n := range []int{0, 1, 7, 8, 9, 15, 16, 17, 63, 64, 65, 300, 2048, 2053} {
+		bits := make([]byte, n)
+		for i := range bits {
+			bits[i] = byte(r.Intn(2))
+		}
+		want := naiveBitsToBytes(bits)
+
+		// dirty, oversized dst: every byte must still end up correct
+		dirty := make([]byte, len(want)+8)
+		for i := range dirty {
+			dirty[i] = 0xFF
+		}
+		got := bitsToBytesInto(bits, dirty)
+		if !bytes.Equal(got, want) {
+			t.Fatalf("n=%d: got %08b, want %08b", n, got, want)
+		}
+	}
+}
+
 func TestCRCVerifyCatchesMismatch(t *testing.T) {
 	r := rand.New(rand.NewSource(3))
 	n := 1000

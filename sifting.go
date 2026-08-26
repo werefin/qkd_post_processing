@@ -39,7 +39,7 @@ type MatchedPair struct {
 }
 
 // MatchCoincidences finds basis-matched, unambiguous coincidences from
-// public metadata alone - both sides get the same pairs, no bits involved
+// public metadata alone --> both sides get the same pairs, no bits involved
 func MatchCoincidences(alice, bob []PublicEvent, windowPS int64) []MatchedPair {
 	aliceOrder := sortedIndices(alice)
 	bobOrder := sortedIndices(bob)

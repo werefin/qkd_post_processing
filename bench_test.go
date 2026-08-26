@@ -76,3 +76,12 @@ func BenchmarkCRCVerify_1M(b *testing.B) {
 		CRCVerify(alice, bob, 2048)
 	}
 }
+
+func BenchmarkBitsToBytesInto_2048(b *testing.B) {
+	r := rand.New(rand.NewSource(2))
+	bits := randomBits(r, 2048)
+	var dst []byte
+	for b.Loop() {
+		dst = bitsToBytesInto(bits, dst)
+	}
+}

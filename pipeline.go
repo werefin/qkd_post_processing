@@ -23,8 +23,7 @@ type Result struct {
 	Seed          []byte // Toeplitz seed used (must be agreed/published too)
 }
 
-// Run executes the full chain - sifting, detection, CRC, QBER, and
-// privacy amplification - over one batch of raw detection events
+// Run executes the full chain: sifting, detection, CRC, QBER, and privacy amplification
 func Run(aliceEvents, bobEvents []DetectionEvent, cfg Config) (Result, error) {
 	var res Result
 
