@@ -41,9 +41,9 @@ func wordAt(words []uint64, idx int) uint64 {
 	return words[idx]
 }
 
-// extractWindowInto word-aligned-shifts numBits bits at bitOffset into dst
-// in-bounds words are copied directly, only the zero-padded tail uses wordAt
-func extractWindowInto(words []uint64, bitOffset, numBits int, dst []uint64) {
+// extractWindowInto word-aligned-shifts len(dst) words starting at
+// bitOffset --> only the zero-padded tail past words' end uses wordAt
+func extractWindowInto(words []uint64, bitOffset int, dst []uint64) {
 	wordIdx := bitOffset >> 6
 	bitShift := uint(bitOffset & 63)
 	nw := len(words)
@@ -114,7 +114,7 @@ func toeplitzHashPopcount(x []byte, seed []byte, l int) []byte {
 			defer wg.Done()
 			win := make([]uint64, numWords)
 			for i := start; i < end; i++ {
-				extractWindowInto(seedWords, i, n, win)
+				extractWindowInto(seedWords, i, win)
 				// 4 accumulators break the add-chain so out-of-order
 				// execution overlaps POPCNT latencies, not just throughput
 				var pc0, pc1, pc2, pc3 int

@@ -13,7 +13,7 @@ type SiftedBit struct {
 	BobIdx   int // index into the original Bob event slice
 }
 
-// PublicEvent is the classically-exchangeable part of a detection event -
+// PublicEvent is the classically-exchangeable part of a detection event
 // timestamp, basis, and multi-photon flag, never the measured bit
 type PublicEvent struct {
 	TimestampPS int64

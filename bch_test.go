@@ -96,6 +96,6 @@ func TestBCHGeneratorMatrixPlugsIntoBlockErrorDetect(t *testing.T) {
 		t.Fatalf("expected exactly 1 dropped block, got %d", res.BlocksDropped)
 	}
 	if !bytes.Equal(res.SurvivingAlice, res.SurvivingBob) {
-		t.Fatal("surviving stream has a mismatch - a bit was corrected instead of discarded")
+		t.Fatal("surviving stream has a mismatch --> a bit was corrected instead of discarded")
 	}
 }

@@ -100,7 +100,7 @@ func mustBCHGeneratorMatrix(gfBits, t, blockSize int) GeneratorMatrix {
 	return g
 }
 
-// dedupeRows drops exact duplicate rows - the direct construction above
+// dedupeRows drops exact duplicate rows --> the direct construction above
 // often repeats a bit-plane, wasting a leaked bit for no extra detection
 func dedupeRows(rows [][]byte) [][]byte {
 	seen := make(map[string]bool, len(rows))

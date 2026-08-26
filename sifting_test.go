@@ -13,7 +13,7 @@ func TestSiftBasic(t *testing.T) {
 	}
 	bob := []DetectionEvent{
 		{TimestampPS: 1010, Basis: 0, Bit: 1}, // coincides with alice[0], same basis
-		{TimestampPS: 2010, Basis: 0, Bit: 0}, // basis mismatch with alice[1] -> dropped
+		{TimestampPS: 2010, Basis: 0, Bit: 0}, // basis mismatch with alice[1] --> dropped
 		{TimestampPS: 3005, Basis: 0, Bit: 0}, // coincides with alice[2], same basis, different bit (that's fine, errors are expected)
 	}
 	got := Sift(alice, bob, 50)
