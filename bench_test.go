@@ -85,3 +85,25 @@ func BenchmarkBitsToBytesInto_2048(b *testing.B) {
 		dst = bitsToBytesInto(bits, dst)
 	}
 }
+
+func BenchmarkWinnowReconcile_1M(b *testing.B) {
+	r := rand.New(rand.NewSource(2))
+	n := 1_000_000
+	alice := randomBits(r, n)
+	bob := append([]byte(nil), alice...)
+	for i := range bob {
+		if r.Float64() < 0.03 {
+			bob[i] ^= 1
+		}
+	}
+	cfg := WinnowConfig{
+		BlockSizes:   []int{8, 8, 16, 16, 32},
+		Permutations: make([][]int, 5),
+	}
+	for i := range cfg.Permutations {
+		cfg.Permutations[i] = GeneratePermutation(n, int64(1000+i))
+	}
+	for b.Loop() {
+		WinnowReconcile(alice, bob, cfg)
+	}
+}

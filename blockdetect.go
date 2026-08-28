@@ -46,7 +46,7 @@ var (
 )
 
 // CascadeGeneratorMatrices stacks g1's rows on g2's, catching collisions
-// unique to g1 alone - needs equal block sizes and p1+p2 < m
+// unique to g1 alone --> needs equal block sizes and p1+p2 < m
 func CascadeGeneratorMatrices(g1, g2 GeneratorMatrix) (GeneratorMatrix, error) {
 	m := g1.BlockSize()
 	if g2.BlockSize() != m {
@@ -70,7 +70,7 @@ type parityMasks struct {
 }
 
 // buildParityMasks derives the bit-masks for one G once, so every block
-// reuses them - only the words scratch buffer differs per call
+// reuses them --> only the words scratch buffer differs per call
 func buildParityMasks(g GeneratorMatrix) parityMasks {
 	m := g.BlockSize()
 	words := (m + 63) / 64
