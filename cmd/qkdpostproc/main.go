@@ -50,7 +50,7 @@ func tag(color, label string) string {
 }
 
 // simulate generates correlated Alice/Bob click streams with configurable
-// error, basis-mismatch, jitter and multi-photon rates - swap for real logs
+// error, basis-mismatch, jitter and multi-photon rates --> swap for real logs
 func simulate(n int, errRate, multiPhotonRate float64, jitterPS int64, seed int64) ([]qkd.DetectionEvent, []qkd.DetectionEvent) {
 	r := rand.New(rand.NewSource(seed))
 	alice := make([]qkd.DetectionEvent, 0, n)
@@ -146,7 +146,7 @@ func main() {
 	field("Bits leaked (parity)", "%d", bd.LeakedBits)
 
 	cv := res.CRCVerify
-	section(fmt.Sprintf("(3): error verification (chunk=%d bits, CRC-32)", *chunkSize))
+	section(fmt.Sprintf("(3): error verification (chunk=%d bits, CRC-16)", *chunkSize))
 	field("Chunks total", "%d", cv.ChunksTotal)
 	field("Chunks kept", "%d", cv.ChunksKept)
 	field("Chunks dropped", "%d", cv.ChunksDropped)

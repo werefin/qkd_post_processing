@@ -41,6 +41,15 @@ func TestBitsToBytesIntoMatchesNaive(t *testing.T) {
 	}
 }
 
+// TestCRC16ChecksumMatchesKnownVector checks against the standard
+// CRC-16/CCITT-FALSE test vector for "123456789" --> 0x29B1
+func TestCRC16ChecksumMatchesKnownVector(t *testing.T) {
+	got := crc16Checksum([]byte("123456789"))
+	if got != 0x29B1 {
+		t.Fatalf("expected 0x29B1, got 0x%04X", got)
+	}
+}
+
 func TestCRCVerifyCatchesMismatch(t *testing.T) {
 	r := rand.New(rand.NewSource(3))
 	n := 1000
@@ -49,7 +58,7 @@ func TestCRCVerifyCatchesMismatch(t *testing.T) {
 		alice[i] = byte(r.Intn(2))
 	}
 	bob := append([]byte(nil), alice...)
-	bob[550] ^= 1 // single error inside chunk 2 (chunkSize 256 -> chunk index 2)
+	bob[550] ^= 1 // single error inside chunk 2 (chunkSize 256 --> chunk index 2)
 
 	chunkSize := 256
 	res := CRCVerify(alice, bob, chunkSize)

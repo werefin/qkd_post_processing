@@ -2,10 +2,40 @@ package qkdpostproc
 
 import (
 	"encoding/binary"
-	"hash/crc32"
 	"runtime"
 	"sync"
 )
+
+// crc16Poly is CRC-16/CCITT-FALSE, init 0xFFFF, no reflect, xorout 0
+const crc16Poly = 0x1021
+
+// crc16Table is built once at init from crc16Poly, one entry per byte value
+var crc16Table = buildCRC16Table(crc16Poly)
+
+func buildCRC16Table(poly uint16) [256]uint16 {
+	var t [256]uint16
+	for i := range 256 {
+		crc := uint16(i) << 8
+		for range 8 {
+			if crc&0x8000 != 0 {
+				crc = crc<<1 ^ poly
+			} else {
+				crc <<= 1
+			}
+		}
+		t[i] = crc
+	}
+	return t
+}
+
+// crc16Checksum runs CRC-16/CCITT-FALSE over data, byte at a time via table
+func crc16Checksum(data []byte) uint16 {
+	crc := uint16(0xFFFF)
+	for _, b := range data {
+		crc = crc<<8 ^ crc16Table[byte(crc>>8)^b]
+	}
+	return crc
+}
 
 // CRCVerifyResult summarizes step 3
 type CRCVerifyResult struct {
@@ -16,7 +46,7 @@ type CRCVerifyResult struct {
 	ChunksTotal    int
 	ChunksKept     int
 	ChunksDropped  int
-	LeakedBits     int // classical-channel bits spent announcing CRCs of surviving chunks (32 bits/chunk)
+	LeakedBits     int // classical-channel bits spent announcing CRCs of surviving chunks (16 bits/chunk)
 }
 
 // bitsToBytes packs 0/1 bits (MSB-first) into bytes, zero-padding the
@@ -53,15 +83,15 @@ func bitsToBytesInto(bits []byte, dst []byte) []byte {
 	return dst
 }
 
-// ComputeChunkCRC computes the CRC-32 of every chunkSize-bit chunk, using
+// ComputeChunkCRC computes the CRC-16 of every chunkSize-bit chunk, using
 // only this side's own bits --> a peer only ever needs the result
-func ComputeChunkCRC(bits []byte, chunkSize int) []uint32 {
+func ComputeChunkCRC(bits []byte, chunkSize int) []uint16 {
 	if chunkSize <= 0 {
 		panic("chunkSize must be > 0")
 	}
 	n := len(bits)
 	numChunks := (n + chunkSize - 1) / chunkSize
-	crcs := make([]uint32, numChunks)
+	crcs := make([]uint16, numChunks)
 
 	workers := max(min(runtime.GOMAXPROCS(0), numChunks), 1)
 
@@ -81,7 +111,7 @@ func ComputeChunkCRC(bits []byte, chunkSize int) []uint32 {
 				cs := ci * chunkSize
 				ce := min(cs+chunkSize, n)
 				buf = bitsToBytesInto(bits[cs:ce], buf)
-				crcs[ci] = crc32.ChecksumIEEE(buf)
+				crcs[ci] = crc16Checksum(buf)
 			}
 		}(start, end)
 	}
@@ -102,7 +132,7 @@ type ChunkReconcileResult struct {
 
 // ReconcileChunks drops any chunk whose own CRC disagrees with the
 // peer's --> never needs to know the peer's raw bits
-func ReconcileChunks(ownBits []byte, ownCRC, peerCRC []uint32, chunkSize int) ChunkReconcileResult {
+func ReconcileChunks(ownBits []byte, ownCRC, peerCRC []uint16, chunkSize int) ChunkReconcileResult {
 	if len(ownCRC) != len(peerCRC) {
 		panic("ownCRC and peerCRC must cover the same number of chunks")
 	}
@@ -122,7 +152,7 @@ func ReconcileChunks(ownBits []byte, ownCRC, peerCRC []uint32, chunkSize int) Ch
 		kept[ci] = ok
 		if ok {
 			survivingLen += clen
-			res.LeakedBits += 32
+			res.LeakedBits += 16
 		} else {
 			discardedLen += clen
 		}
@@ -159,6 +189,6 @@ func CRCVerify(alice, bob []byte, chunkSize int) CRCVerifyResult {
 		ChunksTotal:    aliceRes.ChunksTotal,
 		ChunksKept:     aliceRes.ChunksKept,
 		ChunksDropped:  aliceRes.ChunksDropped,
-		LeakedBits:     aliceRes.LeakedBits, // same 32-bits-per-kept-chunk count on both sides
+		LeakedBits:     aliceRes.LeakedBits, // same 16-bits-per-kept-chunk count on both sides
 	}
 }
