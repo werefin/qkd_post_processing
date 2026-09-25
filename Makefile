@@ -16,7 +16,7 @@ tune:
 	./scripts/tune-blocksize.sh
 
 run:
-	go run ./cmd/qkdpostproc -n 300000 -err 0.005 -block 24 -chunk 3000
+	go run ./cmd/qoj_post_processing -n 300000 -err 0.005 -matrix ex3 -chunk 3000
 
 vet:
 	go vet ./...
@@ -25,5 +25,5 @@ fmt:
 	@test -z "$$(gofmt -l .)" || (echo "not gofmt'd:"; gofmt -l .; exit 1)
 
 clean:
-	rm -f qkdpostproc
+	rm -f qoj_post_processing
 	go clean

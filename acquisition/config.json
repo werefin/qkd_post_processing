@@ -1,0 +1,83 @@
+{
+  "sites": {
+    "bratislava": {
+      "tt_ip": "192.168.109.6",
+      "tt_port": 40404,
+      "auth_key_hex": "4444",
+      "tt_serial": "any",
+      "channels": [1, 2, 3, 4],
+      "delays_ps": [-110, 0, -200, -100],
+      "deadtimes_ps": [],
+      "triggers_volt": [0.200, 0.200, 0.200, 0.200],
+      "loop_period_s": 0.5
+    },
+    "nitra": {
+      "tt_ip": "192.168.104.3",
+      "tt_port": 40404,
+      "auth_key_hex": "4444",
+      "tt_serial": "any",
+      "channels": [1, 2, 3, 4],
+      "delays_ps": [200, -180, 160, 180],
+      "deadtimes_ps": [],
+      "triggers_volt": [0.200, 0.200, 0.200, 0.200],
+      "loop_period_s": 0.5
+    },
+    "trnava": {
+      "tt_ip": "192.168.101.3",
+      "tt_port": 40404,
+      "auth_key_hex": "4444",
+      "tt_serial": "any",
+      "channels": [1, 2, 3, 4],
+      "delays_ps": [-50, 290, -50, 90],
+      "deadtimes_ps": [],
+      "triggers_volt": [0.100, 0.100, 0.100, 0.100],
+      "loop_period_s": 0.4
+    },
+    "trencin": {
+      "tt_ip": "192.168.107.3",
+      "tt_port": 40404,
+      "auth_key_hex": "4444",
+      "tt_serial": "any",
+      "channels": [1, 2, 3, 4],
+      "delays_ps": [110, 60, -290, -50],
+      "deadtimes_ps": [],
+      "triggers_volt": [0.150, 0.150, 0.150, 0.150],
+      "loop_period_s": 0.5
+    }
+  },
+
+  "links": {
+    "bratislava_nitra": {"site_a": "bratislava", "site_b": "nitra"},
+    "trnava_nitra": {"site_a": "trnava", "site_b": "nitra"},
+    "trencin_nitra": {"site_a": "trencin", "site_b": "nitra"},
+    "bratislava_trnava": {"site_a": "bratislava", "site_b": "trnava"}
+  },
+
+  "record_dual": {
+    "link": "bratislava_trnava",
+    "stop_mode": "duration",
+    "record_duration_s": 3,
+    "target_detection_count": 4000000,
+    "output_dir": ".",
+    "per_call_detection_cap": 4000000
+  },
+
+  "coincidence_peak": {
+    "max_lag_ms": 1000.0,
+    "coarse_bin_ns": 100.0,
+    "fine_bin_ps": 100,
+    "candidates": 16,
+    "segments": 6,
+    "refine_radius_ns": 2000.0,
+    "plot": true,
+    "use_meta": false,
+    "overlap_margin_s": 2.0,
+    "max_memory_gib": 4.0,
+    "slope_range_ppb": 200.0,
+    "strict": true
+  },
+
+  "chsh_diagnostic": {
+    "block_s": 1.0
+  }
+}

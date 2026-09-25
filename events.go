@@ -1,6 +1,6 @@
-// Package qkdpostproc implements the BBM92-style classical post-processing
-// chain: sifting, block error detection, CRC, QBER, privacy amplification
-package qkdpostproc
+// Package qoj_post_processing implements the BBM92-style classical
+// post-processing chain: sifting, block error detection, CRC, QBER, privacy amplification
+package qoj_post_processing
 
 // Basis identifies which measurement basis a detector click was recorded in
 // each party randomly picks one of two bases per detection event

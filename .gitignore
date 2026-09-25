@@ -1,5 +1,10 @@
-/qkdpostproc
+/qoj_post_processing
 /docs
 *.test
 *.out
+/acquisition/example
+/keys
+__pycache__/
+.venv/
+venv/
 

@@ -1,4 +1,4 @@
-package qkdpostproc
+package qoj_post_processing
 
 import "math"
 

@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"math/rand"
 
-	qkd "qkdpostproc"
+	qkd "qoj_post_processing"
 )
 
-// simulate is the same generator cmd/qkdpostproc uses, duplicated here so
+// simulate is the same generator cmd/qoj_post_processing uses, duplicated here so
 // this tool has no dependency beyond the library itself
 func simulate(n int, errRate, multiPhotonRate float64, jitterPS int64, seed int64) ([]qkd.DetectionEvent, []qkd.DetectionEvent) {
 	r := rand.New(rand.NewSource(seed))
@@ -74,6 +74,11 @@ func main() {
 	chunkSize := flag.Int("chunk", 2048, "step 3 CRC chunk size, held fixed during the sweep")
 	seed := flag.Int64("seed", 1, "PRNG seed for the simulation")
 	keyBits := flag.Int("keybits", 256, "key size you'll actually consume, for the keys-per-batch column")
+	search := flag.Bool("search", false, "also hill-climb a matrix that directly optimizes key rate on this batch, see matrixsearch.go")
+	searchM := flag.Int("search-m", 32, "block size for the searched matrix")
+	searchP := flag.Int("search-p", 6, "parity bits for the searched matrix; tune per your own QBER, see README")
+	searchIterations := flag.Int("search-iterations", 1500, "hill-climbing steps for the search candidate")
+	searchSeed := flag.Int64("search-seed", 99, "PRNG seed for the search itself, independent of the data seed")
 	flag.Parse()
 
 	// one fixed batch reused for every candidate, so the sweep compares
@@ -81,13 +86,12 @@ func main() {
 	aliceEv, bobEv := simulate(*n, *errRate, *mpRate, *jitterPS, *seed)
 
 	var rows []row
-	for _, name := range matrixNames {
-		g := matrices[name]
+	addRow := func(name string, g qkd.GeneratorMatrix) {
 		cfg := qkd.Config{CoincidenceWindowPS: *windowPS, GeneratorMatrix: g, ChunkSize: *chunkSize}
 		res, err := qkd.Run(aliceEv, bobEv, cfg)
 		if err != nil {
 			fmt.Printf("%s: error: %v\n", name, err)
-			continue
+			return
 		}
 		bd := res.BlockDetect
 		discardFrac := 0.0
@@ -108,6 +112,16 @@ func main() {
 			keysPerBatch:   finalBits / *keyBits,
 		})
 	}
+
+	for _, name := range matrixNames {
+		addRow(name, matrices[name])
+	}
+	if *search {
+		// searched on this same batch, rerun on a fresh batch of your own
+		// before trusting the number, see README's overfitting caveat
+		g, _ := qkd.SearchGeneratorMatrix(*searchM, *searchP, aliceEv, bobEv, *windowPS, *chunkSize, *searchIterations, *searchSeed)
+		addRow(fmt.Sprintf("search(%d,%d)", *searchM, *searchP), g)
+	}
 	if len(rows) == 0 {
 		fmt.Println("no candidates produced a result")
 		return
@@ -120,13 +134,13 @@ func main() {
 		}
 	}
 
-	fmt.Printf("matrix | m,p  | blocks(total/dropped) | step2 discard%% | key rate (bits/attempt) | %d-bit keys/batch\n", *keyBits)
+	fmt.Printf("%-12s | m,p  | blocks(total/dropped) | step2 discard%% | key rate (bits/attempt) | %d-bit keys/batch\n", "matrix", *keyBits)
 	for i, r := range rows {
 		mark := ""
 		if i == bestRate {
 			mark = " [best rate]"
 		}
-		fmt.Printf("%6s | %d,%-2d | %6d / %-7d | %13.2f%% | %22.5f | %14d%s\n",
+		fmt.Printf("%-12s | %d,%-2d | %6d / %-7d | %13.2f%% | %22.5f | %14d%s\n",
 			r.name, r.blockSize, r.parityBits, r.blocksTotal, r.blocksDropped, r.discardFrac*100, r.keyRate, r.keysPerBatch, mark)
 	}
 

@@ -1,4 +1,4 @@
-package qkdpostproc
+package qoj_post_processing
 
 import (
 	"crypto/aes"
@@ -17,7 +17,7 @@ func deriveAESKey(key []byte) ([]byte, error) {
 	if len(key) < minKeyBytesForEncryption {
 		return nil, fmt.Errorf("key material too short for secure derivation: got %d bytes, want at least %d", len(key), minKeyBytesForEncryption)
 	}
-	return hkdf.Key(sha256.New, key, nil, "qkdpostproc-aes-key", 32)
+	return hkdf.Key(sha256.New, key, nil, "qoj_post_processing-aes-key", 32)
 }
 
 // EncryptWithKey encrypts plaintext under the distilled secret key with

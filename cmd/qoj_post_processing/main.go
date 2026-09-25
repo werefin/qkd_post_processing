@@ -1,4 +1,4 @@
-// Command qkdpostproc runs the BBM92 post-processing chain end to end
+// Command qoj_post_processing runs the BBM92 post-processing chain end to end
 // over simulated click streams, or embed qkd.Run as a library call instead
 package main
 
@@ -10,7 +10,7 @@ import (
 	"runtime"
 	"time"
 
-	qkd "qkdpostproc"
+	qkd "qoj_post_processing"
 )
 
 // generatorMatrices maps -matrix flag values to the example step 2
@@ -90,6 +90,7 @@ func main() {
 	matrixName := flag.String("matrix", "ex3", "step 2 generator matrix: ex1, ex2, ex3, or bch")
 	chunkSize := flag.Int("chunk", 2048, "step 3 CRC chunk size (bits)")
 	seed := flag.Int64("seed", 1, "PRNG seed for the simulation")
+	keystoreDir := flag.String("keystore", "", "directory to save the final key into (ETSI 014 key_ID/key JSON); empty = don't save")
 	flag.Parse()
 
 	g, ok := generatorMatrices[*matrixName]
@@ -98,7 +99,7 @@ func main() {
 		return
 	}
 
-	section("qkdpostproc run configuration:")
+	section("qoj_post_processing run configuration:")
 	field("Raw attempts", "%d", *n)
 	field("Intrinsic error rate", "%.4f", *errRate)
 	field("Multi-photon rate", "%.4f", *mpRate)
@@ -184,6 +185,21 @@ func main() {
 	} else {
 		field("Secret key", "(empty) "+tag(colorWarn, "WARN")+" QBER/leakage too high to distil a key at this length")
 	}
+
+	if *keystoreDir != "" {
+		if len(res.FinalKeyBytes) == 0 {
+			field("Keystore", "skipped "+tag(colorWarn, "WARN")+" no key to save")
+		} else {
+			stored, err := qkd.SaveKey(*keystoreDir, res.FinalKeyBytes)
+			if err != nil {
+				field("Keystore", "%s "+tag(colorErr, "ERROR"), err)
+			} else {
+				field("Keystore", "%s/%s.json "+tag(colorOK, "OK"), *keystoreDir, stored.KeyID)
+				field("key_ID", "%s", stored.KeyID)
+			}
+		}
+	}
+
 	section("done")
 	field("Wall time", "%s", elapsed)
 }

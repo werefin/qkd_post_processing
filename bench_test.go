@@ -1,4 +1,4 @@
-package qkdpostproc
+package qoj_post_processing
 
 import (
 	"math/rand"
@@ -105,5 +105,24 @@ func BenchmarkWinnowReconcile_1M(b *testing.B) {
 	}
 	for b.Loop() {
 		WinnowReconcile(alice, bob, cfg)
+	}
+}
+
+func BenchmarkLDPCReconcile_1M(b *testing.B) {
+	r := rand.New(rand.NewSource(2))
+	n := 1_000_000
+	alice := randomBits(r, n)
+	bob := append([]byte(nil), alice...)
+	for i := range bob {
+		if r.Float64() < 0.03 {
+			bob[i] ^= 1
+		}
+	}
+	h, err := BuildRegularLDPC(n, 3, 10, 7) // rate 0.7; regular codes' real threshold runs below Shannon capacity, wr=12 (0.75) doesn't converge here even though 0.75<0.806
+	if err != nil {
+		b.Fatal(err)
+	}
+	for b.Loop() {
+		LDPCReconcile(h, alice, bob, 0.03, LDPCDecodeConfig{})
 	}
 }
