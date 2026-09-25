@@ -5,6 +5,7 @@ type Config struct {
 	CoincidenceWindowPS int64           // step 1: max |dt| between Alice/Bob clicks
 	GeneratorMatrix     GeneratorMatrix // step 2: G in the block parity check P = M*G^T
 	ChunkSize           int             // step 3: CRC chunk size, in bits
+	KeyAlignBits        int             // step 5: round the final key down to a multiple of this many bits, 0 = don't
 }
 
 // Result bundles the outcome of every stage, so callers can inspect
@@ -42,7 +43,7 @@ func Run(aliceEvents, bobEvents []DetectionEvent, cfg Config) (Result, error) {
 	res.CRCVerify = CRCVerify(res.BlockDetect.SurvivingAlice, res.BlockDetect.SurvivingBob, cfg.ChunkSize)
 	res.LeakedBits = res.BlockDetect.LeakedBits + res.CRCVerify.LeakedBits
 
-	key, seed, err := PrivacyAmplify(res.CRCVerify.SurvivingAlice, res.QBER.QBER, res.LeakedBits)
+	key, seed, err := PrivacyAmplify(res.CRCVerify.SurvivingAlice, res.QBER.QBER, res.LeakedBits, cfg.KeyAlignBits)
 	if err != nil {
 		return res, err
 	}

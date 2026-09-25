@@ -29,11 +29,18 @@ func SecureKeyLength(n int, qber float64, leakedBits int) int {
 	return li
 }
 
-// PrivacyAmplify runs step 5: distills the error-free stream into the
-// final secret key via Toeplitz hashing, returning the key and seed used
-func PrivacyAmplify(errorFreeBits []byte, qber float64, leakedBits int) (key []byte, seed []byte, err error) {
+// PrivacyAmplify runs step 5: distills the error-free stream into the final
+// secret key via Toeplitz hashing, returning the key and seed used
+//
+// alignBits rounds the Devetak-Winter length down to a multiple of itself
+// before hashing (0 skips this), so a caller chunking the key into fixed-size
+// records afterward, e.g. ETSI 014's 256-bit keys, never discards a remainder
+func PrivacyAmplify(errorFreeBits []byte, qber float64, leakedBits, alignBits int) (key []byte, seed []byte, err error) {
 	n := len(errorFreeBits)
 	l := SecureKeyLength(n, qber, leakedBits)
+	if alignBits > 0 {
+		l -= l % alignBits
+	}
 	if l == 0 {
 		return nil, nil, nil
 	}

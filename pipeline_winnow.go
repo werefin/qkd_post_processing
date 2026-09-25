@@ -8,6 +8,7 @@ type WinnowRunConfig struct {
 	WinnowBlockSizes    []int   // one Hamming block size per correction pass
 	Seed                int64   // derives the sample selection and per-pass permutations; must be agreed publicly
 	ChunkSize           int     // step 3 CRC chunk size (bits), applied after Winnow
+	KeyAlignBits        int     // step 5: round the final key down to a multiple of this many bits, 0 = don't
 }
 
 // WinnowRunResult mirrors Result, with Winnow's correction stats standing in for BlockDetectResult
@@ -52,7 +53,7 @@ func RunWinnow(aliceEvents, bobEvents []DetectionEvent, cfg WinnowRunConfig) (Wi
 	res.CRCVerify = CRCVerify(aliceRem, correctedBob, cfg.ChunkSize)
 	res.LeakedBits = winnowLeaked + res.CRCVerify.LeakedBits
 
-	key, seed, err := PrivacyAmplify(res.CRCVerify.SurvivingAlice, res.QBER.QBER, res.LeakedBits)
+	key, seed, err := PrivacyAmplify(res.CRCVerify.SurvivingAlice, res.QBER.QBER, res.LeakedBits, cfg.KeyAlignBits)
 	if err != nil {
 		return res, err
 	}

@@ -256,7 +256,7 @@ def reader_thread(ctx: TTContext,
 
 
 def ctx_failure_reason(ctx: TTContext) -> Optional[str]:
-    '''Why this TimeTagger disqualifies the recording, or None if healthy.'''
+    '''Why this TimeTagger disqualifies the recording, or None if healthy'''
     if ctx.error is not None:
         return ctx.error
     if not ctx.stream_started:
@@ -269,7 +269,7 @@ def ctx_failure_reason(ctx: TTContext) -> Optional[str]:
 
 
 def write_outputs(ctx: TTContext, base: str, outdir: str) -> None:
-    '''Concatenates the buffered arrays and writes the .npy + .json sidecar.'''
+    '''Concatenates the buffered arrays and writes the .npy + .json sidecar'''
     if not ctx.frames_meta:
         safe_print(f'[{ctx.tag}] no data captured, skipping write')
         return
@@ -301,7 +301,7 @@ def write_outputs(ctx: TTContext, base: str, outdir: str) -> None:
 
     safe_print(
         f'[{ctx.tag}] wrote {ch.size} detections across '
-        f'{len(ctx.frames_meta)} frames -> {base}_*'
+        f'{len(ctx.frames_meta)} frames --> {base}_*'
     )
 
 
@@ -349,7 +349,7 @@ def main(argv: Optional[list] = None) -> int:
         failed = [ctx.tag for ctx in contexts if ctx.error == 'connect_failed']
         safe_print(
             f'Both TimeTaggers required, only {len(live)}/{len(contexts)} reachable '
-            f'({", ".join(failed)} failed) -- aborting, nothing recorded.'
+            f'({", ".join(failed)} failed) --> aborting, nothing recorded.'
         )
         for ctx in live:
             try:
@@ -381,9 +381,8 @@ def main(argv: Optional[list] = None) -> int:
         t.start()
 
     # main waits for the appropriate stop signal:
-    #   duration mode: timeout on stop_event, then set it
-    #   detection_count mode: just wait for threads to finish on their own
-    #     (they stop themselves at the target); Ctrl+C still sets stop_event
+    # duration mode: timeout on stop_event, then set it
+    # detection_count mode: just wait for threads to finish on their own (they stop themselves at the target); Ctrl+C still sets stop_event
     try:
         if stop_mode == 'duration':
             stopped_early = stop_event.wait(timeout=record_duration_s)
@@ -404,7 +403,7 @@ def main(argv: Optional[list] = None) -> int:
         if t.is_alive():
             safe_print(f'WARNING: thread {t.name} did not finish within 30s')
 
-    # strict quorum: both TimeTaggers must be healthy, or nothing is saved -
+    # strict quorum: both TimeTaggers must be healthy, or nothing is saved
     # checked before any write, so a failed run leaves zero files behind
     failed = {ctx.tag: ctx_failure_reason(ctx) for ctx in live}
     failed = {tag: reason for tag, reason in failed.items() if reason is not None}
@@ -420,12 +419,10 @@ def main(argv: Optional[list] = None) -> int:
             write_outputs(ctx, base, output_dir)
         rc = 0
 
-    # per-TT data-loss summary: host wall-clock recording duration vs. the
-    # TT's last reported stream_uptime_s. A meaningful deficit (more than a
-    # frame's worth) means the TT's ring buffer overflowed and detections
-    # were lost. Only meaningful in duration mode - in detection_count mode
-    # we deliberately stop once the target is hit, so a deficit there is
-    # expected and does NOT indicate loss inside the kept window.
+    # per-TT data-loss summary: host wall-clock recording duration vs. the TT's last reported stream_uptime_s
+    # meaningful deficit (more than a frame's worth) means the TT's ring buffer overflowed and detections were lost
+    # only meaningful in duration mode --> in detection_count mode we deliberately stop once the target is hit, so a deficit there is
+    # expected and does NOT indicate loss inside the kept window
     safe_print('')
     safe_print('=== summary ===')
     for ctx in live:

@@ -316,6 +316,11 @@ func main() {
 	field("Coincidence window", "%d ps", window)
 	field("GOMAXPROCS", "%d", runtime.GOMAXPROCS(0))
 
+	alignBits := 0
+	if *keystoreDir != "" {
+		alignBits = qkd.ETSI014KeySizeBits // no remainder left for SaveKeys256 to discard
+	}
+
 	t0 := time.Now()
 	var finalKeyBytes []byte
 	if *winnow {
@@ -325,11 +330,11 @@ func main() {
 			os.Exit(2)
 		}
 		field("Method (step 2/3)", "Winnow correction (blocks=%v, sample=%.2f, chunk=%d)", blockSizes, *winnowSample, *chunkSize)
-		finalKeyBytes = runWinnowPipeline(aliceEv, bobEv, window, blockSizes, *winnowSample, *chunkSize)
+		finalKeyBytes = runWinnowPipeline(aliceEv, bobEv, window, blockSizes, *winnowSample, *chunkSize, alignBits)
 	} else if *ldpc {
 		field("Method (step 2/3)", "LDPC correction (block=%s, wc=%d, wr=%d, sample=%.2f, chunk=%d)",
 			ldpcBlockLabel(*ldpcBlock), *ldpcWc, *ldpcWr, *ldpcSample, *chunkSize)
-		finalKeyBytes = runLDPCPipeline(aliceEv, bobEv, window, *ldpcBlock, *ldpcWc, *ldpcWr, *ldpcIterations, *ldpcSample, *chunkSize)
+		finalKeyBytes = runLDPCPipeline(aliceEv, bobEv, window, *ldpcBlock, *ldpcWc, *ldpcWr, *ldpcIterations, *ldpcSample, *chunkSize, alignBits)
 	} else if *searchMatrix {
 		// designed on simulated proxy data only, never the real events
 		// above, or the matrix choice itself would leak information about
@@ -338,23 +343,26 @@ func main() {
 		searched, fitness := qkd.SearchGeneratorMatrix(*searchM, *searchP, proxyAlice, proxyBob, window, *chunkSize, *searchIterations, *searchSeed)
 		field("Method (step 2/3)", "searched matrix (m=%d, p=%d, designed offline at err=%.3f, fitness=%.5f, chunk=%d)",
 			*searchM, *searchP, *searchOfflineErr, fitness, *chunkSize)
-		finalKeyBytes = runDiscardPipeline(aliceEv, bobEv, window, searched, fmt.Sprintf("search(%d,%d)", *searchM, *searchP), *chunkSize)
+		finalKeyBytes = runDiscardPipeline(aliceEv, bobEv, window, searched, fmt.Sprintf("search(%d,%d)", *searchM, *searchP), *chunkSize, alignBits)
 	} else {
 		field("Method (step 2/3)", "block discard (matrix=%s, chunk=%d)", *matrixName, *chunkSize)
-		finalKeyBytes = runDiscardPipeline(aliceEv, bobEv, window, g, *matrixName, *chunkSize)
+		finalKeyBytes = runDiscardPipeline(aliceEv, bobEv, window, g, *matrixName, *chunkSize, alignBits)
 	}
 	elapsed := time.Since(t0)
 
 	if *keystoreDir != "" {
-		if len(finalKeyBytes) == 0 {
-			field("Keystore", "skipped "+tag(colorWarn, "WARN")+" no key to save")
+		if len(finalKeyBytes) < qkd.ETSI014KeySizeBytes {
+			field("Keystore", "skipped "+tag(colorWarn, "WARN")+" not enough key material for one ETSI 014 256-bit key")
 		} else {
-			stored, err := qkd.SaveKey(*keystoreDir, finalKeyBytes)
+			stored, discardedBits, err := qkd.SaveKeys256(*keystoreDir, finalKeyBytes)
 			if err != nil {
 				field("Keystore", "%s "+tag(colorErr, "ERROR"), err)
 			} else {
-				field("Keystore", "%s/%s.json "+tag(colorOK, "OK"), *keystoreDir, stored.KeyID)
-				field("key_ID", "%s", stored.KeyID)
+				field("Keystore", "%s (%d x 256-bit ETSI 014 keys) "+tag(colorOK, "OK"), *keystoreDir, len(stored))
+				if discardedBits > 0 {
+					field("Keystore remainder", "%d bits (short of a full 256-bit key, discarded)", discardedBits)
+				}
+				field("First key_ID", "%s", stored[0].KeyID)
 			}
 		}
 	}
@@ -380,11 +388,12 @@ func parseIntList(s string) ([]int, error) {
 
 // runDiscardPipeline runs qkd.Run (step 2/3: block discard) and prints the
 // same report cmd/qoj_post_processing does. Returns the final key bytes, if any.
-func runDiscardPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, g qkd.GeneratorMatrix, matrixName string, chunkSize int) []byte {
+func runDiscardPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, g qkd.GeneratorMatrix, matrixName string, chunkSize, alignBits int) []byte {
 	cfg := qkd.Config{
 		CoincidenceWindowPS: window,
 		GeneratorMatrix:     g,
 		ChunkSize:           chunkSize,
+		KeyAlignBits:        alignBits,
 	}
 	res, err := qkd.Run(aliceEv, bobEv, cfg)
 	if err != nil {
@@ -432,13 +441,14 @@ func runDiscardPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, g qkd
 
 // runWinnowPipeline runs qkd.RunWinnow (step 2/3: Winnow correction) and
 // prints an analogous report. Returns the final key bytes, if any.
-func runWinnowPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, blockSizes []int, sampleFraction float64, chunkSize int) []byte {
+func runWinnowPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, blockSizes []int, sampleFraction float64, chunkSize, alignBits int) []byte {
 	cfg := qkd.WinnowRunConfig{
 		CoincidenceWindowPS: window,
 		SampleFraction:      sampleFraction,
 		WinnowBlockSizes:    blockSizes,
 		Seed:                1,
 		ChunkSize:           chunkSize,
+		KeyAlignBits:        alignBits,
 	}
 	res, err := qkd.RunWinnow(aliceEv, bobEv, cfg)
 	if err != nil {
@@ -482,7 +492,7 @@ func ldpcBlockLabel(blockLength int) string {
 
 // runLDPCPipeline runs qkd.RunLDPC (step 2/3: LDPC belief propagation) and
 // prints an analogous report. Returns the final key bytes, if any.
-func runLDPCPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, blockLength, wc, wr, maxIterations int, sampleFraction float64, chunkSize int) []byte {
+func runLDPCPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, blockLength, wc, wr, maxIterations int, sampleFraction float64, chunkSize, alignBits int) []byte {
 	cfg := qkd.LDPCRunConfig{
 		CoincidenceWindowPS: window,
 		SampleFraction:      sampleFraction,
@@ -492,6 +502,7 @@ func runLDPCPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, blockLen
 		MaxIterations:       maxIterations,
 		Seed:                1,
 		ChunkSize:           chunkSize,
+		KeyAlignBits:        alignBits,
 	}
 	res, err := qkd.RunLDPC(aliceEv, bobEv, cfg)
 	if err != nil {

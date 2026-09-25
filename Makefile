@@ -1,4 +1,6 @@
-.PHONY: build test test-all bench tune run vet fmt clean
+.PHONY: build test test-all bench tune run vet fmt clean check
+
+check: fmt vet build test run
 
 build:
 	go build ./...

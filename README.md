@@ -24,7 +24,7 @@ Library package (`import "qoj_post_processing"`); `cmd/qoj_post_processing` is a
 | `pipeline_winnow.go` | `RunWinnow()`: `Run()`'s error-correcting sibling, steps 2/3 replaced by Winnow |
 | `ldpc.go` | sparse regular LDPC matrix construction, syndrome, min-sum belief-propagation decoder |
 | `pipeline_ldpc.go` | `RunLDPC()`: `Run()`'s other error-correcting sibling, steps 2/3 replaced by LDPC |
-| `keystore.go` | saves/loads a finished key as an ETSI GS QKD 014 key record (`key_ID` + base64 `key`) |
+| `keystore.go` | splits a finished key into 256-bit ETSI GS QKD 014 key records (`key_ID` + base64 `key`), saves/loads them |
 | `cmd/tuneblock` | compares the generator matrices for the highest key rate |
 | `cmd/importtt` | runs `Run()` (or `-winnow`/`-ldpc` for `RunWinnow()`/`RunLDPC()`) over a real dual-TimeTagger recording (see `acquisition/`) |
 | `acquisition/` | Python: records from two TimeTaggers, finds the clock offset between them, and (`chsh_diagnostic.py`) an unrelated standalone CHSH/Bell self-testing diagnostic over the same recordings |
@@ -53,7 +53,7 @@ See `acquisition/README.md` for the full workflow, network caveats, and how chan
 
 ### Saving the final key
 
-Both CLIs take `-keystore <dir>`: on a non-empty final key, it's written to `<dir>/<key_ID>.json` as `{"key_ID": "<uuid>", "key": "<base64>"}` -- the key record shape ETSI GS QKD 014's Key Delivery API returns from `GET .../enc_keys` and `.../dec_keys`. `key_ID` is a fresh random UUIDv4 per key. This is local storage only, not the REST API itself: no network server, no SAE ID routing --> just `qkd.SaveKey(dir, res.FinalKeyBytes)` / `qkd.LoadKey(dir, keyID)` in `keystore.go`, for a KMS layer built on top to read from.
+Both CLIs take `-keystore <dir>`: the distilled key is sliced into 256-bit chunks (`ETSI014KeySizeBytes`), each written as its own `<dir>/<key_ID>.json` file `{"key_ID": "<uuid>", "key": "<base64>"}` -- the key record shape and size ETSI GS QKD 014's Key Delivery API returns from `GET .../enc_keys` and `.../dec_keys`. `key_ID` is a fresh random UUIDv4 per key, and any trailing remainder under 256 bits is discarded rather than padded or shrunk into an under-length key. This is local storage only, not the REST API itself: no network server, no SAE ID routing --> just `qkd.SaveKeys256(dir, res.FinalKeyBytes)` / `qkd.LoadKey(dir, keyID)` in `keystore.go`, for a KMS layer built on top to read from.
 
 ```bash
 go run ./cmd/qoj_post_processing -n 300000 -err 0.005 -keystore ./keys

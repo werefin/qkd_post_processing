@@ -15,6 +15,7 @@ type LDPCRunConfig struct {
 	MaxIterations       int     // belief propagation iteration cap per block, 0 defaults to 50
 	Seed                int64   // derives sample selection and matrix construction; must be agreed publicly
 	ChunkSize           int     // step 3 CRC chunk size (bits), applied after LDPC
+	KeyAlignBits        int     // step 5: round the final key down to a multiple of this many bits, 0 = don't
 }
 
 // LDPCRunResult mirrors Result, with LDPC's correction stats standing in
@@ -67,7 +68,7 @@ func RunLDPC(aliceEvents, bobEvents []DetectionEvent, cfg LDPCRunConfig) (LDPCRu
 	res.CRCVerify = CRCVerify(aliceRem, correctedBob, cfg.ChunkSize)
 	res.LeakedBits = leaked + res.CRCVerify.LeakedBits
 
-	key, seed, err := PrivacyAmplify(res.CRCVerify.SurvivingAlice, res.QBER.QBER, res.LeakedBits)
+	key, seed, err := PrivacyAmplify(res.CRCVerify.SurvivingAlice, res.QBER.QBER, res.LeakedBits, cfg.KeyAlignBits)
 	if err != nil {
 		return res, err
 	}

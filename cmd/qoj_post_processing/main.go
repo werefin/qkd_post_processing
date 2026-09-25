@@ -117,6 +117,9 @@ func main() {
 		GeneratorMatrix:     g,
 		ChunkSize:           *chunkSize,
 	}
+	if *keystoreDir != "" {
+		cfg.KeyAlignBits = qkd.ETSI014KeySizeBits // no remainder left for SaveKeys256 to discard
+	}
 
 	t0 := time.Now()
 	res, err := qkd.Run(aliceEv, bobEv, cfg)
@@ -187,15 +190,18 @@ func main() {
 	}
 
 	if *keystoreDir != "" {
-		if len(res.FinalKeyBytes) == 0 {
-			field("Keystore", "skipped "+tag(colorWarn, "WARN")+" no key to save")
+		if len(res.FinalKeyBytes) < qkd.ETSI014KeySizeBytes {
+			field("Keystore", "skipped "+tag(colorWarn, "WARN")+" not enough key material for one ETSI 014 256-bit key")
 		} else {
-			stored, err := qkd.SaveKey(*keystoreDir, res.FinalKeyBytes)
+			stored, discardedBits, err := qkd.SaveKeys256(*keystoreDir, res.FinalKeyBytes)
 			if err != nil {
 				field("Keystore", "%s "+tag(colorErr, "ERROR"), err)
 			} else {
-				field("Keystore", "%s/%s.json "+tag(colorOK, "OK"), *keystoreDir, stored.KeyID)
-				field("key_ID", "%s", stored.KeyID)
+				field("Keystore", "%s (%d x 256-bit ETSI 014 keys) "+tag(colorOK, "OK"), *keystoreDir, len(stored))
+				if discardedBits > 0 {
+					field("Keystore remainder", "%d bits (short of a full 256-bit key, discarded)", discardedBits)
+				}
+				field("First key_ID", "%s", stored[0].KeyID)
 			}
 		}
 	}

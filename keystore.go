@@ -15,6 +15,26 @@ type StoredKey struct {
 	Key   string `json:"key"`
 }
 
+// ETSI014KeySizeBytes is 256 bits, the key size ETSI GS QKD 014's Get Key API hands out by default
+const ETSI014KeySizeBytes = 32
+
+// ETSI014KeySizeBits is ETSI014KeySizeBytes in bits, for aligning
+// PrivacyAmplify's output so SaveKeys256 never discards a remainder
+const ETSI014KeySizeBits = ETSI014KeySizeBytes * 8
+
+// SaveKeys256 splits keyBytes into ETSI014KeySizeBytes chunks and saves each as its own key_ID via SaveKey
+func SaveKeys256(dir string, keyBytes []byte) (stored []StoredKey, discardedBits int, err error) {
+	for len(keyBytes) >= ETSI014KeySizeBytes {
+		s, err := SaveKey(dir, keyBytes[:ETSI014KeySizeBytes])
+		if err != nil {
+			return stored, discardedBits, err
+		}
+		stored = append(stored, s)
+		keyBytes = keyBytes[ETSI014KeySizeBytes:]
+	}
+	return stored, len(keyBytes) * 8, nil
+}
+
 // newKeyID generates a random UUID (version 4, RFC 4122) for use as an ETSI 014 key_ID
 func newKeyID() (string, error) {
 	var b [16]byte

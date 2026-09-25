@@ -40,7 +40,7 @@ func SearchGeneratorMatrix(m, p int, aliceEvents, bobEvents []DetectionEvent, wi
 		bd := BlockErrorDetect(aliceBits, bobBits, g)
 		qber := CalculateQBER(bd.DiscardedAlice, bd.DiscardedBob, siftedBits)
 		cv := CRCVerify(bd.SurvivingAlice, bd.SurvivingBob, chunkSize)
-		key, _, err := PrivacyAmplify(cv.SurvivingAlice, qber.QBER, bd.LeakedBits+cv.LeakedBits)
+		key, _, err := PrivacyAmplify(cv.SurvivingAlice, qber.QBER, bd.LeakedBits+cv.LeakedBits, 0)
 		if err != nil {
 			return 0
 		}
