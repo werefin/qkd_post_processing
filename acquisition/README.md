@@ -15,7 +15,7 @@ The catch: two TimeTaggers run on independent local clocks, and there's no wire 
 | post-process (QKD) | `cmd/importtt` (Go, repo root) | maps detector channels to BBM92 (basis, bit), aligns the clocks, runs the full sifting --> privacy-amplification chain, offline/batch |
 | post-process (CHSH diagnostic) | `chsh_diagnostic.py` | standalone alternative to post-process: per-block singles + per-channel-pair ROI coincidence counts for a CHSH/Bell self-testing analysis (see below) |
 
-`config.json` holds every site's connection/detector settings plus both scripts' recording/analysis defaults, so none of that is hardcoded in the `.py` files
+`config.json` holds every site's connection/detector settings plus both scripts' recording/analysis defaults, so none of that is hardcoded in the `.py` files. It's gitignored (real IPs/site names/auth keys don't belong in the repo) --> copy `config.example.json` to `config.json` and fill in your own sites/links
 
 ### Code structure
 

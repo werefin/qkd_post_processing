@@ -1,0 +1,64 @@
+{
+  "sites": {
+    "site_a": {
+      "tt_ip": "10.0.0.1",
+      "tt_port": 40404,
+      "auth_key_hex": "REPLACE_ME",
+      "tt_serial": "any",
+      "channels": [1, 2, 3, 4],
+      "delays_ps": [0, 0, 0, 0],
+      "deadtimes_ps": [],
+      "triggers_volt": [0.200, 0.200, 0.200, 0.200],
+      "loop_period_s": 0.5
+    },
+    "site_b": {
+      "tt_ip": "10.0.0.2",
+      "tt_port": 40404,
+      "auth_key_hex": "REPLACE_ME",
+      "tt_serial": "any",
+      "channels": [1, 2, 3, 4],
+      "delays_ps": [0, 0, 0, 0],
+      "deadtimes_ps": [],
+      "triggers_volt": [0.200, 0.200, 0.200, 0.200],
+      "loop_period_s": 0.5
+    }
+  },
+
+  "links": {
+    "site_a_site_b": {"site_a": "site_a", "site_b": "site_b"}
+  },
+
+  "record_dual": {
+    "link": "site_a_site_b",
+    "stop_mode": "duration",
+    "record_duration_s": 3,
+    "target_detection_count": 4000000,
+    "output_dir": ".",
+    "per_call_detection_cap": 4000000
+  },
+
+  "live_coincidence": {
+    "enabled": true,
+    "interval_s": 5.0,
+    "window_s": 30.0
+  },
+
+  "coincidence_peak": {
+    "max_lag_ms": 1000.0,
+    "coarse_bin_ns": 100.0,
+    "fine_bin_ps": 100,
+    "candidates": 16,
+    "segments": 6,
+    "refine_radius_ns": 2000.0,
+    "plot": true,
+    "use_meta": false,
+    "overlap_margin_s": 2.0,
+    "max_memory_gib": 4.0,
+    "slope_range_ppb": 200.0,
+    "strict": true
+  },
+
+  "chsh_diagnostic": {
+    "block_s": 1.0
+  }
+}
