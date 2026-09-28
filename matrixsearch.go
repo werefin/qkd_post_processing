@@ -34,31 +34,58 @@ func SearchGeneratorMatrix(m, p int, aliceEvents, bobEvents []DetectionEvent, wi
 		return g
 	}
 
-	// evaluate reuses the exact same stages Run() calls after sifting, just
-	// against the one fixed sifted batch instead of re-sifting every call
-	evaluate := func(g GeneratorMatrix) float64 {
-		bd := BlockErrorDetect(aliceBits, bobBits, g)
-		qber := CalculateQBER(bd.DiscardedAlice, bd.DiscardedBob, siftedBits)
-		cv := CRCVerify(bd.SurvivingAlice, bd.SurvivingBob, chunkSize)
-		key, _, err := PrivacyAmplify(cv.SurvivingAlice, qber.QBER, bd.LeakedBits+cv.LeakedBits, 0)
+	current := randomMatrix()
+
+	// table (or masks, if m/p are too large for one) for current's matrix,
+	// maintained incrementally across iterations via patchBit instead of a
+	// fresh buildParityTable on every evaluate --> a flipped bit only
+	// touches the half of the table it actually affects, not all 2^m
+	// entries, which dominated this loop's cost before this change
+	table, useTable := buildParityTable(current)
+	var masks parityMasks
+	if !useTable {
+		masks = buildParityMasks(current)
+	}
+
+	// evaluate mirrors BlockErrorDetect + the stages Run() calls after
+	// sifting, just against the one fixed sifted batch and the
+	// incrementally-maintained table/masks above instead of rebuilding
+	// them, and skipping BlockErrorDetect's own (now-redundant) build
+	evaluate := func() float64 {
+		aliceParity := computeBlockParity(aliceBits, m, p, table, useTable, masks)
+		bobParity := computeBlockParity(bobBits, m, p, table, useTable, masks)
+		aliceRes := ReconcileBlocks(aliceBits, aliceParity, bobParity, m)
+		bobRes := ReconcileBlocks(bobBits, bobParity, aliceParity, m)
+		qber := CalculateQBER(aliceRes.Discarded, bobRes.Discarded, siftedBits)
+		cv := CRCVerify(aliceRes.Surviving, bobRes.Surviving, chunkSize)
+		key, _, err := PrivacyAmplify(cv.SurvivingAlice, qber.QBER, aliceRes.LeakedBits+cv.LeakedBits, 0)
 		if err != nil {
 			return 0
 		}
 		return float64(len(key)) / float64(siftedBits)
 	}
 
-	current := randomMatrix()
-	currentFitness := evaluate(current)
+	currentFitness := evaluate()
 	best = cloneMatrix(current)
 	bestFitness := currentFitness
 
+	flipRows := make([]int, 2)
+	flipCols := make([]int, 2)
 	for iter := range iterations {
-		candidate := cloneMatrix(current)
 		flips := 1 + rng.Intn(2)
-		for range flips {
-			candidate[rng.Intn(p)][rng.Intn(m)] ^= 1
+		for k := range flips {
+			r, c := rng.Intn(p), rng.Intn(m)
+			flipRows[k], flipCols[k] = r, c
+			current[r][c] ^= 1
+			if useTable {
+				table.patchBit(r, c)
+			}
 		}
-		candidateFitness := evaluate(candidate)
+		if !useTable {
+			masks = buildParityMasks(current)
+		}
+
+		candidateFitness := evaluate()
 
 		accept := candidateFitness >= currentFitness
 		if !accept {
@@ -66,9 +93,23 @@ func SearchGeneratorMatrix(m, p int, aliceEvents, bobEvents []DetectionEvent, wi
 			accept = temperature > 0 && rng.Float64() < temperature*0.1
 		}
 		if accept {
-			current, currentFitness = candidate, candidateFitness
+			currentFitness = candidateFitness
 			if candidateFitness > bestFitness {
-				best, bestFitness = cloneMatrix(candidate), candidateFitness
+				best, bestFitness = cloneMatrix(current), candidateFitness
+			}
+		} else {
+			// revert: flipping the same bits again is a no-op on both the
+			// matrix and the table (see parityTable.patchBit), undoing
+			// exactly what the block above did
+			for k := range flips {
+				r, c := flipRows[k], flipCols[k]
+				current[r][c] ^= 1
+				if useTable {
+					table.patchBit(r, c)
+				}
+			}
+			if !useTable {
+				masks = buildParityMasks(current)
 			}
 		}
 	}

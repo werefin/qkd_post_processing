@@ -91,12 +91,32 @@ func main() {
 	chunkSize := flag.Int("chunk", 2048, "step 3 CRC chunk size (bits)")
 	seed := flag.Int64("seed", 1, "PRNG seed for the simulation")
 	keystoreDir := flag.String("keystore", "", "directory to save the final key into (ETSI 014 key_ID/key JSON); empty = don't save")
+	searchMatrix := flag.Bool("search-matrix", false, "design a step 2 matrix by searching on independently-simulated proxy data, then apply it here, instead of -matrix (see matrixsearch.go)")
+	searchM := flag.Int("search-m", 16, "block size for the searched matrix")
+	searchP := flag.Int("search-p", 4, "parity bits for the searched matrix")
+	searchIterations := flag.Int("search-iterations", 3000, "hill-climbing steps for the search")
+	searchSeed := flag.Int64("search-seed", 99, "PRNG seed for the search itself and its proxy dataset")
+	searchOfflineErr := flag.Float64("search-offline-err", 0.03, "target error rate for the simulated proxy data the search designs against; set this to match -err in real practice, never search directly on the actual dataset being reconciled")
+	searchOfflineN := flag.Int("search-offline-n", 100000, "raw attempts in the simulated proxy dataset used to design the matrix")
 	flag.Parse()
 
-	g, ok := generatorMatrices[*matrixName]
-	if !ok {
-		fmt.Printf("%s unknown -matrix %q, expected ex1, ex2, ex3, or bch\n", tag(colorErr, "ERROR"), *matrixName)
-		return
+	var g qkd.GeneratorMatrix
+	matrixLabel := *matrixName
+	searchFitness := 0.0
+	if *searchMatrix {
+		// proxy dataset is independent of the run below (own seed, own
+		// simulate() call) --> the matrix choice never depends on the
+		// actual bits it will later be applied to, see matrixsearch.go
+		proxyAlice, proxyBob := simulate(*searchOfflineN, *searchOfflineErr, *mpRate, *jitterPS, *searchSeed)
+		g, searchFitness = qkd.SearchGeneratorMatrix(*searchM, *searchP, proxyAlice, proxyBob, *windowPS, *chunkSize, *searchIterations, *searchSeed)
+		matrixLabel = fmt.Sprintf("search(%d,%d)", *searchM, *searchP)
+	} else {
+		var ok bool
+		g, ok = generatorMatrices[*matrixName]
+		if !ok {
+			fmt.Printf("%s unknown -matrix %q, expected ex1, ex2, ex3, or bch\n", tag(colorErr, "ERROR"), *matrixName)
+			return
+		}
 	}
 
 	section("qoj_post_processing run configuration:")
@@ -105,7 +125,10 @@ func main() {
 	field("Multi-photon rate", "%.4f", *mpRate)
 	field("Coincidence window", "%d ps", *windowPS)
 	field("Detector jitter", "%d ps", *jitterPS)
-	field("Generator matrix (step 2)", "%s (m=%d, p=%d)", *matrixName, g.BlockSize(), g.ParityBits())
+	field("Generator matrix (step 2)", "%s (m=%d, p=%d)", matrixLabel, g.BlockSize(), g.ParityBits())
+	if *searchMatrix {
+		field("Search", "designed offline at err=%.3f, n=%d, fitness=%.5f", *searchOfflineErr, *searchOfflineN, searchFitness)
+	}
 	field("Chunk size (step 3)", "%d bits", *chunkSize)
 	field("PRNG seed", "%d", *seed)
 	field("GOMAXPROCS", "%d", runtime.GOMAXPROCS(0))
@@ -142,7 +165,7 @@ func main() {
 	if blockDiscardFrac > 0.5 {
 		blockTag = tag(colorWarn, "WARN")
 	}
-	section(fmt.Sprintf("(2): error detection (matrix=%s, block=%d bits)", *matrixName, g.BlockSize()))
+	section(fmt.Sprintf("(2): error detection (matrix=%s, block=%d bits)", matrixLabel, g.BlockSize()))
 	field("Blocks total", "%d", bd.BlocksTotal)
 	field("Blocks kept", "%d", bd.BlocksKept)
 	field("Blocks dropped", "%d (%.1f%%) "+blockTag, bd.BlocksDropped, blockDiscardFrac*100)

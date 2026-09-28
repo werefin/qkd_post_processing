@@ -158,6 +158,22 @@ func buildParityTable(g GeneratorMatrix) (t parityTable, ok bool) {
 	return parityTable{entries: entries, m: m}, true
 }
 
+// patchBit applies one matrix entry G[row][col]'s flip to an already-built
+// table in place: toggling that entry flips parity bit row for exactly the
+// half of all block values whose bit col is set, everything else is unaffected
+func (t *parityTable) patchBit(row, col int) {
+	rowBit := uint8(1) << uint(row)
+	colBit := 1 << uint(col)
+	lowMask := colBit - 1
+	half := len(t.entries) >> 1
+	for idx := range half {
+		low := idx & lowMask
+		high := idx &^ lowMask
+		full := (high << 1) | colBit | low
+		t.entries[full] ^= rowBit
+	}
+}
+
 // minParallelBlockWork is the block-count*blockSize below which
 // goroutine dispatch costs more than the (very cheap) table lookups save
 const minParallelBlockWork = 262144

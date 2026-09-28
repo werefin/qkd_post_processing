@@ -319,3 +319,50 @@ func TestSplitReconciliationMatchesCombined(t *testing.T) {
 		t.Fatalf("expected %d leaked bits, got %d", want.LeakedBits, aliceRes.LeakedBits)
 	}
 }
+
+// TestParityTablePatchBitMatchesRebuild checks patchBit against an
+// independent full rebuild after a random sequence of bit flips, and
+// checks that patching the same (row, col) twice is a no-op
+func TestParityTablePatchBitMatchesRebuild(t *testing.T) {
+	r := rand.New(rand.NewSource(7))
+	m, p := 10, 4
+
+	g := make(GeneratorMatrix, p)
+	for i := range g {
+		row := make([]byte, m)
+		for j := range row {
+			row[j] = byte(r.Intn(2))
+		}
+		g[i] = row
+	}
+
+	table, ok := buildParityTable(g)
+	if !ok {
+		t.Fatal("expected a table for m=10, p=4")
+	}
+
+	for range 50 {
+		row, col := r.Intn(p), r.Intn(m)
+		g[row][col] ^= 1
+		table.patchBit(row, col)
+
+		want, ok := buildParityTable(g)
+		if !ok {
+			t.Fatal("expected a table for m=10, p=4")
+		}
+		if !bytes.Equal(table.entries, want.entries) {
+			t.Fatalf("patchBit(%d,%d) diverged from a full rebuild", row, col)
+		}
+	}
+
+	// patching every entry a second time (same order) must undo it all
+	// exactly, since flip-then-flip is a no-op on both the matrix and the table
+	original, _ := buildParityTable(GeneratorMatrixEx3)
+	patched := original
+	patched.entries = append([]uint8(nil), original.entries...)
+	patched.patchBit(1, 2)
+	patched.patchBit(1, 2)
+	if !bytes.Equal(patched.entries, original.entries) {
+		t.Fatal("patching the same (row, col) twice did not restore the original table")
+	}
+}
