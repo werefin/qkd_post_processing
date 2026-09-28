@@ -169,9 +169,22 @@ func ComputeBlockParity(bits []byte, g GeneratorMatrix) [][]byte {
 	if blockSize <= 0 {
 		panic("generator matrix must have at least one column")
 	}
+	table, useTable := buildParityTable(g)
+	var masks parityMasks
+	if !useTable {
+		masks = buildParityMasks(g)
+	}
+	return computeBlockParity(bits, blockSize, g.ParityBits(), table, useTable, masks)
+}
+
+// computeBlockParity is ComputeBlockParity's body over an already-built
+// table/masks, so a caller needing both sides of the same matrix
+// (BlockErrorDetect) builds it once and reuses it, instead of paying for a
+// fresh 2^m-entry table on every call --> matters most in a hot loop like
+// SearchGeneratorMatrix's, which reevaluates a changed matrix every iteration
+func computeBlockParity(bits []byte, blockSize, p int, table parityTable, useTable bool, masks parityMasks) [][]byte {
 	n := len(bits)
 	numBlocks := (n + blockSize - 1) / blockSize
-	p := g.ParityBits()
 
 	// one flat backing array for every block's parity bits, instead of
 	// numBlocks separate small heap allocations
@@ -186,8 +199,6 @@ func ComputeBlockParity(bits []byte, g GeneratorMatrix) [][]byte {
 		workers = 1
 	}
 	workers = max(min(workers, numBlocks), 1)
-
-	table, useTable := buildParityTable(g)
 
 	var wg sync.WaitGroup
 	chunk := (numBlocks + workers - 1) / workers
@@ -223,7 +234,6 @@ func ComputeBlockParity(bits []byte, g GeneratorMatrix) [][]byte {
 		return parities
 	}
 
-	masks := buildParityMasks(g)
 	for w := range workers {
 		start := w * chunk
 		end := min(start+chunk, numBlocks)
@@ -358,8 +368,14 @@ type BlockDetectResult struct {
 // use ComputeBlockParity + ReconcileBlocks directly to run each side apart
 func BlockErrorDetect(alice, bob []byte, g GeneratorMatrix) BlockDetectResult {
 	blockSize := g.BlockSize()
-	aliceParity := ComputeBlockParity(alice, g)
-	bobParity := ComputeBlockParity(bob, g)
+	p := g.ParityBits()
+	table, useTable := buildParityTable(g)
+	var masks parityMasks
+	if !useTable {
+		masks = buildParityMasks(g)
+	}
+	aliceParity := computeBlockParity(alice, blockSize, p, table, useTable, masks)
+	bobParity := computeBlockParity(bob, blockSize, p, table, useTable, masks)
 	aliceRes := ReconcileBlocks(alice, aliceParity, bobParity, blockSize)
 	bobRes := ReconcileBlocks(bob, bobParity, aliceParity, blockSize)
 	return BlockDetectResult{

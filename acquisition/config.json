@@ -62,6 +62,12 @@
     "per_call_detection_cap": 4000000
   },
 
+  "live_coincidence": {
+    "enabled": true,
+    "interval_s": 5.0,
+    "window_s": 30.0
+  },
+
   "coincidence_peak": {
     "max_lag_ms": 1000.0,
     "coarse_bin_ns": 100.0,

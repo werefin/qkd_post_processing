@@ -110,6 +110,15 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
     parser.add_argument('--target-count', type=int, metavar='N',
                          help='override record_dual.target_detection_count')
     parser.add_argument('--output-dir', metavar='DIR', help='override record_dual.output_dir')
+    live_group = parser.add_mutually_exclusive_group()
+    live_group.add_argument('--live', dest='live', action='store_true', default=None,
+                             help='override live_coincidence.enabled: show a periodic coincidence-peak estimate while recording')
+    live_group.add_argument('--no-live', dest='live', action='store_false',
+                             help='override live_coincidence.enabled: disable the periodic estimate')
+    parser.add_argument('--live-interval-s', type=float, metavar='SECONDS',
+                         help='override live_coincidence.interval_s')
+    parser.add_argument('--live-window-s', type=float, metavar='SECONDS',
+                         help='override live_coincidence.window_s')
     return parser.parse_args(argv)
 
 
@@ -130,6 +139,7 @@ class TTContext:
     channels: list = field(default_factory=list)     # list[np.ndarray]
     timestamps: list = field(default_factory=list)    # list[np.ndarray]
     frames_meta: list = field(default_factory=list)   # list[dict]
+    lock: threading.Lock = field(default_factory=threading.Lock)  # guards channels/timestamps appends, for the live monitor's snapshots
     stream_started: bool = False
     error: Optional[str] = None
     wall_start_s: Optional[float] = None   # time.monotonic() right after start_stream()
@@ -158,6 +168,80 @@ def make_file_basename(ip: str, port: int, started_at: datetime) -> str:
     ip_safe = ip.replace('.', '_')
     ts = started_at.strftime('%Y%m%d_%H%M%S')
     return f'{ts}_{ip_safe}_p{port}'
+
+
+_PS_PER_S = 1_000_000_000_000
+
+
+def _snapshot_timestamps(ctx: TTContext) -> np.ndarray:
+    '''Concatenates whatever this TimeTagger has buffered so far, safe to
+    call while reader_thread keeps appending frames concurrently'''
+    with ctx.lock:
+        parts = list(ctx.timestamps)
+    if not parts:
+        return np.empty(0, dtype=np.int64)
+    return np.concatenate(parts)
+
+
+def _trim_to_window(ts: np.ndarray, window_ps: int) -> np.ndarray:
+    '''Keeps only the trailing window_ps of an already-sorted timestamp
+    array, so a periodic live check costs about the same no matter how long
+    the recording has run so far'''
+    if window_ps <= 0 or ts.size == 0:
+        return ts
+    left = int(np.searchsorted(ts, int(ts[-1]) - window_ps, side='left'))
+    return ts[left:]
+
+
+def _coincidence_kwargs_from_config(cfg: dict) -> dict:
+    '''Maps config.json's "coincidence_peak" section (ms/ns-named CLI-style
+    keys) into analyze_arrays's ps-named kwargs, reused by the live monitor
+    so its numbers track the same algorithm settings as the final report'''
+    cp = cfg.get('coincidence_peak', {})
+    return {
+        'max_lag_ps': int(round(cp.get('max_lag_ms', 1000.0) * 1_000_000_000)),
+        'coarse_bin_ps': int(round(cp.get('coarse_bin_ns', 100.0) * 1_000)),
+        'fine_bin_ps': int(cp.get('fine_bin_ps', 100)),
+        'candidate_count': int(cp.get('candidates', 16)),
+        'segments': int(cp.get('segments', 6)),
+        'refine_radius_ps': int(round(cp.get('refine_radius_ns', 2000.0) * 1_000)),
+        'max_memory_gib': float(cp.get('max_memory_gib', 4.0)),
+        'slope_range_ppb': float(cp.get('slope_range_ppb', 200.0)),
+    }
+
+
+def live_coincidence_thread(ctx_a: TTContext, ctx_b: TTContext, stop_event: threading.Event,
+                             interval_s: float, window_s: float, analyze_kwargs: dict) -> None:
+    '''Periodically reruns coincidence_peak's search over a trailing window
+    of whatever both TimeTaggers have captured so far, so lag/skew/window are
+    visible while acquisition is still running instead of only afterward
+    Deferred import: keeps numba/scipy off the critical path for anyone
+    running tt_record_dual.py with live monitoring disabled'''
+    from coincidence_peak import analyze_arrays
+
+    window_ps = int(window_s * _PS_PER_S)
+    while not stop_event.wait(interval_s):
+        a = _trim_to_window(_snapshot_timestamps(ctx_a), window_ps)
+        b = _trim_to_window(_snapshot_timestamps(ctx_b), window_ps)
+        if a.size < 2 or b.size < 2:
+            safe_print(f'[live] not enough data yet (A={a.size}, B={b.size})')
+            continue
+        try:
+            report, _ = analyze_arrays(a, b, strict=False, fit_skew=False, **analyze_kwargs)
+        except Exception as exc:
+            safe_print(f'[live] coincidence check failed: {exc}')
+            continue
+        shift = report['constant_shift']
+        status = 'PEAK' if report['detected'] else 'no peak yet'
+        # clock skew isn't fit live (fit_skew=False, see above), only the
+        # constant-lag search --> the final report still fits it properly
+        safe_print(
+            f'[live] n=({a.size},{b.size}) '
+            f'lag={shift["relative_lag_ps"] / 1_000:.1f}ns '
+            f'window={shift["window"]["width_ps"] / 1_000:g}ns '
+            f'score={shift["window"]["local_score"]:.2f} '
+            f'[{status}]'
+        )
 
 
 def reader_thread(ctx: TTContext,
@@ -206,8 +290,9 @@ def reader_thread(ctx: TTContext,
             ts = ts[:keep]
             trimmed = True
 
-        ctx.channels.append(ch)
-        ctx.timestamps.append(ts)
+        with ctx.lock:
+            ctx.channels.append(ch)
+            ctx.timestamps.append(ts)
         total_detections += ch.size
 
         meta = {
@@ -379,6 +464,24 @@ def main(argv: Optional[list] = None) -> int:
         )
         threads.append(t)
         t.start()
+
+    live_cfg = cfg.get('live_coincidence', {})
+    live_enabled = live_cfg.get('enabled', True) if args.live is None else args.live
+    live_thread = None
+    if live_enabled and len(live) == 2:
+        # same ordering *_timestamp_sequence.npy files will sort into once written,
+        # so the live A/B assignment (and lag sign) matches the final batch report
+        ctx_a, ctx_b = sorted(live, key=lambda c: make_file_basename(c.cfg['tt_ip'], c.cfg['tt_port'], started_at))
+        interval_s = args.live_interval_s if args.live_interval_s is not None else live_cfg.get('interval_s', 5.0)
+        window_s = args.live_window_s if args.live_window_s is not None else live_cfg.get('window_s', 30.0)
+        live_thread = threading.Thread(
+            target=live_coincidence_thread,
+            args=(ctx_a, ctx_b, stop_event, interval_s, window_s, _coincidence_kwargs_from_config(cfg)),
+            name='live-coincidence',
+            daemon=True,
+        )
+        live_thread.start()
+        safe_print(f'live coincidence check: every {interval_s:.1f}s over the trailing {window_s:.1f}s')
 
     # main waits for the appropriate stop signal:
     # duration mode: timeout on stop_event, then set it

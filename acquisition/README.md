@@ -6,13 +6,13 @@ Gets real detector clicks from a pair of Swabian TimeTaggers into `qoj_post_proc
 
 A BBM92 source emits entangled photon pairs and sends one photon from each pair to two separate sites. At each site a TimeTagger timestamps every detector click to picosecond resolution. Two clicks (one recorded at each site) came from the same photon pair if their timestamps line up once the fixed transmission delay between the sites is accounted for; which clicks line up (and, later, which basis/bit each one represents) is the raw material the rest of this repo's post-processing chain runs on.
 
-The catch: two TimeTaggers run on independent local clocks, and there's no wire between the two sites carrying a "start now" signal --> so nothing ties one side's timestamps to the other's a priori. This pipeline solves that in three steps: **record** both sides' raw clicks independently (`tt_record_dual.py`, talking to each TimeTagger through Jena's `tt_stream_external.py` client), **find** the unknown clock offset and drift between the two recordings from the data itself (`coincidence_peak.py`, by correlating the two streams and locating the coincidence peak the shared photon pairs create), then **feed** the now-aligned, per-channel-labeled clicks into the Go pipeline (`cmd/importtt`) that does the actual sifting, error correction, and privacy amplification.
+The catch: two TimeTaggers run on independent local clocks, and there's no wire between the two sites carrying a "start now" signal --> so nothing ties one side's timestamps to the other's a priori. This pipeline solves that in three steps: **record** both sides' raw clicks independently (`tt_record_dual.py`, talking to each TimeTagger through Jena's `tt_stream_external.py` client), **find** the unknown clock offset and drift between the two recordings from the data itself (`coincidence_peak.py`, by correlating the two streams and locating the coincidence peak the shared photon pairs create), then **feed** the now-aligned, per-channel-labeled clicks into the Go pipeline (`cmd/importtt`) that does the actual sifting, error correction, and privacy amplification. Recording and coincidence-finding run as one process: `tt_record_dual.py` reruns `coincidence_peak`'s search live on a trailing window of whatever's been captured so far, so lag/window/score are visible while the TimeTaggers are still streaming, not only after the recording ends (see "Live coincidence monitoring" below). Sifting, error correction, and privacy amplification stay offline/batch, run once after the recording finishes.
 
 | stage | tool | does |
 |---|---|---|
-| record | `tt_record_dual.py` (uses `tt_stream_external.py`) | connects to two TimeTaggers over the network, records a fixed duration, writes per-TT `.npy` + `.json` |
-| align | `coincidence_peak.py` | finds the clock offset and drift between the two recordings |
-| post-process (QKD) | `cmd/importtt` (Go, repo root) | maps detector channels to BBM92 (basis, bit), aligns the clocks, runs the full sifting --> privacy-amplification chain |
+| record + live align | `tt_record_dual.py` (uses `tt_stream_external.py`, `coincidence_peak.py`) | connects to two TimeTaggers over the network, records a fixed duration, prints a periodic live coincidence-peak estimate while recording, writes per-TT `.npy` + `.json` |
+| align (final) | `coincidence_peak.py` | full, precise pass over the complete recording: finds the clock offset and drift between the two recordings |
+| post-process (QKD) | `cmd/importtt` (Go, repo root) | maps detector channels to BBM92 (basis, bit), aligns the clocks, runs the full sifting --> privacy-amplification chain, offline/batch |
 | post-process (CHSH diagnostic) | `chsh_diagnostic.py` | standalone alternative to post-process: per-block singles + per-channel-pair ROI coincidence counts for a CHSH/Bell self-testing analysis (see below) |
 
 `config.json` holds every site's connection/detector settings plus both scripts' recording/analysis defaults, so none of that is hardcoded in the `.py` files
@@ -22,10 +22,10 @@ The catch: two TimeTaggers run on independent local clocks, and there's no wire 
 | file | key pieces |
 |---|---|
 | `tt_stream_external.py` | One class, `TimeTaggerStream`: `connect()` (3 retries, custom SHA-256 challenge in place of `multiprocessing.connection`'s default MD5), `start_stream()` (puts the TT into continuous recording), `read_stream()` (drains whatever accumulated since the last call, less than 4M detections). Vendor code --> see Provenance. |
-| `tt_record_dual.py` | `load_config`/`resolve_link`/`site_connection_and_settings` turn `config.json` + CLI flags into two `(connection, settings)` pairs. `TTContext` is one TimeTagger's mutable state (buffered frames, error, timing), shared between `main` and its own `reader_thread`. Both `reader_thread`s wait on one `threading.Barrier` so `start_stream()` fires on both TTs at the same moment, then each loops `read_stream()` independently until told to stop. `write_outputs` concatenates the buffered frames into the two `.npy` arrays + the `.json` sidecar. |
-| `coincidence_peak.py` | `_coarse_search` (FFT cross-correlation over binned counts, `numba`-jitted `_bin_timestamps`) → `_refine_candidate`/`_best_window` (exact timestamp differences, finds the best coincidence-window width) --> `_fit_clock_skew` (segment-wise linear fit of lag vs. elapsed time, `_grid_search_clock_skew` as a fallback). `analyze_files` orchestrates all three and builds the JSON report; `save_plot` renders the diagnostic figure; `main` is the `click` CLI (`_apply_config_defaults` wires up `--config`). |
+| `tt_record_dual.py` | `load_config`/`resolve_link`/`site_connection_and_settings` turn `config.json` + CLI flags into two `(connection, settings)` pairs. `TTContext` is one TimeTagger's mutable state (buffered frames, error, timing), shared between `main`, its own `reader_thread`, and the live monitor, guarded by `TTContext.lock`. Both `reader_thread`s wait on one `threading.Barrier` so `start_stream()` fires on both TTs at the same moment, then each loops `read_stream()` independently until told to stop. `live_coincidence_thread` periodically calls `coincidence_peak.analyze_arrays` on a trailing `_trim_to_window` slice of `_snapshot_timestamps(ctx)`, skipping clock-skew fitting (`fit_skew=False`) to stay fast. `write_outputs` concatenates the buffered frames into the two `.npy` arrays + the `.json` sidecar. |
+| `coincidence_peak.py` | `_coarse_search` (FFT cross-correlation over binned counts, `numba`-jitted `_bin_timestamps`) → `_refine_candidate`/`_best_window` (exact timestamp differences, finds the best coincidence-window width) --> `_fit_clock_skew` (segment-wise linear fit of lag vs. elapsed time, `_grid_search_clock_skew` as a fallback). `analyze_arrays` runs all three over two in-memory timestamp arrays and builds the JSON report (`fit_skew=False` skips the skew stage, for a fast live check); `analyze_files` wraps it with file loading, validation, and wall-overlap slicing. `save_plot` renders the diagnostic figure; `main` is the `click` CLI (`_apply_config_defaults` wires up `--config`). |
 | `chsh_diagnostic.py` | Standalone CHSH/Bell diagnostic, unrelated to the QKD chain --> see "Optional: CHSH self-testing diagnostic" below. |
-| `config.json` | `"sites"` (per-TT connection + detector settings), `"links"` (named site pairs), `"record_dual"` (which link + recording-mode defaults), `"coincidence_peak"` (analysis-flag defaults). |
+| `config.json` | `"sites"` (per-TT connection + detector settings), `"links"` (named site pairs), `"record_dual"` (which link + recording-mode defaults), `"live_coincidence"` (live-monitor defaults while recording), `"coincidence_peak"` (final-analysis defaults, also reused by the live monitor's algorithm settings). |
 
 ### How it actually works
 
@@ -92,6 +92,25 @@ Notes from the field:
 - `'duration'` mode is the one to use whenever the network can keep up with the detection rate (i.e. any link except the slow one) --> it never drops data. `'detection_count'` mode is for a link that can't keep up: it relies on the TimeTagger's own on-device buffer (about 4M detections, drop-newest) so a short capture at the front of the stream is guaranteed complete even if the host can't drain it fast enough.
 - A link involving the slow site most likely drops detections in `'duration'` mode (the script warns you: `!! LIKELY LOST DATA` / `!! CAPPED`). If that happens, copy `tt_record_dual.py` + `tt_stream_external.py` to `/tmp` on that TimeTagger's own box and run the recording locally there instead.
 - The TT connection occasionally fails for reasons not yet root-caused; it retries 3 times internally (`tt_stream_external.py`) before giving up --> just rerun the script if it does.
+
+### Live coincidence monitoring while recording
+
+`tt_record_dual.py` runs a background thread, `live_coincidence_thread`, that periodically reruns `coincidence_peak.analyze_arrays` over a trailing window of whatever both TimeTaggers have buffered so far, printing a line like:
+
+```
+[live] n=(46323,24974) lag=25997511.1ns window=200ns score=6.02 [PEAK]
+```
+
+This is a fast, lower-fidelity check meant to show alignment quality while the recording is still running, not a substitute for the final analysis: it skips clock-skew fitting (`fit_skew=False`) since that stage's segment fit / grid-search fallback is too slow to rerun every few seconds, and it only sees a trailing `window_s` slice, not the whole recording. `coincidence_peak.py` still runs its full analysis once over the complete recording after `tt_record_dual.py` writes its output files (see below); that JSON report, not the live line, is what `cmd/importtt` reads.
+
+Controlled by `config.json`'s `"live_coincidence"` section (`enabled`, `interval_s` between checks, `window_s` trailing window --> larger windows or higher detection rates cost more per check, tune both to your link) or by CLI flag:
+
+```bash
+python3 tt_record_dual.py --no-live                               # disable live monitoring for this run
+python3 tt_record_dual.py --live-interval-s 10 --live-window-s 60  # override the cadence/window
+```
+
+The live monitor's algorithm settings (bin widths, candidate count, etc.) come from the same `"coincidence_peak"` config section the final analysis uses, so its numbers track the same tuning.
 
 ### Finding the coincidence peak
 

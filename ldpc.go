@@ -445,9 +445,42 @@ func clampProb(p float64) float64 {
 	return p
 }
 
+// ldpcDecodeScratch holds every buffer LDPCDecode's belief propagation loop
+// needs, sized once for a given LDPCMatrix. LDPCReconcile builds one and
+// reuses it across every block it decodes, instead of paying fresh
+// allocations per block; LDPCDecode itself still allocates its own for
+// each standalone call, keeping that entry point simple
+type ldpcDecodeScratch struct {
+	intrinsic []float32
+	msgC2V    []float32
+	msgV2C    []float32
+	checkSign []float32
+	corrected []byte
+	syndBuf   []byte
+}
+
+// newLDPCDecodeScratch sizes a scratch set from h's dimensions
+func newLDPCDecodeScratch(h *LDPCMatrix) *ldpcDecodeScratch {
+	return &ldpcDecodeScratch{
+		intrinsic: make([]float32, h.N),
+		msgC2V:    make([]float32, h.edgeOffset[h.M]),
+		msgV2C:    make([]float32, h.edgeOffset[h.M]),
+		checkSign: make([]float32, h.M),
+		corrected: make([]byte, h.N),
+		syndBuf:   make([]byte, h.M),
+	}
+}
+
 // LDPCDecode runs min-sum belief propagation, estimating the bits that
 // satisfy syndrome under h and are closest to receivedBits over a BSC(qber)
 func LDPCDecode(h *LDPCMatrix, receivedBits, syndrome []byte, qber float64, cfg LDPCDecodeConfig) (corrected []byte, converged bool, iterations int) {
+	return h.decodeWith(newLDPCDecodeScratch(h), receivedBits, syndrome, qber, cfg)
+}
+
+// decodeWith is LDPCDecode's body, over caller-supplied scratch buffers so a
+// multi-block caller like LDPCReconcile can reuse them instead of
+// reallocating on every block
+func (h *LDPCMatrix) decodeWith(st *ldpcDecodeScratch, receivedBits, syndrome []byte, qber float64, cfg LDPCDecodeConfig) (corrected []byte, converged bool, iterations int) {
 	n, m := h.N, h.M
 	maxIter := cfg.MaxIterations
 	if maxIter <= 0 {
@@ -456,7 +489,7 @@ func LDPCDecode(h *LDPCMatrix, receivedBits, syndrome []byte, qber float64, cfg 
 
 	p := clampProb(qber)
 	llr0 := float32(math.Log((1 - p) / p))
-	intrinsic := make([]float32, n)
+	intrinsic := st.intrinsic
 	for v := range intrinsic {
 		if receivedBits[v] == 0 {
 			intrinsic[v] = llr0
@@ -465,16 +498,15 @@ func LDPCDecode(h *LDPCMatrix, receivedBits, syndrome []byte, qber float64, cfg 
 		}
 	}
 
-	numEdges := h.edgeOffset[m]
-	msgC2V := make([]float32, numEdges)
-	msgV2C := make([]float32, numEdges)
+	msgC2V := st.msgC2V
+	msgV2C := st.msgV2C
 	for v := range n {
 		for _, e := range h.varEdges[v] {
 			msgV2C[e] = intrinsic[v]
 		}
 	}
 
-	checkSign := make([]float32, m)
+	checkSign := st.checkSign
 	for c := range checkSign {
 		if syndrome[c]&1 == 1 {
 			checkSign[c] = -1
@@ -483,8 +515,8 @@ func LDPCDecode(h *LDPCMatrix, receivedBits, syndrome []byte, qber float64, cfg 
 		}
 	}
 
-	corrected = make([]byte, n)
-	scratch := make([]byte, m)
+	corrected = st.corrected
+	scratch := st.syndBuf
 
 	for iter := range maxIter {
 		// check-to-variable pass (min-sum): each check's outgoing message
@@ -576,8 +608,12 @@ func LDPCPass(h *LDPCMatrix, alice, bob []byte, qber float64, cfg LDPCDecodeConf
 	}
 }
 
-// LDPCReconcile runs LDPCPass over every h.N-bit block of alice/bob,
-// zero-padding a short final block identically on both sides
+// LDPCReconcile reconciles every h.N-bit block of alice/bob the same way
+// LDPCPass does (Alice's syndrome crosses the channel, Bob decodes toward
+// it), zero-padding a short final block identically on both sides
+// Unlike calling LDPCPass per block, it decodes through one shared
+// ldpcDecodeScratch and syndrome buffer, so a many-block key reconciles
+// without a fresh set of decoder allocations on every block
 func LDPCReconcile(h *LDPCMatrix, alice, bob []byte, qber float64, cfg LDPCDecodeConfig) (correctedBob []byte, convergedBlocks, totalBlocks, leakedBits int) {
 	n := h.N
 	total := len(alice)
@@ -589,6 +625,8 @@ func LDPCReconcile(h *LDPCMatrix, alice, bob []byte, qber float64, cfg LDPCDecod
 
 	aliceBlock := make([]byte, n)
 	bobBlock := make([]byte, n)
+	aliceSynd := make([]byte, h.M)
+	st := newLDPCDecodeScratch(h)
 	for bi := range numBlocks {
 		bs := bi * n
 		be := min(bs+n, total)
@@ -599,10 +637,11 @@ func LDPCReconcile(h *LDPCMatrix, alice, bob []byte, qber float64, cfg LDPCDecod
 			aliceBlock[k] = 0
 			bobBlock[k] = 0
 		}
-		res := LDPCPass(h, aliceBlock, bobBlock, qber, cfg)
-		copy(correctedBob[bs:be], res.CorrectedBob[:blen])
-		leakedBits += res.LeakedBits
-		if res.Converged {
+		h.syndromeInto(aliceBlock, aliceSynd)
+		corrected, converged, _ := h.decodeWith(st, bobBlock, aliceSynd, qber, cfg)
+		copy(correctedBob[bs:be], corrected[:blen])
+		leakedBits += h.M
+		if converged {
 			convergedBlocks++
 		}
 	}

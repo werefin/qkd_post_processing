@@ -95,6 +95,11 @@ func readNpyHeader(f *os.File) (npyHeader, error) {
 	}, nil
 }
 
+// npyReadChunkElems bounds the scratch buffer loadNpyInt64/loadNpyInt8 read
+// into, so decoding a large recording costs one small reused buffer instead
+// of a second full-size copy of the file sitting alongside the output slice
+const npyReadChunkElems = 1 << 16
+
 // loadNpyInt64 loads a 1-D little-endian int64 array (numpy dtype '<i8'),
 // the format tt_record_dual.py uses for *_timestamp_sequence.npy
 func loadNpyInt64(path string) ([]int64, error) {
@@ -119,14 +124,17 @@ func loadNpyInt64(path string) ([]int64, error) {
 	}
 
 	n := hdr.shape[0]
-	raw := make([]byte, n*8)
-	if _, err := io.ReadFull(f, raw); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-
 	out := make([]int64, n)
-	for i := range out {
-		out[i] = int64(binary.LittleEndian.Uint64(raw[i*8:]))
+	buf := make([]byte, min(n, npyReadChunkElems)*8)
+	for start := 0; start < n; start += npyReadChunkElems {
+		end := min(start+npyReadChunkElems, n)
+		chunk := buf[:(end-start)*8]
+		if _, err := io.ReadFull(f, chunk); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		for i := start; i < end; i++ {
+			out[i] = int64(binary.LittleEndian.Uint64(chunk[(i-start)*8:]))
+		}
 	}
 	return out, nil
 }
@@ -155,14 +163,17 @@ func loadNpyInt8(path string) ([]int8, error) {
 	}
 
 	n := hdr.shape[0]
-	raw := make([]byte, n)
-	if _, err := io.ReadFull(f, raw); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-
 	out := make([]int8, n)
-	for i, b := range raw {
-		out[i] = int8(b)
+	buf := make([]byte, min(n, npyReadChunkElems))
+	for start := 0; start < n; start += npyReadChunkElems {
+		end := min(start+npyReadChunkElems, n)
+		chunk := buf[:end-start]
+		if _, err := io.ReadFull(f, chunk); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		for i, b := range chunk {
+			out[start+i] = int8(b)
+		}
 	}
 	return out, nil
 }

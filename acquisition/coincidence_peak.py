@@ -674,9 +674,9 @@ def _window_dict(window: WindowResult) -> dict[str, Any]:
     }
 
 
-def analyze_files(
-    path_a: Path,
-    path_b: Path,
+def analyze_arrays(
+    a: np.ndarray,
+    b: np.ndarray,
     *,
     max_lag_ps: int = PS_PER_S,
     coarse_bin_ps: int = 100 * PS_PER_NS,
@@ -684,12 +684,18 @@ def analyze_files(
     candidate_count: int = 8,
     segments: int = 6,
     refine_radius_ps: int = 2_000 * PS_PER_NS,
-    use_meta: bool = False,
-    overlap_margin_s: float = 2.0,
     max_memory_gib: float = 4.0,
     slope_range_ppb: float = 200.0,
+    fit_skew: bool = True,
     strict: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Core coincidence-peak search over two already-loaded timestamp arrays
+    analyze_files wraps this with file loading/validation; a live monitor
+    running alongside acquisition can call this directly on an in-memory
+    snapshot of the recording buffered so far
+    fit_skew=False skips the segment fit and its O(N) grid-search fallback,
+    for a live check that must stay fast even with no peak found yet
+    """
     if fine_bin_ps > refine_radius_ps:
         raise click.ClickException(
             "fine bin width must not exceed the refinement radius"
@@ -698,23 +704,6 @@ def analyze_files(
         raise click.ClickException(
             "twice the refinement radius must be divisible by the fine bin width"
         )
-    raw_a = _validate_timestamps(path_a)
-    raw_b = _validate_timestamps(path_b)
-    click.echo(f"A: {path_a} ({len(raw_a):,} timestamps)")
-    click.echo(f"B: {path_b} ({len(raw_b):,} timestamps)")
-    overlap_info: dict[str, Any] | None = None
-    if use_meta:
-        a, b, overlap_info = slice_to_wall_overlap(
-            np.asarray(raw_a), np.asarray(raw_b), path_a, path_b, overlap_margin_s
-        )
-        click.echo(
-            f"Wall-overlap slice: A {len(a):,}/{len(raw_a):,} "
-            f"({overlap_info['kept_fraction_a']:.1%}), "
-            f"B {len(b):,}/{len(raw_b):,} ({overlap_info['kept_fraction_b']:.1%})"
-        )
-    else:
-        a = np.asarray(raw_a)
-        b = np.asarray(raw_b)
 
     coarse = _coarse_search(
         a,
@@ -782,7 +771,7 @@ def analyze_files(
     if abs(constant_lag_ps) > max_lag_ps:
         raise click.ClickException("refined coincidence peak lies outside the lag range")
 
-    if detected:
+    if detected and fit_skew:
         try:
             skew = _fit_clock_skew(
                 a,
@@ -844,8 +833,6 @@ def analyze_files(
     constant_delay_ps = origin_difference_ps + constant_lag_ps
     affine_delay_ps = origin_difference_ps + int(round(skew["lag_at_reference_ps"]))
     report: dict[str, Any] = {
-        "input_a": str(path_a),
-        "input_b": str(path_b),
         "sign_convention": "delay is B minus A; add shift_to_add_to_b_ps to B",
         "detected": detected,
         "detection_threshold": MIN_PEAK_SCORE,
@@ -857,12 +844,9 @@ def analyze_files(
             "candidate_count": int(candidate_count),
             "segments": int(segments),
             "refine_radius_ps": int(refine_radius_ps),
-            "use_meta": bool(overlap_info is not None),
-            "overlap_margin_s": float(overlap_margin_s),
             "max_memory_gib": float(max_memory_gib),
             "slope_range_ppb": float(slope_range_ppb),
         },
-        "overlap": overlap_info,
         "constant_shift": {
             "relative_lag_ps": constant_lag_ps,
             "delay_b_minus_a_ps": constant_delay_ps,
@@ -900,6 +884,45 @@ def analyze_files(
             f"no significant coincidence peak found (best local score "
             f"{selected.window.score:.2f}, required {MIN_PEAK_SCORE:.2f})"
         )
+    return report, diagnostics
+
+
+def analyze_files(
+    path_a: Path,
+    path_b: Path,
+    *,
+    use_meta: bool = False,
+    overlap_margin_s: float = 2.0,
+    **kwargs: Any,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Loads and validates two timestamp NPY files, then runs analyze_arrays
+    over them, adding the file/overlap-specific report fields it doesn't know
+    about (input_a/input_b, overlap, use_meta, overlap_margin_s)
+    """
+    raw_a = _validate_timestamps(path_a)
+    raw_b = _validate_timestamps(path_b)
+    click.echo(f"A: {path_a} ({len(raw_a):,} timestamps)")
+    click.echo(f"B: {path_b} ({len(raw_b):,} timestamps)")
+    overlap_info: dict[str, Any] | None = None
+    if use_meta:
+        a, b, overlap_info = slice_to_wall_overlap(
+            np.asarray(raw_a), np.asarray(raw_b), path_a, path_b, overlap_margin_s
+        )
+        click.echo(
+            f"Wall-overlap slice: A {len(a):,}/{len(raw_a):,} "
+            f"({overlap_info['kept_fraction_a']:.1%}), "
+            f"B {len(b):,}/{len(raw_b):,} ({overlap_info['kept_fraction_b']:.1%})"
+        )
+    else:
+        a = np.asarray(raw_a)
+        b = np.asarray(raw_b)
+
+    report, diagnostics = analyze_arrays(a, b, **kwargs)
+    report["input_a"] = str(path_a)
+    report["input_b"] = str(path_b)
+    report["overlap"] = overlap_info
+    report["parameters"]["use_meta"] = bool(overlap_info is not None)
+    report["parameters"]["overlap_margin_s"] = float(overlap_margin_s)
     return report, diagnostics
 
 
