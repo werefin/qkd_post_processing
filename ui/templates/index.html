@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>QOJ post processing dashboard</title>
+  <title>qoj_post_processing dashboard</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
@@ -11,118 +11,336 @@
 </head>
 <body>
 
-  <nav class="sidebar">
-    <div class="sidebar-title">QOJ<span class="grad-text"> post processing</span></div>
+  <aside class="sidebar">
+    <div class="sidebar-title">qoj<span class="grad-text">_post_processing</span></div>
     <div class="sidebar-sub">BBM92 QKD post-processing</div>
+
+    <nav class="sidebar-nav" id="main-nav">
+      <a class="nav-item active" data-section="home" href="#">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg></span>
+        <span class="nav-label">Home</span>
+      </a>
+      <a class="nav-item" data-section="run" href="#">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg></span>
+        <span class="nav-label">Run and metrics</span>
+      </a>
+      <a class="nav-item" data-section="align" href="#">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><polyline points="19 9 13 15 9 11 5 15"/></svg></span>
+        <span class="nav-label">Alignment</span>
+      </a>
+      <a class="nav-item" data-section="chsh" href="#">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="12" r="6"/><circle cx="15" cy="12" r="6"/></svg></span>
+        <span class="nav-label">CHSH diagnostic</span>
+      </a>
+      <a class="nav-item" data-section="recordings" href="#">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></span>
+        <span class="nav-label">Recordings</span>
+      </a>
+      <a class="nav-item" data-section="acquire" href="#">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg></span>
+        <span class="nav-label">Acquisition</span>
+      </a>
+    </nav>
+
     <div class="sidebar-footer">
       <div class="status-row">
         <span class="status-dot checking" id="status-dot"></span>
         <span class="status-label" id="status-label">Checking...</span>
       </div>
+      <div class="status-row" style="margin-top:.5rem">
+        <svg class="status-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3"/></svg>
+        <span class="status-label"><span id="sidebar-key-count">-</span> keys in store</span>
+      </div>
     </div>
-  </nav>
+  </aside>
 
-  <main class="main">
-    <div class="page-header">
-      <h1 class="page-title">QOJ pipeline <span class="grad-text">dashboard</span></h1>
-      <p class="page-sub">Run the simulated post-processing chain, watch its metrics, and check live coincidence-peak alignment on uploaded or acquired recordings.</p>
-    </div>
+  <main class="main" id="main-content">
 
-    <div class="grid grid--2">
+    <!-- Home -->
+    <section class="section active" id="section-home">
+      <div class="section-header section-header--wide">
+        <h1 class="section-title">qoj_post_processing <span class="grad-text">dashboard</span></h1>
+        <p class="section-sub">Run the simulated post-processing chain, watch its metrics, and check live coincidence-peak alignment on uploaded or acquired recordings.</p>
+      </div>
 
-      <!-- Run pipeline -->
-      <div class="card">
-        <div class="card-head"><span class="card-title">Run pipeline</span></div>
-        <div class="card-body">
-          <form id="run-form">
-            <div class="field-row">
-              <div class="field">
-                <label class="field-label">Raw attempts (n)</label>
-                <input class="input" id="f-n" type="number" value="300000" min="1000" step="1000">
-              </div>
-              <div class="field">
-                <label class="field-label">Error rate</label>
-                <input class="input" id="f-err" type="number" value="0.02" min="0" max="0.5" step="0.001">
-              </div>
-            </div>
-            <div class="field">
-              <label class="field-label">Error correction (step 2/3)</label>
-              <select class="input" id="f-method">
-                <option value="discard" selected>Block discard</option>
-                <option value="winnow">Winnow</option>
-                <option value="ldpc">LDPC belief propagation</option>
-              </select>
-            </div>
+      <div class="grid grid--2">
+        <div class="card">
+          <div class="card-head"><span class="card-title">Backend status</span></div>
+          <div class="chips" id="home-status-chips"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">Keys in keystore</span></div>
+          <div class="gauge-wrap">
+            <canvas id="home-gauge-canvas" class="plot-canvas" style="height:110px"></canvas>
+            <div class="gauge-value" id="home-gauge-value">-</div>
+            <div class="gauge-label">256-bit ETSI 014 keys (max 30,000)</div>
+          </div>
+        </div>
+      </div>
 
-            <div id="method-discard">
-              <p class="hint" style="padding:0 0 .6rem">Generator matrix (step 2): fixed BCH matrix, unless a searched one is used instead.</p>
-              <div class="checkbox-row">
-                <input type="checkbox" id="f-search">
-                <label for="f-search">Use a searched matrix instead (designed on independent proxy data)</label>
-              </div>
-            </div>
+      <div class="grid grid--2">
+        <a class="card nav-card nav-card--blue" data-section="run" href="#">
+          <div class="card-head"><span class="card-title">Run &amp; metrics</span></div>
+          <p class="hint">Run the simulated pipeline (block discard, Winnow, or LDPC) and watch QBER, key rate, compression, and leaked bits build up as sparkline plots.</p>
+        </a>
+        <a class="card nav-card nav-card--purple" data-section="align" href="#">
+          <div class="card-head"><span class="card-title">Alignment</span></div>
+          <p class="hint">Live coincidence-peak lag/window/score/skew, replotted continuously from the two most recent recordings.</p>
+        </a>
+        <a class="card nav-card nav-card--orange" data-section="chsh" href="#">
+          <div class="card-head"><span class="card-title">CHSH diagnostic</span></div>
+          <p class="hint">Per-block singles and ROI1/ROI2 coincidence counts per channel pair, for self-testing against a reference Bell/CHSH analysis.</p>
+        </a>
+        <a class="card nav-card nav-card--pink" data-section="recordings" href="#">
+          <div class="card-head"><span class="card-title">Recordings</span></div>
+          <p class="hint">Upload real TimeTagger recording files (e.g. trnava's, copied off the box by hand) to feed the alignment check.</p>
+        </a>
+        <a class="card nav-card nav-card--green" data-section="acquire" href="#">
+          <div class="card-head"><span class="card-title">Acquisition</span></div>
+          <p class="hint">Load a config.json and start a real tt_record_dual.py recording, with its live log streamed here.</p>
+        </a>
+      </div>
+    </section>
 
-            <div id="method-winnow" style="display:none">
+    <!-- Run & metrics -->
+    <section class="section" id="section-run">
+      <div class="section-header section-header--wide">
+        <h1 class="section-title">Run <span class="grad-text">&amp; metrics</span></h1>
+        <p class="section-sub">Runs cmd/qoj_post_processing -json and plots its metrics the same way skQCI plots live SNMP device telemetry.</p>
+      </div>
+
+      <div class="grid grid--2">
+        <div class="card">
+          <div class="card-head"><span class="card-title">Run pipeline</span></div>
+          <div class="card-body">
+            <form id="run-form">
               <div class="field-row">
                 <div class="field">
-                  <label class="field-label">Hamming block sizes per pass</label>
-                  <input class="input" id="f-winnow-blocks" type="text" value="25,50,100">
+                  <label class="field-label">Raw attempts (n)</label>
+                  <input class="input" id="f-n" type="number" value="300000" min="1000" step="1000">
+                </div>
+                <div class="field">
+                  <label class="field-label">Error rate</label>
+                  <input class="input" id="f-err" type="number" value="0.02" min="0" max="0.5" step="0.001">
+                </div>
+              </div>
+              <div class="field">
+                <label class="field-label">Error correction (step 2/3)</label>
+                <select class="input" id="f-method">
+                  <option value="discard" selected>Block discard</option>
+                  <option value="winnow">Winnow</option>
+                  <option value="ldpc">LDPC belief propagation</option>
+                </select>
+              </div>
+
+              <div id="method-discard">
+                <p class="hint" style="padding:0 0 .6rem">Generator matrix (step 2): fixed BCH matrix, unless a searched one is used instead.</p>
+                <div class="checkbox-row">
+                  <input type="checkbox" id="f-search">
+                  <label for="f-search">Use a searched matrix instead (designed on independent proxy data)</label>
+                </div>
+              </div>
+
+              <div id="method-winnow" style="display:none">
+                <div class="field-row">
+                  <div class="field">
+                    <label class="field-label">Hamming block sizes per pass</label>
+                    <input class="input" id="f-winnow-blocks" type="text" value="25,50,100">
+                  </div>
+                  <div class="field">
+                    <label class="field-label">QBER sample fraction</label>
+                    <input class="input" id="f-winnow-sample" type="number" value="0.05" min="0.01" max="0.5" step="0.01">
+                  </div>
+                </div>
+              </div>
+
+              <div id="method-ldpc" style="display:none">
+                <div class="field-row">
+                  <div class="field">
+                    <label class="field-label">Column weight (wc)</label>
+                    <input class="input" id="f-ldpc-wc" type="number" value="3" min="2">
+                  </div>
+                  <div class="field">
+                    <label class="field-label">Row weight (wr)</label>
+                    <input class="input" id="f-ldpc-wr" type="number" value="10" min="3">
+                  </div>
                 </div>
                 <div class="field">
                   <label class="field-label">QBER sample fraction</label>
-                  <input class="input" id="f-winnow-sample" type="number" value="0.05" min="0.01" max="0.5" step="0.01">
+                  <input class="input" id="f-ldpc-sample" type="number" value="0.05" min="0.01" max="0.5" step="0.01">
                 </div>
               </div>
-            </div>
 
-            <div id="method-ldpc" style="display:none">
-              <div class="field-row">
-                <div class="field">
-                  <label class="field-label">Column weight (Wc)</label>
-                  <input class="input" id="f-ldpc-wc" type="number" value="3" min="2">
-                </div>
-                <div class="field">
-                  <label class="field-label">Row weight (Wr)</label>
-                  <input class="input" id="f-ldpc-wr" type="number" value="10" min="3">
-                </div>
-              </div>
-              <div class="field">
-                <label class="field-label">QBER sample fraction</label>
-                <input class="input" id="f-ldpc-sample" type="number" value="0.05" min="0.01" max="0.5" step="0.01">
-              </div>
-            </div>
-
-            <button class="btn" id="run-btn" type="submit">Run pipeline</button>
-            <div class="error-msg" id="run-error" style="padding-left:0"></div>
-          </form>
+              <button class="btn" id="run-btn" type="submit">Run pipeline</button>
+              <div class="error-msg" id="run-error" style="padding-left:0"></div>
+            </form>
+          </div>
+          <div class="chips" id="run-chips"></div>
         </div>
-        <div class="chips" id="run-chips"></div>
-        <div class="gauge-wrap">
-          <canvas id="gauge-canvas" class="plot-canvas" style="height:110px"></canvas>
-          <div class="gauge-value" id="gauge-value">-</div>
-          <div class="gauge-label">Keys in keystore</div>
+
+        <div class="card">
+          <div class="card-head"><span class="card-title">Keys in keystore</span></div>
+          <div class="gauge-wrap">
+            <canvas id="gauge-canvas" class="plot-canvas" style="height:110px"></canvas>
+            <div class="gauge-value" id="gauge-value">-</div>
+            <div class="gauge-label">256-bit ETSI 014 keys (max 30,000)</div>
+          </div>
         </div>
       </div>
 
-      <!-- Coincidence-peak alignment -->
+      <!-- Metric plots, styled the same way as skQCI's SNMP device plots -->
+      <div class="card">
+        <div class="card-head"><span class="card-title">Metrics over recent runs</span></div>
+        <div class="plots">
+          <div class="plot"><div class="plot-title"><span>QBER (%)</span><span class="plot-val" id="plot-v0">-</span></div><canvas id="plot-c0" class="plot-canvas"></canvas></div>
+          <div class="plot"><div class="plot-title"><span>Final key (bits)</span><span class="plot-val" id="plot-v1">-</span></div><canvas id="plot-c1" class="plot-canvas"></canvas></div>
+          <div class="plot"><div class="plot-title"><span>Compression ratio</span><span class="plot-val" id="plot-v2">-</span></div><canvas id="plot-c2" class="plot-canvas"></canvas></div>
+          <div class="plot"><div class="plot-title"><span>Leaked bits (total)</span><span class="plot-val" id="plot-v3">-</span></div><canvas id="plot-c3" class="plot-canvas"></canvas></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Coincidence-peak alignment -->
+    <section class="section" id="section-align">
+      <div class="section-header section-header--wide">
+        <h1 class="section-title">Coincidence-peak <span class="grad-text">alignment</span></h1>
+        <p class="section-sub">The real, full analysis on the two most recently uploaded/acquired recordings, clock-skew fit included -- the same one coincidence_peak.py's own CLI and cmd/importtt's final report use. Rechecked periodically while this section is open; a full check can take a few seconds and is cached briefly so polling doesn't rerun it constantly.</p>
+      </div>
+
       <div class="card">
         <div class="card-head">
-          <span class="card-title">Coincidence-peak alignment</span>
+          <span class="card-title">Latest check</span>
           <span class="badge badge-muted" id="align-badge">Checking...</span>
         </div>
         <div class="chips" id="align-chips"></div>
-        <p class="hint">Real, full analysis on the two most recently uploaded/acquired recordings, clock-skew fit included: the same one coincidence_peak.py's own CLI and cmd/importtt's final report use. A full check can take a few seconds, cached briefly so polling doesn't rerun it constantly.</p>
       </div>
 
-    </div>
+      <div class="card">
+        <div class="card-head"><span class="card-title">Live alignment plots</span></div>
+        <div class="plots plots--lg">
+          <div class="plot">
+            <div class="plot-title"><span>Coarse correlation</span><span class="plot-val" id="align-plot-v0">-</span></div>
+            <canvas id="align-plot-c0" class="plot-canvas plot-canvas--lg"></canvas>
+            <p class="plot-hint">scroll or drag to zoom · double-click to reset</p>
+          </div>
+          <div class="plot">
+            <div class="plot-title"><span>Best constant-shift peak</span><span class="plot-val" id="align-plot-v1">-</span></div>
+            <canvas id="align-plot-c1" class="plot-canvas plot-canvas--lg"></canvas>
+            <p class="plot-hint">scroll or drag to zoom · double-click to reset</p>
+          </div>
+          <div class="plot">
+            <div class="plot-title"><span>Clock-rate drift</span><span class="plot-val" id="align-plot-v2">-</span></div>
+            <canvas id="align-plot-c2" class="plot-canvas plot-canvas--lg"></canvas>
+            <p class="plot-hint">scroll or drag to zoom · double-click to reset</p>
+          </div>
+          <div class="plot">
+            <div class="plot-title"><span>Clock-corrected peak</span><span class="plot-val" id="align-plot-v3">-</span></div>
+            <canvas id="align-plot-c3" class="plot-canvas plot-canvas--lg"></canvas>
+            <p class="plot-hint">scroll or drag to zoom · double-click to reset</p>
+          </div>
+        </div>
+      </div>
 
-    <div class="grid grid--2">
+      <div class="card" id="align-run-card">
+        <div class="card-head">
+          <span class="card-title">Run real pipeline on this recording</span>
+          <span class="badge badge-muted" id="align-run-badge">Idle</span>
+        </div>
+        <div class="card-body">
+          <p class="hint" style="padding:0 0 .8rem">Once a peak is detected above, run the real chain (sift &rarr; error correction &rarr; privacy amplification) on these two recordings -- the same one cmd/importtt runs -- and save the distilled key to the keystore.</p>
+          <div class="field">
+            <label class="field-label">Error correction (step 2/3)</label>
+            <select class="input" id="align-run-method">
+              <option value="discard" selected>Block discard</option>
+              <option value="winnow">Winnow</option>
+              <option value="ldpc">LDPC belief propagation</option>
+            </select>
+          </div>
+          <div class="btn-row">
+            <button class="btn" id="align-run-btn" type="button" disabled>Run on recording</button>
+          </div>
+          <p class="error-msg" id="align-run-error"></p>
+          <div class="chips" id="align-run-chips"></div>
+        </div>
+      </div>
+    </section>
 
-      <!-- Upload recordings -->
+    <!-- CHSH diagnostic -->
+    <section class="section" id="section-chsh">
+      <div class="section-header section-header--wide">
+        <h1 class="section-title">CHSH <span class="grad-text">diagnostic</span></h1>
+        <p class="section-sub">Runs acquisition/chsh_diagnostic.py's build_blocks() over the same two recordings the alignment check uses: per-block singles per channel plus ROI1 (signal+accidental) and ROI2 (accidental-only baseline) coincidence counts per channel pair. This is the raw building-block data a Bell/CHSH-S computation needs, not a single S value -- useful for your colleagues to self-test that this software finds the same peaks/counts a reference Bell analysis does. Every field below is optional: ROI1's center/width and the block duration come straight from the confirmed coincidence peak, and the ROI2 offset defaults to a multiple of the peak width (a safe, unbiased accidental-background window for a CW source -- override it if your source is pulsed and you know its rep period).</p>
+      </div>
+
+      <div class="grid grid--2">
+        <div class="card">
+          <div class="card-head"><span class="card-title">Run diagnostic</span></div>
+          <div class="card-body">
+            <div class="field-row">
+              <div class="field">
+                <label class="field-label">Block duration (s)</label>
+                <input class="input" id="chsh-block-s" type="number" value="1.0" min="0.001" step="0.1">
+              </div>
+              <div class="field">
+                <label class="field-label">ROI2 offset from ROI1 (ns)</label>
+                <input class="input" id="chsh-roi2-offset" type="number" step="any" placeholder="auto: derived from the peak width">
+              </div>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label class="field-label">ROI1 width (ns)</label>
+                <input class="input" id="chsh-roi1-width" type="number" min="0" step="any" placeholder="auto: fitted peak window">
+              </div>
+              <div class="field">
+                <label class="field-label">ROI1 center (ns)</label>
+                <input class="input" id="chsh-roi1-center" type="number" step="any" placeholder="auto: fitted peak center">
+              </div>
+            </div>
+            <div class="field">
+              <label class="field-label">ROI2 width (ns)</label>
+              <input class="input" id="chsh-roi2-width" type="number" min="0" step="any" placeholder="auto: same as ROI1">
+            </div>
+            <div class="btn-row">
+              <button class="btn" id="chsh-run-btn" type="button">Run diagnostic</button>
+              <a class="btn btn-outline" id="chsh-download-btn" href="/api/chsh/download" style="display:none">Download CSV</a>
+            </div>
+            <p class="error-msg" id="chsh-error"></p>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">Result</span>
+            <span class="badge badge-muted" id="chsh-badge">Not run yet</span>
+          </div>
+          <div class="chips" id="chsh-chips"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><span class="card-title">Per-pair coincidence counts</span></div>
+        <div class="data-table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr><th>Pair</th><th>ROI1 total</th><th>ROI2 total</th><th>Background-subtracted</th></tr>
+            </thead>
+            <tbody id="chsh-table-body">
+              <tr><td colspan="4" style="text-align:center;color:var(--text3);padding:1.5rem">run the diagnostic above to see per-pair counts</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Recordings -->
+    <section class="section" id="section-recordings">
+      <div class="section-header section-header--wide">
+        <h1 class="section-title">Upload <span class="grad-text">recordings</span></h1>
+        <p class="section-sub">Trnava's link is too slow/too much data to stream remotely: copy its *_timestamp_sequence.npy, *_channel_sequence.npy and *_meta.json off the box by hand and upload them here (along with the other side's files) to feed the alignment check.</p>
+      </div>
+
       <div class="card">
         <div class="card-head"><span class="card-title">Upload recordings</span></div>
         <div class="card-body">
-          <p class="hint" style="padding:0 0 .8rem">Trnava's link is too slow/too much data to stream remotely: copy its *_timestamp_sequence.npy, *_channel_sequence.npy and *_meta.json off the box by hand and upload them here (along with the other side's files) to check alignment.</p>
           <div class="dropzone" id="rec-drop" tabindex="0">
             <strong>Click or drag files here</strong><br>*_timestamp_sequence.npy / *_channel_sequence.npy / *_meta.json
           </div>
@@ -132,11 +350,18 @@
         </div>
         <div class="hint">Uploaded: <span id="recordings-list">none uploaded yet</span></div>
       </div>
+    </section>
 
-      <!-- Config + start acquisition -->
+    <!-- Acquisition -->
+    <section class="section" id="section-acquire">
+      <div class="section-header section-header--wide">
+        <h1 class="section-title">Load config &amp; <span class="grad-text">start acquisition</span></h1>
+        <p class="section-sub">Needs real network reachability to the TimeTaggers in the loaded config from wherever this runs: it only wires up and launches tt_record_dual.py, it can't reach hardware this dashboard's host can't reach.</p>
+      </div>
+
       <div class="card">
         <div class="card-head">
-          <span class="card-title">Load config and start acquisition</span>
+          <span class="card-title">Config</span>
           <span class="badge badge-muted" id="config-status">No config loaded yet</span>
         </div>
         <div class="card-body">
@@ -145,8 +370,16 @@
           </div>
           <input type="file" id="config-file-input" accept="application/json" hidden>
           <div class="error-msg" id="config-error" style="padding-left:0"></div>
+        </div>
+      </div>
 
-          <div class="field-row" style="margin-top:1rem">
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Recording control</span>
+          <span class="badge badge-muted" id="acq-badge">Idle</span>
+        </div>
+        <div class="card-body">
+          <div class="field-row">
             <div class="field">
               <label class="field-label">Link</label>
               <select class="input" id="acq-link"></select>
@@ -159,26 +392,12 @@
           <div class="btn-row">
             <button class="btn" id="acq-start" type="button">Start recording</button>
             <button class="btn btn-danger" id="acq-stop" type="button" disabled>Stop</button>
-            <span class="badge badge-muted" id="acq-badge">Idle</span>
           </div>
           <div class="error-msg" id="acq-error"></div>
-          <p class="hint" style="padding:0.6rem 0 0">Needs real network reachability to the TimeTaggers in the loaded config from wherever this runs: it only wires up and launches tt_record_dual.py, it can't reach hardware this dashboard's host can't reach.</p>
         </div>
         <div class="log-panel" id="acq-log"></div>
       </div>
-
-    </div>
-
-    <!-- Metric plots, styled the same way as skQCI's SNMP device plots -->
-    <div class="card">
-      <div class="card-head"><span class="card-title">Metrics over recent runs</span></div>
-      <div class="plots">
-        <div class="plot"><div class="plot-title"><span>QBER (%)</span><span class="plot-val" id="plot-v0">-</span></div><canvas id="plot-c0" class="plot-canvas"></canvas></div>
-        <div class="plot"><div class="plot-title"><span>Final key (bits)</span><span class="plot-val" id="plot-v1">-</span></div><canvas id="plot-c1" class="plot-canvas"></canvas></div>
-        <div class="plot"><div class="plot-title"><span>Compression ratio</span><span class="plot-val" id="plot-v2">-</span></div><canvas id="plot-c2" class="plot-canvas"></canvas></div>
-        <div class="plot"><div class="plot-title"><span>Leaked bits (total)</span><span class="plot-val" id="plot-v3">-</span></div><canvas id="plot-c3" class="plot-canvas"></canvas></div>
-      </div>
-    </div>
+    </section>
 
   </main>
 

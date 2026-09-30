@@ -45,7 +45,7 @@ See `acquisition/README.md` for the full workflow and network caveats.
 
 ### Saving the final key
 
-Both CLIs take `-keystore <dir>`: the distilled key is sliced into 256-bit chunks, each written as its own `<dir>/<key_ID>.json` -- the record shape ETSI GS QKD 014's Key Delivery API returns. Local storage only, no REST API or SAE routing -- `qkd.SaveKeys256(dir, res.FinalKeyBytes)` / `qkd.LoadKey(dir, keyID)` in `keystore.go`, for a KMS layer built on top.
+Both CLIs take `-keystore <dir>`: the distilled key is sliced into 256-bit chunks, each written as its own `<dir>/<key_ID>.json`, the record shape ETSI GS QKD 014's Key Delivery API returns. Local storage only, no REST API or SAE routing --> `qkd.SaveKeys256(dir, res.FinalKeyBytes)` / `qkd.LoadKey(dir, keyID)` in `keystore.go`, for a KMS layer built on top.
 
 ### Library usage
 

@@ -115,7 +115,7 @@ func BuildRegularLDPC(n, wc, wr int, seed int64) (*LDPCMatrix, error) {
 	// 4-cycle avoidance costs O(m*wr^2) map traffic; past
 	// ldpcCycleAvoidanceMaxPairs that swamps construction time for no real
 	// gain, since a large random bipartite graph is locally tree-like with
-	// high probability anyway -- skip straight to a single random draw
+	// high probability anyway, so skip straight to a single random draw
 	estimatedPairs := m * wr * (wr - 1) / 2
 	tries := ldpcConstructionTries
 	avoidCycles := estimatedPairs <= ldpcCycleAvoidanceMaxPairs
@@ -314,7 +314,7 @@ func BuildPEGLDPC(n, wc, wr int, seed int64) (*LDPCMatrix, error) {
 				touched := 1
 				// cappedByBudget is true only when depth/touched forced the
 				// loop to stop while it was still actively discovering new
-				// checks -- any other exit (no new checks, or no further
+				// checks; any other exit (no new checks, or no further
 				// variables to expand through) means unreached checks exist
 				// elsewhere, cheaper and better found via the degree buckets
 				cappedByBudget := false

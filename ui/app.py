@@ -1,17 +1,21 @@
 '''
 qoj_post_processing dashboard: run the simulated pipeline and watch its
 metrics, and check live coincidence-peak alignment on uploaded recordings
-Same look/deployment approach as skQCI (Flask+gunicorn, Caddy, Docker)
 '''
 
 import collections
+import csv
+import io
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request
@@ -25,6 +29,7 @@ REPO_ROOT = BASE_DIR.parent
 # live monitor and the acquisition CLI use, not a reimplementation
 sys.path.insert(0, str(REPO_ROOT / 'acquisition'))
 import coincidence_peak  # noqa: E402
+import chsh_diagnostic  # noqa: E402
 
 # /app/... below is Docker's own layout --> default, used whenever an env var is missing, has to work for a plain app.py with no
 # env vars set at all, or every local run keeps needing them re-typed by hand after every restart, which is exactly what kept breaking here
@@ -35,8 +40,20 @@ _qoj_bin_raw = os.environ.get('QOJ_BIN') or (
 # bare name (no path separator) is a real PATH lookup, left alone; a
 # relative path is resolved for the same reason as the dirs below
 QOJ_BIN = str(Path(_qoj_bin_raw).resolve()) if os.sep in _qoj_bin_raw else _qoj_bin_raw
+
+# cmd/importtt: the real chain over an actual recording, used by
+# /api/align/run once a peak is confirmed --> see api_align_run()
+_default_importtt_bin = REPO_ROOT / 'importtt'
+_importtt_bin_raw = os.environ.get('IMPORTTT_BIN') or (
+    str(_default_importtt_bin) if _default_importtt_bin.is_file() else 'importtt'
+)
+IMPORTTT_BIN = str(Path(_importtt_bin_raw).resolve()) if os.sep in _importtt_bin_raw else _importtt_bin_raw
+
+# Real keys (from /api/align/run) are never evicted to make room, so keystore needs a ceiling of its own
+KEYSTORE_MAX = int(os.environ.get('KEYSTORE_MAX', '30000'))
+
 # .resolve(): these get handed to tt_record_dual.py as a subprocess argument
-# (api_acquire_start) launched with a *different* cwd (acquisition/), so a
+# (api_acquire_start) launched with a different cwd (acquisition/), so a
 # relative env var value here would resolve against the wrong directory
 # there even though it looked fine wherever this process itself started
 KEYSTORE_DIR = Path(os.environ.get('KEYSTORE_DIR') or (BASE_DIR / 'keys')).resolve()
@@ -84,6 +101,27 @@ def index():
 
 def _count_keys():
     return sum(1 for _ in KEYSTORE_DIR.glob('*.json'))
+
+
+def _keystore_snapshot():
+    return set(KEYSTORE_DIR.glob('*.json'))
+
+
+# Tracks exactly which keystore files the last /api/run (the simulator)
+# produced, so the NEXT simulation can deplete just that batch before it
+# runs -- see api_run(). Real keys from /api/align/run are never added here
+# and so are never touched by this
+_last_sim_keys = set()
+
+
+def _deplete_last_sim_keys():
+    global _last_sim_keys
+    for p in _last_sim_keys:
+        try:
+            p.unlink()
+        except OSError:
+            pass
+    _last_sim_keys = set()
 
 
 def _list_recordings():
@@ -147,9 +185,16 @@ def api_run():
     elif method in ('winnow', 'ldpc'):
         args += ['-chunk', '128']
 
-    if body.get('save_keystore', True):
+    save_keystore = body.get('save_keystore', True)
+    if save_keystore:
         args += ['-keystore', str(KEYSTORE_DIR)]
+        # A fresh simulation replaces the last one's demo keys rather than
+        # piling up next to them: deplete the previous batch now, before
+        # this run adds its own -- see _last_sim_keys. Real keys from
+        # /api/align/run are never in that set, so they're never touched
+        _deplete_last_sim_keys()
 
+    before = _keystore_snapshot()
     try:
         proc = subprocess.run(args, capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired:
@@ -166,6 +211,13 @@ def api_run():
     if metrics.get('error'):
         return jsonify({'error': metrics['error']}), 500
 
+    # This batch of demo keys stays in the keystore (and in the gauge/count)
+    # until the *next* simulation depletes it above -- unlike a one-off
+    # purge-immediately-after approach, this actually lets the UI show what
+    # a run produced instead of always reading back 0
+    if save_keystore:
+        global _last_sim_keys
+        _last_sim_keys = _keystore_snapshot() - before
     metrics['keys_in_store'] = _count_keys()
     return jsonify(metrics)
 
@@ -348,6 +400,78 @@ def _load_timestamps(path):
     return np.asarray(arr)
 
 
+# Max points sent per plot series --> these feed <canvas> line charts in the
+# browser, not a print-resolution figure, so a few hundred points is plenty
+_PLOT_MAX_POINTS = 500
+
+
+def _downsample_max(values, max_points):
+    '''Per-bucket max, not a stride: a real coincidence peak is a handful of
+    bins tall against a flat background, and naive striding can step right
+    over it. Returns (indices, values) so the caller can still compute each
+    kept point's real x position'''
+    n = len(values)
+    if n <= max_points:
+        return list(range(n)), [float(v) for v in values]
+    bucket = -(-n // max_points)  # ceil
+    idx, out = [], []
+    for start in range(0, n, bucket):
+        chunk = values[start:start + bucket]
+        local_i = max(range(len(chunk)), key=lambda i: chunk[i])
+        idx.append(start + local_i)
+        out.append(float(chunk[local_i]))
+    return idx, out
+
+
+def _histogram_series(hist):
+    '''hist: a coincidence_peak.HistogramResult (or corrected_counts + the
+    same fine bin/radius) --> (x_ns, y, window_center_ns, window_width_ns),
+    downsampled the same way the coarse search's own plot points already are'''
+    idx, counts = _downsample_max(hist.counts, _PLOT_MAX_POINTS)
+    xs_ns = [(-hist.radius_ps + (i + 0.5) * hist.bin_ps) / 1000 for i in idx]
+    return xs_ns, counts, hist.window.center_ps / 1000, hist.window.width_ps / 1000
+
+
+def _serialize_plots(report, diagnostics):
+    '''Same underlying data coincidence_peak.py's save_plot() draws with
+    matplotlib (coarse correlation, best constant-shift peak, clock-rate
+    drift, clock-corrected peak), reshaped for the dashboard's own canvas
+    charts instead --> see main.js's drawCoarsePlot/drawHistPlot/drawDriftPlot'''
+    import numpy as np
+
+    coarse_lags_ms = (np.asarray(diagnostics['coarse_lags_ps']) / 1e9).tolist()
+    coarse_scores = np.asarray(diagnostics['coarse_scores']).tolist()
+    if len(coarse_lags_ms) > _PLOT_MAX_POINTS:
+        idx, coarse_scores = _downsample_max(coarse_scores, _PLOT_MAX_POINTS)
+        coarse_lags_ms = [coarse_lags_ms[i] for i in idx]
+
+    fine = diagnostics['fine_histogram']
+    fine_xs_ns, fine_counts, fine_center_ns, fine_width_ns = _histogram_series(fine)
+
+    # corrected_counts is a bare array sharing fine's bin/radius (see save_plot's own corrected_centers_ns computation)
+    class _Corrected:
+        pass
+    corr = _Corrected()
+    corr.counts = diagnostics['corrected_counts']
+    corr.bin_ps = fine.bin_ps
+    corr.radius_ps = fine.radius_ps
+    corr.window = diagnostics['corrected_window']
+    corr_xs_ns, corr_counts, corr_center_ns, corr_width_ns = _histogram_series(corr)
+
+    skew = report['clock_skew']
+    seg_elapsed_s = [v / 1e12 for v in skew.get('segment_elapsed_ps', [])]
+    seg_lag_ns = [(v - skew['lag_at_reference_ps']) / 1000 for v in skew.get('segment_lags_ps', [])]
+    reference_s = skew['reference_elapsed_ps'] / 1e12
+    fit_ns = [skew['slope_ps_per_s'] * (t - reference_s) / 1000 for t in seg_elapsed_s]
+
+    return {
+        'coarse': {'x_ms': coarse_lags_ms, 'y': coarse_scores},
+        'fine': {'x_ns': fine_xs_ns, 'y': fine_counts, 'window_center_ns': fine_center_ns, 'window_width_ns': fine_width_ns},
+        'corrected': {'x_ns': corr_xs_ns, 'y': corr_counts, 'window_center_ns': corr_center_ns, 'window_width_ns': corr_width_ns},
+        'drift': {'seg_x_s': seg_elapsed_s, 'seg_y_ns': seg_lag_ns, 'fit_y_ns': fit_ns},
+    }
+
+
 def _run_alignment_check():
     files = [RECORDINGS_DIR / n for n in _list_recordings()]
     if len(files) < 2:
@@ -356,7 +480,7 @@ def _run_alignment_check():
     try:
         a = _load_timestamps(path_a)
         b = _load_timestamps(path_b)
-        report, _ = coincidence_peak.analyze_arrays(a, b, strict=False)
+        report, diagnostics = coincidence_peak.analyze_arrays(a, b, strict=False)
         shift = report['constant_shift']
         skew = report['clock_skew']
         return {
@@ -372,6 +496,7 @@ def _run_alignment_check():
             'b': path_b.name,
             'n_a': int(a.shape[0]),
             'n_b': int(b.shape[0]),
+            'plots': _serialize_plots(report, diagnostics),
         }
     except Exception as e:
         return {'ready': False, 'reason': str(e)[:200]}
@@ -390,6 +515,192 @@ def api_align_live():
         data['timestamp'] = int(time.time())
         _align_cache.update(t=time.time(), data=data)
     return jsonify(data)
+
+
+@contextmanager
+def _prepared_recording_dir():
+    '''Both cmd/importtt and chsh_diagnostic.py's own find_recording() want
+    a directory holding exactly this pair's files plus one matching
+    *_coincidence.json report; RECORDINGS_DIR can hold many uploaded
+    recordings over time, so this builds a scoped scratch dir instead of
+    writing the report next to everything else in there. Yields
+    (run_dir, path_a, path_b); raises ValueError/whatever analyze_arrays
+    raises on any precondition failure -- see api_align_run()/api_chsh_run()'''
+    files = [RECORDINGS_DIR / n for n in _list_recordings()]
+    if len(files) < 2:
+        raise ValueError(f'need 2 recordings, have {len(files)}')
+    path_a, path_b = files[-2], files[-1]
+
+    a = _load_timestamps(path_a)
+    b = _load_timestamps(path_b)
+    # strict=True: refuse to run a real analysis on an alignment that was
+    # never actually confirmed, same guard cmd/importtt's and
+    # chsh_diagnostic.py's own find_recording() apply to the report
+    report, _diagnostics = coincidence_peak.analyze_arrays(a, b, strict=True)
+    report['input_a'] = path_a.name
+    report['input_b'] = path_b.name
+
+    run_dir = Path(tempfile.mkdtemp(prefix='align_run_', dir=str(BASE_DIR)))
+    try:
+        for src in (path_a, path_b):
+            base = src.name.removesuffix('_timestamp_sequence.npy')
+            for suffix in _RECORDING_SUFFIXES:
+                sibling = RECORDINGS_DIR / f'{base}{suffix}'
+                if sibling.is_file():
+                    shutil.copy2(sibling, run_dir / sibling.name)
+        report_base = path_a.name.removesuffix('_timestamp_sequence.npy')
+        (run_dir / f'{report_base}_coincidence.json').write_text(json.dumps(report))
+        yield run_dir, path_a, path_b, report
+    finally:
+        shutil.rmtree(run_dir, ignore_errors=True)
+
+
+# API: run the real chain (cmd/importtt -json) over the same two recordings
+# /api/align/live checks --> sift, error-correct with the chosen method,
+# privacy-amplify, save the distilled key. Unlike api_run() this is a real
+# recording's key, so it is never purged, see _last_sim_keys
+@app.route('/api/align/run', methods=['POST'])
+def api_align_run():
+    body = request.get_json(silent=True) or {}
+    try:
+        with _prepared_recording_dir() as (run_dir, path_a, path_b, _report):
+            method = body.get('method', 'discard')
+            args = [IMPORTTT_BIN, '-json', '-dir', str(run_dir), '-keystore', str(KEYSTORE_DIR), '-keystore-max', str(KEYSTORE_MAX)]
+
+            def add(args, flag, key, cast):
+                v = body.get(key)
+                if v not in (None, ''):
+                    args += [flag, str(cast(v))]
+
+            if method == 'winnow':
+                args.append('-winnow')
+                add(args, '-winnow-blocks', 'winnow_blocks', str)
+                add(args, '-winnow-sample', 'winnow_sample', float)
+            elif method == 'ldpc':
+                args.append('-ldpc')
+                add(args, '-ldpc-block', 'ldpc_block', int)
+                add(args, '-ldpc-wc', 'ldpc_wc', int)
+                add(args, '-ldpc-wr', 'ldpc_wr', int)
+                add(args, '-ldpc-iterations', 'ldpc_iterations', int)
+                add(args, '-ldpc-sample', 'ldpc_sample', float)
+            else:
+                add(args, '-matrix', 'matrix', str)
+
+            if 'chunk' in body and body['chunk'] not in (None, ''):
+                add(args, '-chunk', 'chunk', int)
+            elif method in ('winnow', 'ldpc'):
+                args += ['-chunk', '128']
+
+            try:
+                proc = subprocess.run(args, capture_output=True, text=True, timeout=600)
+            except subprocess.TimeoutExpired:
+                return jsonify({'error': 'real pipeline run timed out'}), 504
+            except FileNotFoundError:
+                return jsonify({'error': f'{IMPORTTT_BIN} not found on PATH'}), 500
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': str(e)[:300]}), 400
+
+    if proc.returncode != 0:
+        return jsonify({'error': (proc.stderr or 'real pipeline failed').strip()[:400]}), 500
+    try:
+        metrics = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return jsonify({'error': 'could not parse importtt output'}), 500
+    if metrics.get('error'):
+        return jsonify({'error': metrics['error']}), 500
+
+    metrics['keys_in_store'] = _count_keys()
+    return jsonify(metrics)
+
+
+# CHSH/Bell diagnostic: reuses acquisition/chsh_diagnostic.py's build_blocks()
+# in-process (same pattern as coincidence_peak above) over the same two
+# recordings, and caches the full per-block table for /api/chsh/download
+_chsh_last = {'columns': None, 'rows': None, 'filename': None}
+
+
+def num(body, key, cast):
+    v = body.get(key)
+    return None if v in (None, '') else cast(v)
+
+
+# chsh_diagnostic.py's own CLI treats --roi2-offset-ns as required, with no
+# safe default, because a PULSED source needs the offset to land exactly one
+# (or more) rep periods away
+_ROI2_OFFSET_WINDOW_MULTIPLE = 200
+_ROI2_OFFSET_FLOOR_NS = 20.0
+
+
+@app.route('/api/chsh/run', methods=['POST'])
+def api_chsh_run():
+    body = request.get_json(silent=True) or {}
+
+    try:
+        with _prepared_recording_dir() as (run_dir, path_a, path_b, report):
+            roi2_offset_ns = num(body, 'roi2_offset_ns', float)
+            auto_roi2_offset = roi2_offset_ns is None
+            if auto_roi2_offset:
+                window_ns = report['clock_skew']['corrected_window']['width_ps'] / 1000
+                roi2_offset_ns = max(window_ns * _ROI2_OFFSET_WINDOW_MULTIPLE, _ROI2_OFFSET_FLOOR_NS)
+
+            metadata, columns, rows = chsh_diagnostic.build_blocks(
+                run_dir,
+                block_s=num(body, 'block_s', float) or 1.0,
+                roi1_width_ns=num(body, 'roi1_width_ns', float),
+                roi1_center_ns=num(body, 'roi1_center_ns', float),
+                roi2_offset_ns=roi2_offset_ns,
+                roi2_width_ns=num(body, 'roi2_width_ns', float),
+            )
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': str(e)[:300]}), 400
+
+    # Per-pair totals across all blocks --> roi1 is signal+accidental, roi2 is
+    # an equal-rate accidental-only baseline at the same width (scaled if
+    # not), see build_blocks' own metadata note on background subtraction
+    roi1_w = metadata['roi1']['width_ps']
+    roi2_w = metadata['roi2']['width_ps']
+    bg_scale = roi1_w / roi2_w if roi2_w else 1.0
+    pairs = []
+    for name in metadata['pair_order']:
+        i1 = columns.index(f'roi1_{name}')
+        i2 = columns.index(f'roi2_{name}')
+        roi1_total = sum(r[i1] for r in rows)
+        roi2_total = sum(r[i2] for r in rows)
+        pairs.append({
+            'pair': name,
+            'roi1_total': roi1_total,
+            'roi2_total': roi2_total,
+            'subtracted': round(roi1_total - roi2_total * bg_scale, 2),
+        })
+
+    _chsh_last['columns'] = columns
+    _chsh_last['rows'] = rows
+    _chsh_last['filename'] = f'{path_a.name.removesuffix("_timestamp_sequence.npy")}_chsh_blocks.csv'
+
+    return jsonify({
+        'metadata': metadata,
+        'pairs': pairs,
+        'a': path_a.name,
+        'b': path_b.name,
+        'roi2_offset_auto': auto_roi2_offset,
+    })
+
+
+@app.route('/api/chsh/download')
+def api_chsh_download():
+    if _chsh_last['columns'] is None:
+        return jsonify({'error': 'no CHSH diagnostic run yet'}), 404
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(_chsh_last['columns'])
+    writer.writerows(_chsh_last['rows'])
+    resp = app.response_class(buf.getvalue(), mimetype='text/csv')
+    resp.headers['Content-Disposition'] = f'attachment; filename="{_chsh_last["filename"]}"'
+    return resp
 
 
 if __name__ == '__main__':
