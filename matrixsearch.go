@@ -4,8 +4,7 @@ import "math/rand"
 
 // SearchGeneratorMatrix hill-climbs a p x m matrix to directly maximize
 // final key rate on a fixed dataset, unlike the example or BCH matrices
-//
-// Only call this with proxy data, never a real session's own secret bits,
+// only call this with proxy data, never a real session's own secret bits,
 // or the matrix choice itself leaks what PrivacyAmplify never charges for
 func SearchGeneratorMatrix(m, p int, aliceEvents, bobEvents []DetectionEvent, windowPS int64, chunkSize, iterations int, seed int64) (best GeneratorMatrix, bestKeyRate float64) {
 	sifted := Sift(aliceEvents, bobEvents, windowPS)
@@ -58,11 +57,8 @@ func SearchGeneratorMatrix(m, p int, aliceEvents, bobEvents []DetectionEvent, wi
 		bobRes := ReconcileBlocks(bobBits, bobParity, aliceParity, m)
 		qber := CalculateQBER(aliceRes.Discarded, bobRes.Discarded, siftedBits)
 		cv := CRCVerify(aliceRes.Surviving, bobRes.Surviving, chunkSize)
-		key, _, err := PrivacyAmplify(cv.SurvivingAlice, qber.QBER, aliceRes.LeakedBits+cv.LeakedBits, 0)
-		if err != nil {
-			return 0
-		}
-		return float64(len(key)) / float64(siftedBits)
+		l := SecureKeyLength(len(cv.SurvivingAlice), qber.QBER, aliceRes.LeakedBits+cv.LeakedBits)
+		return float64(l) / float64(siftedBits)
 	}
 
 	currentFitness := evaluate()

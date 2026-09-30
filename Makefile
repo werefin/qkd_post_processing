@@ -18,7 +18,7 @@ tune:
 	./scripts/tune-blocksize.sh
 
 run:
-	go run ./cmd/qoj_post_processing -n 300000 -err 0.005 -matrix ex3 -chunk 3000
+	go run ./cmd/qoj_post_processing -n 300000 -err 0.005 -chunk 3000
 
 vet:
 	go vet ./...

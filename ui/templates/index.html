@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QOJ post processing dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/main.css">
+</head>
+<body>
+
+  <nav class="sidebar">
+    <div class="sidebar-title">QOJ<span class="grad-text"> post processing</span></div>
+    <div class="sidebar-sub">BBM92 QKD post-processing</div>
+    <div class="sidebar-footer">
+      <div class="status-row">
+        <span class="status-dot checking" id="status-dot"></span>
+        <span class="status-label" id="status-label">Checking...</span>
+      </div>
+    </div>
+  </nav>
+
+  <main class="main">
+    <div class="page-header">
+      <h1 class="page-title">QOJ pipeline <span class="grad-text">dashboard</span></h1>
+      <p class="page-sub">Run the simulated post-processing chain, watch its metrics, and check live coincidence-peak alignment on uploaded or acquired recordings.</p>
+    </div>
+
+    <div class="grid grid--2">
+
+      <!-- Run pipeline -->
+      <div class="card">
+        <div class="card-head"><span class="card-title">Run pipeline</span></div>
+        <div class="card-body">
+          <form id="run-form">
+            <div class="field-row">
+              <div class="field">
+                <label class="field-label">Raw attempts (n)</label>
+                <input class="input" id="f-n" type="number" value="300000" min="1000" step="1000">
+              </div>
+              <div class="field">
+                <label class="field-label">Error rate</label>
+                <input class="input" id="f-err" type="number" value="0.02" min="0" max="0.5" step="0.001">
+              </div>
+            </div>
+            <div class="field">
+              <label class="field-label">Error correction (step 2/3)</label>
+              <select class="input" id="f-method">
+                <option value="discard" selected>Block discard</option>
+                <option value="winnow">Winnow</option>
+                <option value="ldpc">LDPC belief propagation</option>
+              </select>
+            </div>
+
+            <div id="method-discard">
+              <p class="hint" style="padding:0 0 .6rem">Generator matrix (step 2): fixed BCH matrix, unless a searched one is used instead.</p>
+              <div class="checkbox-row">
+                <input type="checkbox" id="f-search">
+                <label for="f-search">Use a searched matrix instead (designed on independent proxy data)</label>
+              </div>
+            </div>
+
+            <div id="method-winnow" style="display:none">
+              <div class="field-row">
+                <div class="field">
+                  <label class="field-label">Hamming block sizes per pass</label>
+                  <input class="input" id="f-winnow-blocks" type="text" value="25,50,100">
+                </div>
+                <div class="field">
+                  <label class="field-label">QBER sample fraction</label>
+                  <input class="input" id="f-winnow-sample" type="number" value="0.05" min="0.01" max="0.5" step="0.01">
+                </div>
+              </div>
+            </div>
+
+            <div id="method-ldpc" style="display:none">
+              <div class="field-row">
+                <div class="field">
+                  <label class="field-label">Column weight (Wc)</label>
+                  <input class="input" id="f-ldpc-wc" type="number" value="3" min="2">
+                </div>
+                <div class="field">
+                  <label class="field-label">Row weight (Wr)</label>
+                  <input class="input" id="f-ldpc-wr" type="number" value="10" min="3">
+                </div>
+              </div>
+              <div class="field">
+                <label class="field-label">QBER sample fraction</label>
+                <input class="input" id="f-ldpc-sample" type="number" value="0.05" min="0.01" max="0.5" step="0.01">
+              </div>
+            </div>
+
+            <button class="btn" id="run-btn" type="submit">Run pipeline</button>
+            <div class="error-msg" id="run-error" style="padding-left:0"></div>
+          </form>
+        </div>
+        <div class="chips" id="run-chips"></div>
+        <div class="gauge-wrap">
+          <canvas id="gauge-canvas" class="plot-canvas" style="height:110px"></canvas>
+          <div class="gauge-value" id="gauge-value">-</div>
+          <div class="gauge-label">Keys in keystore</div>
+        </div>
+      </div>
+
+      <!-- Coincidence-peak alignment -->
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Coincidence-peak alignment</span>
+          <span class="badge badge-muted" id="align-badge">Checking...</span>
+        </div>
+        <div class="chips" id="align-chips"></div>
+        <p class="hint">Real, full analysis on the two most recently uploaded/acquired recordings, clock-skew fit included: the same one coincidence_peak.py's own CLI and cmd/importtt's final report use. A full check can take a few seconds, cached briefly so polling doesn't rerun it constantly.</p>
+      </div>
+
+    </div>
+
+    <div class="grid grid--2">
+
+      <!-- Upload recordings -->
+      <div class="card">
+        <div class="card-head"><span class="card-title">Upload recordings</span></div>
+        <div class="card-body">
+          <p class="hint" style="padding:0 0 .8rem">Trnava's link is too slow/too much data to stream remotely: copy its *_timestamp_sequence.npy, *_channel_sequence.npy and *_meta.json off the box by hand and upload them here (along with the other side's files) to check alignment.</p>
+          <div class="dropzone" id="rec-drop" tabindex="0">
+            <strong>Click or drag files here</strong><br>*_timestamp_sequence.npy / *_channel_sequence.npy / *_meta.json
+          </div>
+          <input type="file" id="rec-file-input" multiple hidden>
+          <div class="progress-track" id="upload-progress"><div class="progress-fill" id="upload-progress-fill"></div></div>
+          <div class="file-list" id="upload-file-list"></div>
+        </div>
+        <div class="hint">Uploaded: <span id="recordings-list">none uploaded yet</span></div>
+      </div>
+
+      <!-- Config + start acquisition -->
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Load config and start acquisition</span>
+          <span class="badge badge-muted" id="config-status">No config loaded yet</span>
+        </div>
+        <div class="card-body">
+          <div class="dropzone" id="config-drop" tabindex="0">
+            <strong>Click or drag config.json here</strong><br>same shape as acquisition/config.example.json
+          </div>
+          <input type="file" id="config-file-input" accept="application/json" hidden>
+          <div class="error-msg" id="config-error" style="padding-left:0"></div>
+
+          <div class="field-row" style="margin-top:1rem">
+            <div class="field">
+              <label class="field-label">Link</label>
+              <select class="input" id="acq-link"></select>
+            </div>
+            <div class="field">
+              <label class="field-label">Duration (s)</label>
+              <input class="input" id="acq-duration" type="number" value="60" min="1">
+            </div>
+          </div>
+          <div class="btn-row">
+            <button class="btn" id="acq-start" type="button">Start recording</button>
+            <button class="btn btn-danger" id="acq-stop" type="button" disabled>Stop</button>
+            <span class="badge badge-muted" id="acq-badge">Idle</span>
+          </div>
+          <div class="error-msg" id="acq-error"></div>
+          <p class="hint" style="padding:0.6rem 0 0">Needs real network reachability to the TimeTaggers in the loaded config from wherever this runs: it only wires up and launches tt_record_dual.py, it can't reach hardware this dashboard's host can't reach.</p>
+        </div>
+        <div class="log-panel" id="acq-log"></div>
+      </div>
+
+    </div>
+
+    <!-- Metric plots, styled the same way as skQCI's SNMP device plots -->
+    <div class="card">
+      <div class="card-head"><span class="card-title">Metrics over recent runs</span></div>
+      <div class="plots">
+        <div class="plot"><div class="plot-title"><span>QBER (%)</span><span class="plot-val" id="plot-v0">-</span></div><canvas id="plot-c0" class="plot-canvas"></canvas></div>
+        <div class="plot"><div class="plot-title"><span>Final key (bits)</span><span class="plot-val" id="plot-v1">-</span></div><canvas id="plot-c1" class="plot-canvas"></canvas></div>
+        <div class="plot"><div class="plot-title"><span>Compression ratio</span><span class="plot-val" id="plot-v2">-</span></div><canvas id="plot-c2" class="plot-canvas"></canvas></div>
+        <div class="plot"><div class="plot-title"><span>Leaked bits (total)</span><span class="plot-val" id="plot-v3">-</span></div><canvas id="plot-c3" class="plot-canvas"></canvas></div>
+      </div>
+    </div>
+
+  </main>
+
+  <script src="/static/js/main.js"></script>
+</body>
+</html>

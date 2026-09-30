@@ -1,0 +1,10 @@
+# qoj_post_processing dashboard: Caddy reverse proxy with automatic local HTTPS
+# tls internal makes Caddy issue the cert from its own local CA (same as skQCI)
+# Trust that CA once and the browser shows no warning; see skQCI's trust_caddy_ca.sh
+
+qoj.demo.local {
+    tls internal
+    reverse_proxy app:9823
+    # No request_body max_size here: recordings (e.g., Trnava) can be large, so limit lives in one place, UPLOAD_MAX_MB / Flask's
+    # MAX_CONTENT_LENGTH, instead of drifting between Caddy and the app
+}

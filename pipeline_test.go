@@ -62,7 +62,7 @@ func TestRunEndToEnd(t *testing.T) {
 		bob = append(bob, DetectionEvent{TimestampPS: tcur, Basis: bBasis, Bit: bBit})
 	}
 
-	cfg := Config{CoincidenceWindowPS: 500, GeneratorMatrix: GeneratorMatrixEx3, ChunkSize: 2048}
+	cfg := Config{CoincidenceWindowPS: 500, GeneratorMatrix: testMatrixC, ChunkSize: 2048}
 	res, err := Run(alice, bob, cfg)
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)

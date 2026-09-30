@@ -286,7 +286,7 @@ func TestRunLDPCVsWinnowVsBlockDiscard(t *testing.T) {
 
 	discardRes, err := Run(alice, bob, Config{
 		CoincidenceWindowPS: 500,
-		GeneratorMatrix:     GeneratorMatrixEx3,
+		GeneratorMatrix:     testMatrixC,
 		ChunkSize:           2048,
 	})
 	if err != nil {
@@ -314,7 +314,7 @@ func TestRunLDPCVsWinnowVsBlockDiscard(t *testing.T) {
 		t.Fatalf("RunLDPC returned error: %v", err)
 	}
 
-	t.Logf("discard(ex3): sifted=%d leaked=%d final=%d bits", discardRes.SiftedBits, discardRes.LeakedBits, len(discardRes.FinalKeyBits))
+	t.Logf("discard(baseline): sifted=%d leaked=%d final=%d bits", discardRes.SiftedBits, discardRes.LeakedBits, len(discardRes.FinalKeyBits))
 	t.Logf("winnow:       sifted=%d leaked=%d final=%d bits", winnowRes.SiftedBits, winnowRes.LeakedBits, len(winnowRes.FinalKeyBits))
 	t.Logf("ldpc:         sifted=%d leaked=%d final=%d bits (blocks=%d converged=%d)",
 		ldpcRes.SiftedBits, ldpcRes.LeakedBits, len(ldpcRes.FinalKeyBits), ldpcRes.LDPCBlocks, ldpcRes.LDPCConverged)

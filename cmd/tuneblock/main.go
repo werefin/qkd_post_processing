@@ -43,12 +43,9 @@ func simulate(n int, errRate, multiPhotonRate float64, jitterPS int64, seed int6
 }
 
 // matrixNames fixes iteration order; map order is randomized in Go
-var matrixNames = []string{"ex1", "ex2", "ex3", "bch"}
+var matrixNames = []string{"bch"}
 
 var matrices = map[string]qkd.GeneratorMatrix{
-	"ex1": qkd.GeneratorMatrixEx1,
-	"ex2": qkd.GeneratorMatrixEx2,
-	"ex3": qkd.GeneratorMatrixEx3,
 	"bch": qkd.GeneratorMatrixBCHt2,
 }
 

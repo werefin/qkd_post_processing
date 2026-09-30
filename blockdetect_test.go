@@ -6,8 +6,34 @@ import (
 	"testing"
 )
 
+// testMatrixA/B/C: small fixed matrices for exercising generic
+// GeneratorMatrix behavior across this test suite, independent of any
+// matrix the library exposes publicly (m=4/m=4/m=6, p=3 each)
+var (
+	// testMatrixA: code rate 4/7, detects 100% of 1/2-bit and 75% of
+	// 3-bit errors, 100% of 4-bit errors
+	testMatrixA = GeneratorMatrix{
+		{1, 0, 1, 0},
+		{1, 1, 0, 1},
+		{0, 0, 1, 1},
+	}
+	// testMatrixB: same shape as A, trades 4-bit detection (0%) for 100%
+	// 3-bit detection
+	testMatrixB = GeneratorMatrix{
+		{1, 1, 1, 1},
+		{1, 1, 1, 0},
+		{0, 1, 1, 0},
+	}
+	// testMatrixC: code rate 2/3, 88.9% of all bit errors detected overall
+	testMatrixC = GeneratorMatrix{
+		{0, 0, 0, 1, 1, 1},
+		{1, 1, 0, 1, 0, 0},
+		{1, 0, 1, 1, 1, 0},
+	}
+)
+
 // TestParityKnownVectors checks parityInto against a table of known
-// M --> P pairs for GeneratorMatrixEx3, computed independently by hand
+// M --> P pairs for testMatrixC, computed independently by hand
 func TestParityKnownVectors(t *testing.T) {
 	cases := []struct {
 		m []byte
@@ -22,9 +48,9 @@ func TestParityKnownVectors(t *testing.T) {
 		{[]byte{1, 1, 1, 1, 1, 0}, []byte{0, 1, 0}},
 		{[]byte{1, 1, 1, 1, 1, 1}, []byte{1, 1, 0}},
 	}
-	masks := buildParityMasks(GeneratorMatrixEx3)
+	masks := buildParityMasks(testMatrixC)
 	words := make([]uint64, masks.words)
-	parity := make([]byte, GeneratorMatrixEx3.ParityBits())
+	parity := make([]byte, testMatrixC.ParityBits())
 	for _, c := range cases {
 		got := masks.parityInto(c.m, words, parity)
 		if !parityEqual(got, c.p) {
@@ -33,38 +59,38 @@ func TestParityKnownVectors(t *testing.T) {
 	}
 }
 
-// TestParityCollision checks a known collision under Ex1: two different
-// blocks that happen to give identical parity
+// TestParityCollision checks a known collision under testMatrixA: two
+// different blocks that happen to give identical parity
 func TestParityCollision(t *testing.T) {
-	masks := buildParityMasks(GeneratorMatrixEx1)
+	masks := buildParityMasks(testMatrixA)
 	words := make([]uint64, masks.words)
 	p1 := append([]byte(nil), masks.parityInto([]byte{0, 0, 0, 0}, words, make([]byte, 3))...)
 	p2 := masks.parityInto([]byte{1, 0, 1, 1}, words, make([]byte, 3))
 	want := []byte{0, 0, 0}
 	if !parityEqual(p1, want) || !parityEqual(p2, want) {
-		t.Fatalf("expected M=(0,0,0,0) and M=(1,0,1,1) to both give P=%v under Ex1, got %v and %v", want, p1, p2)
+		t.Fatalf("expected M=(0,0,0,0) and M=(1,0,1,1) to both give P=%v under testMatrixA, got %v and %v", want, p1, p2)
 	}
 }
 
-// TestCascadeCatchesEx3Collision: A and B collide under Ex3 alone (same
-// parity despite differing by 3 bits), but a small G2 tells them apart
-func TestCascadeCatchesEx3Collision(t *testing.T) {
+// TestCascadeCatchesCollision: A and B collide under testMatrixC alone
+// (same parity despite differing by 3 bits), but a small G2 tells them apart
+func TestCascadeCatchesCollision(t *testing.T) {
 	a := []byte{0, 0, 0, 0, 0, 0}
 	b := []byte{0, 0, 1, 0, 1, 1}
 
-	masks := buildParityMasks(GeneratorMatrixEx3)
+	masks := buildParityMasks(testMatrixC)
 	words := make([]uint64, masks.words)
 	pa := append([]byte(nil), masks.parityInto(a, words, make([]byte, 3))...)
 	pb := masks.parityInto(b, words, make([]byte, 3))
 	if !parityEqual(pa, pb) {
-		t.Fatalf("expected A and B to collide under Ex3 alone, got %v and %v", pa, pb)
+		t.Fatalf("expected A and B to collide under testMatrixC alone, got %v and %v", pa, pb)
 	}
 
 	g2 := GeneratorMatrix{
 		{1, 0, 0, 0, 0, 0},
 		{0, 0, 1, 0, 0, 0},
 	}
-	cascaded, err := CascadeGeneratorMatrices(GeneratorMatrixEx3, g2)
+	cascaded, err := CascadeGeneratorMatrices(testMatrixC, g2)
 	if err != nil {
 		t.Fatalf("CascadeGeneratorMatrices: %v", err)
 	}
@@ -76,23 +102,23 @@ func TestCascadeCatchesEx3Collision(t *testing.T) {
 }
 
 func TestCascadeGeneratorMatricesRejectsMismatchedBlockSize(t *testing.T) {
-	_, err := CascadeGeneratorMatrices(GeneratorMatrixEx1, GeneratorMatrixEx3)
+	_, err := CascadeGeneratorMatrices(testMatrixA, testMatrixC)
 	if err == nil {
 		t.Fatal("expected an error for mismatched block sizes (m=4 vs m=6)")
 	}
 }
 
 func TestCascadeGeneratorMatricesRejectsNoRemainingSecret(t *testing.T) {
-	_, err := CascadeGeneratorMatrices(GeneratorMatrixEx1, GeneratorMatrixEx2)
+	_, err := CascadeGeneratorMatrices(testMatrixA, testMatrixB)
 	if err == nil {
-		t.Fatal("expected an error: Ex1+Ex2 leak 6 parity bits from a 4-bit block")
+		t.Fatal("expected an error: testMatrixA+testMatrixB leak 6 parity bits from a 4-bit block")
 	}
 }
 
 // TestParityTableMatchesPopcountReference: the lookup-table fast path
 // must agree bit-for-bit with the POPCNT reference for every block value
 func TestParityTableMatchesPopcountReference(t *testing.T) {
-	for _, g := range []GeneratorMatrix{GeneratorMatrixEx1, GeneratorMatrixEx2, GeneratorMatrixEx3} {
+	for _, g := range []GeneratorMatrix{testMatrixA, testMatrixB, testMatrixC} {
 		m := g.BlockSize()
 		table, ok := buildParityTable(g)
 		if !ok {
@@ -147,7 +173,7 @@ func TestBuildParityTableRejectsOversizedMatrix(t *testing.T) {
 // TestComputeBlockParityLargeScaleMatchesReference forces multiple workers
 // each packing their own byte range, where a boundary off-by-one would hide
 func TestComputeBlockParityLargeScaleMatchesReference(t *testing.T) {
-	for _, g := range []GeneratorMatrix{GeneratorMatrixEx1, GeneratorMatrixEx3} {
+	for _, g := range []GeneratorMatrix{testMatrixA, testMatrixC} {
 		blockSize := g.BlockSize()
 		n := minParallelBlockWork + 777 // past the threshold, not block-aligned
 		r := rand.New(rand.NewSource(31))
@@ -179,7 +205,7 @@ func TestComputeBlockParityLargeScaleMatchesReference(t *testing.T) {
 // TestReconcileBlocksLargeScaleMatchesReference forces ReconcileBlocks
 // past minParallelBlockWork, checked against a naive serial append
 func TestReconcileBlocksLargeScaleMatchesReference(t *testing.T) {
-	g := GeneratorMatrixEx3
+	g := testMatrixC
 	blockSize := g.BlockSize()
 	n := minParallelBlockWork + 777
 	r := rand.New(rand.NewSource(41))
@@ -230,7 +256,7 @@ func TestReconcileBlocksLargeScaleMatchesReference(t *testing.T) {
 }
 
 func TestBlockErrorDetectDropsErroredBlocksOnly(t *testing.T) {
-	g := GeneratorMatrixEx3
+	g := testMatrixC
 	blockSize := g.BlockSize() // 6, 100% 2-bit-error detection
 	numBlocks := 20
 	alice := make([]byte, blockSize*numBlocks)
@@ -273,7 +299,7 @@ func TestBlockErrorDetectDropsErroredBlocksOnly(t *testing.T) {
 func TestBlockErrorDetectHandlesShortFinalBlock(t *testing.T) {
 	alice := make([]byte, 37) // not a multiple of the m=6 block size
 	bob := make([]byte, 37)
-	res := BlockErrorDetect(alice, bob, GeneratorMatrixEx3)
+	res := BlockErrorDetect(alice, bob, testMatrixC)
 	if res.BlocksTotal != 7 { // 6*6=36, plus a 1-bit final block
 		t.Fatalf("expected 7 blocks, got %d", res.BlocksTotal)
 	}
@@ -282,7 +308,7 @@ func TestBlockErrorDetectHandlesShortFinalBlock(t *testing.T) {
 // TestSplitReconciliationMatchesCombined: ComputeBlockParity + Reconcile
 // run per side give the same result as the combined convenience wrapper
 func TestSplitReconciliationMatchesCombined(t *testing.T) {
-	g := GeneratorMatrixEx3
+	g := testMatrixC
 	blockSize := g.BlockSize()
 	r := rand.New(rand.NewSource(7))
 	n := 6001
@@ -357,7 +383,7 @@ func TestParityTablePatchBitMatchesRebuild(t *testing.T) {
 
 	// patching every entry a second time (same order) must undo it all
 	// exactly, since flip-then-flip is a no-op on both the matrix and the table
-	original, _ := buildParityTable(GeneratorMatrixEx3)
+	original, _ := buildParityTable(testMatrixC)
 	patched := original
 	patched.entries = append([]uint8(nil), original.entries...)
 	patched.patchBit(1, 2)

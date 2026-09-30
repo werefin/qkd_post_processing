@@ -5,6 +5,9 @@
 /acquisition/example
 /keys
 /acquisition/config.json
+/ui/keys
+/ui/recordings
+/ui/config
 __pycache__/
 .venv/
 venv/

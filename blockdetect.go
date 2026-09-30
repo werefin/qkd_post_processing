@@ -19,32 +19,6 @@ func (g GeneratorMatrix) BlockSize() int { return len(g[0]) }
 // ParityBits returns p, the number of parity bits G produces per block
 func (g GeneratorMatrix) ParityBits() int { return len(g) }
 
-// GeneratorMatrixEx1/Ex2/Ex3 are three example matrices with different
-// code-rate/detection-rate tradeoffs (m=4/m=4/m=6, p=3 each)
-var (
-	// GeneratorMatrixEx1: code rate 4/7, detects 100% of 1/2-bit and 75%
-	// of 3-bit errors, 100% of 4-bit errors
-	GeneratorMatrixEx1 = GeneratorMatrix{
-		{1, 0, 1, 0},
-		{1, 1, 0, 1},
-		{0, 0, 1, 1},
-	}
-	// GeneratorMatrixEx2: same shape as Ex1, trades 4-bit detection (0%)
-	// for 100% 3-bit detection
-	GeneratorMatrixEx2 = GeneratorMatrix{
-		{1, 1, 1, 1},
-		{1, 1, 1, 0},
-		{0, 1, 1, 0},
-	}
-	// GeneratorMatrixEx3: code rate 2/3, 88.9% of all bit errors detected
-	// overall
-	GeneratorMatrixEx3 = GeneratorMatrix{
-		{0, 0, 0, 1, 1, 1},
-		{1, 1, 0, 1, 0, 0},
-		{1, 0, 1, 1, 1, 0},
-	}
-)
-
 // CascadeGeneratorMatrices stacks g1's rows on g2's, catching collisions
 // unique to g1 alone --> needs equal block sizes and p1+p2 < m
 func CascadeGeneratorMatrices(g1, g2 GeneratorMatrix) (GeneratorMatrix, error) {

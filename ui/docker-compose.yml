@@ -1,0 +1,39 @@
+# qoj_post_processing dashboard: local deployment with Docker + Caddy
+# (same shape as skQCI's docker-compose.yml, minus the SNMP gateway --
+# this project has no live network devices to poll)
+# docker compose up -d --build, then open https://qoj.demo.local:62444
+# Pick any free host port; check with  sudo ss -ltnp | grep :PORT
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: ui/Dockerfile
+      args:
+        # Run the container as your host user so bind-mounted keys/recordings/config
+        # files aren't root-owned --> override via env: UID=$(id -u) GID=$(id -g) docker compose up -d --build
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+    restart: unless-stopped
+    volumes:
+      - ./keys:/app/keys
+      - ./recordings:/app/recordings
+      - ./config:/app/config
+    expose:
+      - "9823"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "62444:443"                # https://qoj.demo.local:62444
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data          # holds Caddy's local CA + certs
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

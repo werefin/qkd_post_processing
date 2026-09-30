@@ -5,3 +5,9 @@ venv
 **/*.pyc
 docs
 *.test
+/keys
+/ui/keys
+/ui/recordings
+/ui/config
+/acquisition/config.json
+/acquisition/example

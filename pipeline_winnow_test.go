@@ -81,7 +81,7 @@ func TestRunWinnowVsBlockDiscard(t *testing.T) {
 
 	discardRes, err := Run(alice, bob, Config{
 		CoincidenceWindowPS: 500,
-		GeneratorMatrix:     GeneratorMatrixEx3,
+		GeneratorMatrix:     testMatrixC,
 		ChunkSize:           2048,
 	})
 	if err != nil {
@@ -97,7 +97,7 @@ func TestRunWinnowVsBlockDiscard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunWinnow returned error: %v", err)
 	}
-	t.Logf("discard(ex3): sifted=%d leaked=%d final=%d bits | winnow: sifted=%d leaked=%d final=%d bits",
+	t.Logf("discard(baseline): sifted=%d leaked=%d final=%d bits | winnow: sifted=%d leaked=%d final=%d bits",
 		discardRes.SiftedBits, discardRes.LeakedBits, len(discardRes.FinalKeyBits),
 		winnowRes.SiftedBits, winnowRes.LeakedBits, len(winnowRes.FinalKeyBits))
 }

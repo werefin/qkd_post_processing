@@ -61,12 +61,9 @@ func simulateOffline(n int, errRate, multiPhotonRate float64, jitterPS, seed int
 	return alice, bob
 }
 
-// generatorMatrices maps -matrix flag values to the example step 2
+// generatorMatrices maps -matrix flag values to the fixed step 2
 // generator matrices, same set cmd/qoj_post_processing exposes
 var generatorMatrices = map[string]qkd.GeneratorMatrix{
-	"ex1": qkd.GeneratorMatrixEx1,
-	"ex2": qkd.GeneratorMatrixEx2,
-	"ex3": qkd.GeneratorMatrixEx3,
 	"bch": qkd.GeneratorMatrixBCHt2,
 }
 
@@ -206,7 +203,7 @@ func buildEvents(timestamps []int64, channels []int8, shiftPS func(int64) int64)
 func main() {
 	dir := flag.String("dir", "", "recording directory (from tt_record_dual.py + coincidence_peak.py)")
 	windowPS := flag.Int64("window", 0, "coincidence window in picoseconds (0 = use the report's corrected window)")
-	matrixName := flag.String("matrix", "ex3", "step 2 generator matrix: ex1, ex2, ex3, or bch")
+	matrixName := flag.String("matrix", "bch", "step 2 generator matrix: bch")
 	chunkSize := flag.Int("chunk", 2048, "step 3 CRC chunk size (bits); with -winnow this is the post-correction CRC pass, so it wants a much smaller value, e.g. 128")
 	keystoreDir := flag.String("keystore", "", "directory to save the final key into (ETSI 014 key_ID/key JSON); empty = don't save")
 	winnow := flag.Bool("winnow", false, "correct errors with Winnow instead of discarding blocks (see winnow.go/pipeline_winnow.go)")
@@ -241,7 +238,7 @@ func main() {
 
 	g, ok := generatorMatrices[*matrixName]
 	if !ok {
-		fmt.Printf("%s unknown -matrix %q, expected ex1, ex2, ex3, or bch\n", tag(colorErr, "ERROR"), *matrixName)
+		fmt.Printf("%s unknown -matrix %q, expected bch\n", tag(colorErr, "ERROR"), *matrixName)
 		os.Exit(2)
 	}
 

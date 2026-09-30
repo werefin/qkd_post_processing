@@ -5,9 +5,10 @@ import (
 	"testing"
 )
 
-// TestSearchGeneratorMatrixBeatsEx3OutOfSample checks a searched matrix
-// beats ex3 on data it never saw during search, not just training noise
-func TestSearchGeneratorMatrixBeatsEx3OutOfSample(t *testing.T) {
+// TestSearchGeneratorMatrixBeatsBaselineOutOfSample checks a searched
+// matrix beats a fixed baseline matrix on data it never saw during search,
+// not just training noise
+func TestSearchGeneratorMatrixBeatsBaselineOutOfSample(t *testing.T) {
 	const window = 500
 	const chunk = 2048
 
@@ -22,22 +23,22 @@ func TestSearchGeneratorMatrixBeatsEx3OutOfSample(t *testing.T) {
 		if err != nil {
 			t.Fatalf("seed=%d: searched matrix Run: %v", seed, err)
 		}
-		ex3Res, err := Run(testAlice, testBob, Config{CoincidenceWindowPS: window, GeneratorMatrix: GeneratorMatrixEx3, ChunkSize: chunk})
+		baselineRes, err := Run(testAlice, testBob, Config{CoincidenceWindowPS: window, GeneratorMatrix: testMatrixC, ChunkSize: chunk})
 		if err != nil {
-			t.Fatalf("seed=%d: ex3 Run: %v", seed, err)
+			t.Fatalf("seed=%d: baseline Run: %v", seed, err)
 		}
-		if ex3Res.SiftedBits == 0 || res.SiftedBits == 0 {
+		if baselineRes.SiftedBits == 0 || res.SiftedBits == 0 {
 			t.Fatalf("seed=%d: expected nonzero sifted bits", seed)
 		}
 		searchRate := float64(len(res.FinalKeyBits)) / float64(res.SiftedBits)
-		ex3Rate := float64(len(ex3Res.FinalKeyBits)) / float64(ex3Res.SiftedBits)
-		ratio := searchRate / ex3Rate
-		t.Logf("seed=%d: searched=%.5f bits/sifted (%d bits), ex3=%.5f bits/sifted (%d bits), ratio=%.2fx",
-			seed, searchRate, len(res.FinalKeyBits), ex3Rate, len(ex3Res.FinalKeyBits), ratio)
+		baselineRate := float64(len(baselineRes.FinalKeyBits)) / float64(baselineRes.SiftedBits)
+		ratio := searchRate / baselineRate
+		t.Logf("seed=%d: searched=%.5f bits/sifted (%d bits), baseline=%.5f bits/sifted (%d bits), ratio=%.2fx",
+			seed, searchRate, len(res.FinalKeyBits), baselineRate, len(baselineRes.FinalKeyBits), ratio)
 		minRatio = min(minRatio, ratio)
 	}
 	if minRatio < 1.15 {
-		t.Fatalf("expected the searched matrix to beat ex3 by at least 15%% on every held-out seed, worst ratio was %.2fx", minRatio)
+		t.Fatalf("expected the searched matrix to beat the baseline by at least 15%% on every held-out seed, worst ratio was %.2fx", minRatio)
 	}
 }
 

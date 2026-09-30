@@ -63,7 +63,7 @@ func BenchmarkBlockErrorDetect_1M(b *testing.B) {
 	alice := randomBits(r, n)
 	bob := append([]byte(nil), alice...)
 	for b.Loop() {
-		BlockErrorDetect(alice, bob, GeneratorMatrixEx3)
+		BlockErrorDetect(alice, bob, testMatrixC)
 	}
 }
 
