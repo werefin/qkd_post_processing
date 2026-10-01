@@ -1,7 +1,7 @@
 # qoj_post_processing dashboard: local deployment with Docker + Caddy
 # (same shape as skQCI's docker-compose.yml, minus the SNMP gateway --
 # this project has no live network devices to poll)
-# docker compose up -d --build, then open https://qoj.demo.local:62444
+# docker compose up -d --build, then open https://qoj.postproc:62444
 # Pick any free host port; check with  sudo ss -ltnp | grep :PORT
 
 services:
@@ -28,7 +28,7 @@ services:
     depends_on:
       - app
     ports:
-      - "62444:443"                # https://qoj.demo.local:62444
+      - "62444:443"                # https://qoj.postproc:62444
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data          # holds Caddy's local CA + certs

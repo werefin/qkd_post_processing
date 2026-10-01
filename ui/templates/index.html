@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>qoj_post_processing dashboard</title>
+  <title>QOJ post processing dashboard</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
@@ -12,7 +12,7 @@
 <body>
 
   <aside class="sidebar">
-    <div class="sidebar-title">qoj<span class="grad-text">_post_processing</span></div>
+    <div class="sidebar-title">QOJ<span class="grad-text"> post processing</span></div>
     <div class="sidebar-sub">BBM92 QKD post-processing</div>
 
     <nav class="sidebar-nav" id="main-nav">
@@ -59,7 +59,7 @@
     <!-- Home -->
     <section class="section active" id="section-home">
       <div class="section-header section-header--wide">
-        <h1 class="section-title">qoj_post_processing <span class="grad-text">dashboard</span></h1>
+        <h1 class="section-title">QOJ post processing <span class="grad-text">dashboard</span></h1>
         <p class="section-sub">Run the simulated post-processing chain, watch its metrics, and check live coincidence-peak alignment on uploaded or acquired recordings.</p>
       </div>
 
@@ -73,14 +73,14 @@
           <div class="gauge-wrap">
             <canvas id="home-gauge-canvas" class="plot-canvas" style="height:110px"></canvas>
             <div class="gauge-value" id="home-gauge-value">-</div>
-            <div class="gauge-label">256-bit ETSI 014 keys (max 30,000)</div>
+            <div class="gauge-label">256-bit ETSI 014 keys (max 30000)</div>
           </div>
         </div>
       </div>
 
       <div class="grid grid--2">
         <a class="card nav-card nav-card--blue" data-section="run" href="#">
-          <div class="card-head"><span class="card-title">Run &amp; metrics</span></div>
+          <div class="card-head"><span class="card-title">Run and metrics</span></div>
           <p class="hint">Run the simulated pipeline (block discard, Winnow, or LDPC) and watch QBER, key rate, compression, and leaked bits build up as sparkline plots.</p>
         </a>
         <a class="card nav-card nav-card--purple" data-section="align" href="#">
@@ -105,8 +105,8 @@
     <!-- Run & metrics -->
     <section class="section" id="section-run">
       <div class="section-header section-header--wide">
-        <h1 class="section-title">Run <span class="grad-text">&amp; metrics</span></h1>
-        <p class="section-sub">Runs cmd/qoj_post_processing -json and plots its metrics the same way skQCI plots live SNMP device telemetry.</p>
+        <h1 class="section-title">Run <span class="grad-text">and metrics</span></h1>
+        <p class="section-sub">Runs cmd/qoj_post_processing -json and plots its metrics.</p>
       </div>
 
       <div class="grid grid--2">
@@ -183,12 +183,12 @@
           <div class="gauge-wrap">
             <canvas id="gauge-canvas" class="plot-canvas" style="height:110px"></canvas>
             <div class="gauge-value" id="gauge-value">-</div>
-            <div class="gauge-label">256-bit ETSI 014 keys (max 30,000)</div>
+            <div class="gauge-label">256-bit ETSI 014 keys (max 30000)</div>
           </div>
         </div>
       </div>
 
-      <!-- Metric plots, styled the same way as skQCI's SNMP device plots -->
+      <!-- Metric plots, styled the same way as SNMP device plots -->
       <div class="card">
         <div class="card-head"><span class="card-title">Metrics over recent runs</span></div>
         <div class="plots">
@@ -204,7 +204,7 @@
     <section class="section" id="section-align">
       <div class="section-header section-header--wide">
         <h1 class="section-title">Coincidence-peak <span class="grad-text">alignment</span></h1>
-        <p class="section-sub">The real, full analysis on the two most recently uploaded/acquired recordings, clock-skew fit included -- the same one coincidence_peak.py's own CLI and cmd/importtt's final report use. Rechecked periodically while this section is open; a full check can take a few seconds and is cached briefly so polling doesn't rerun it constantly.</p>
+        <p class="section-sub">Real, full analysis on the two most recently uploaded/acquired recordings, clock-skew fit included. Rechecked periodically while this section is open; a full check can take a few seconds and is cached briefly so polling doesn't rerun it constantly.</p>
       </div>
 
       <div class="card">
@@ -247,7 +247,7 @@
           <span class="badge badge-muted" id="align-run-badge">Idle</span>
         </div>
         <div class="card-body">
-          <p class="hint" style="padding:0 0 .8rem">Once a peak is detected above, run the real chain (sift &rarr; error correction &rarr; privacy amplification) on these two recordings -- the same one cmd/importtt runs -- and save the distilled key to the keystore.</p>
+          <p class="hint" style="padding:0 0 .8rem">Once a peak is detected above, run the real chain (sifting, error correction, privacy amplification) on these two recordings and save the distilled key to the keystore.</p>
           <div class="field">
             <label class="field-label">Error correction (step 2/3)</label>
             <select class="input" id="align-run-method">
@@ -269,7 +269,7 @@
     <section class="section" id="section-chsh">
       <div class="section-header section-header--wide">
         <h1 class="section-title">CHSH <span class="grad-text">diagnostic</span></h1>
-        <p class="section-sub">Runs acquisition/chsh_diagnostic.py's build_blocks() over the same two recordings the alignment check uses: per-block singles per channel plus ROI1 (signal+accidental) and ROI2 (accidental-only baseline) coincidence counts per channel pair. This is the raw building-block data a Bell/CHSH-S computation needs, not a single S value -- useful for your colleagues to self-test that this software finds the same peaks/counts a reference Bell analysis does. Every field below is optional: ROI1's center/width and the block duration come straight from the confirmed coincidence peak, and the ROI2 offset defaults to a multiple of the peak width (a safe, unbiased accidental-background window for a CW source -- override it if your source is pulsed and you know its rep period).</p>
+        <p class="section-sub">Runs acquisition/chsh_diagnostic.py's build_blocks() over the same two recordings the alignment check uses: per-block singles per channel plus ROI1 (signal+accidental) and ROI2 (accidental-only baseline) coincidence counts per channel pair. This is the raw building-block data a Bell/CHSH-S computation needs, not a single S value.</p>
       </div>
 
       <div class="grid grid--2">
@@ -348,14 +348,32 @@
           <div class="progress-track" id="upload-progress"><div class="progress-fill" id="upload-progress-fill"></div></div>
           <div class="file-list" id="upload-file-list"></div>
         </div>
-        <div class="hint">Uploaded: <span id="recordings-list">none uploaded yet</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Stored recordings</span>
+          <div style="display:flex;align-items:center;gap:.6rem">
+            <span class="badge badge-muted" id="recordings-usage-badge">-</span>
+            <button class="btn btn-danger" id="recordings-delete-all-btn" type="button" style="padding:.3rem .7rem;font-size:.72rem">Delete all</button>
+          </div>
+        </div>
+        <p class="hint" style="padding-bottom:.5rem">Raw TimeTagger captures are large and never deleted automatically unless <code>RECORDINGS_MAX_GB</code> is set, once a recording's key is extracted and you no longer need the raw clicks, delete it here to free disk space.</p>
+        <div class="data-table-wrap">
+          <table class="data-table">
+            <thead><tr><th>Recording</th><th>Size</th><th></th></tr></thead>
+            <tbody id="recordings-table-body">
+              <tr><td colspan="3" style="text-align:center;color:var(--text3);padding:1.5rem">none uploaded yet</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </section>
 
     <!-- Acquisition -->
     <section class="section" id="section-acquire">
       <div class="section-header section-header--wide">
-        <h1 class="section-title">Load config &amp; <span class="grad-text">start acquisition</span></h1>
+        <h1 class="section-title">Load config and <span class="grad-text">start acquisition</span></h1>
         <p class="section-sub">Needs real network reachability to the TimeTaggers in the loaded config from wherever this runs: it only wires up and launches tt_record_dual.py, it can't reach hardware this dashboard's host can't reach.</p>
       </div>
 

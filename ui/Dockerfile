@@ -27,7 +27,8 @@ RUN pip install --no-cache-dir -r /tmp/ui-requirements.txt
 # Whole repo: the Go module (to build the CLI) and acquisition/ (imported by app.py)
 COPY . /app
 
-RUN go build -o /usr/local/bin/qoj_post_processing ./cmd/qoj_post_processing
+RUN go build -o /usr/local/bin/qoj_post_processing ./cmd/qoj_post_processing \
+ && go build -o /usr/local/bin/importtt ./cmd/importtt
 
 RUN groupadd -g ${GID} app 2>/dev/null || true \
  && useradd -u ${UID} -g ${GID} -m -s /usr/sbin/nologin app 2>/dev/null || true \
@@ -35,6 +36,7 @@ RUN groupadd -g ${GID} app 2>/dev/null || true \
  && chown -R ${UID}:${GID} /app
 
 ENV QOJ_BIN=/usr/local/bin/qoj_post_processing
+ENV IMPORTTT_BIN=/usr/local/bin/importtt
 ENV KEYSTORE_DIR=/app/keys
 ENV RECORDINGS_DIR=/app/recordings
 ENV CONFIG_DIR=/app/config

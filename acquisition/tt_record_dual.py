@@ -136,14 +136,16 @@ class TTContext:
     '''Per-TimeTagger runtime state shared between main and its reader thread'''
     cfg: dict
     stream: TimeTaggerStream
-    channels: list = field(default_factory=list)     # list[np.ndarray]
-    timestamps: list = field(default_factory=list)    # list[np.ndarray]
-    frames_meta: list = field(default_factory=list)   # list[dict]
+    channels: list = field(default_factory=list)     # list[np.ndarray], recent tail only
+    timestamps: list = field(default_factory=list)    # list[np.ndarray], recent tail only
+    frames_meta: list = field(default_factory=list)   # list[dict], kept in full (small: one dict per frame, not per detection)
     lock: threading.Lock = field(default_factory=threading.Lock)  # guards channels/timestamps appends, for the live monitor's snapshots
     stream_started: bool = False
     error: Optional[str] = None
     wall_start_s: Optional[float] = None   # time.monotonic() right after start_stream()
     wall_end_s: Optional[float] = None     # time.monotonic() right after the loop exits
+    scratch_ch_path: Optional[str] = None  # set on first flush, see _flush_overflow/write_outputs
+    scratch_ts_path: Optional[str] = None
 
     @property
     def tag(self) -> str:
@@ -191,6 +193,45 @@ def _trim_to_window(ts: np.ndarray, window_ps: int) -> np.ndarray:
         return ts
     left = int(np.searchsorted(ts, int(ts[-1]) - window_ps, side='left'))
     return ts[left:]
+
+
+# Without this, ctx.channels/ctx.timestamps buffer the WHOLE recording in RAM
+# (every frame appended, never freed until the final write) --> for a long
+# run or a high-count-rate detector that fills memory in minutes, not hours.
+_FLUSH_KEEP_EVENTS = 2_000_000
+
+
+def _scratch_paths(ctx: 'TTContext', base: str, outdir: str) -> tuple:
+    if ctx.scratch_ch_path is None:
+        tag_safe = ctx.tag.replace(':', '_').replace('.', '_')
+        ctx.scratch_ch_path = os.path.join(outdir, f'.{base}_{tag_safe}.ch.scratch')
+        ctx.scratch_ts_path = os.path.join(outdir, f'.{base}_{tag_safe}.ts.scratch')
+    return ctx.scratch_ch_path, ctx.scratch_ts_path
+
+
+def _flush_overflow(ctx: 'TTContext', base: str, outdir: str) -> None:
+    '''Spills whole frames from the front of ctx.channels/timestamps (oldest
+    first) to a per-TT scratch file once more than _FLUSH_KEEP_EVENTS
+    detections are buffered, always leaving at least the newest frame in
+    RAM. Caller must hold ctx.lock --> see reader_thread'''
+    total = sum(a.size for a in ctx.timestamps)
+    if total <= _FLUSH_KEEP_EVENTS:
+        return
+    flush_ch, flush_ts = [], []
+    while len(ctx.timestamps) > 1 and total - ctx.timestamps[0].size >= _FLUSH_KEEP_EVENTS:
+        flush_ch.append(ctx.channels.pop(0))
+        popped = ctx.timestamps.pop(0)
+        total -= popped.size
+        flush_ts.append(popped)
+    if not flush_ts:
+        return
+    ch_path, ts_path = _scratch_paths(ctx, base, outdir)
+    with open(ch_path, 'ab') as f:
+        for a in flush_ch:
+            f.write(a.tobytes())
+    with open(ts_path, 'ab') as f:
+        for a in flush_ts:
+            f.write(a.tobytes())
 
 
 def _coincidence_kwargs_from_config(cfg: dict) -> dict:
@@ -247,10 +288,16 @@ def live_coincidence_thread(ctx_a: TTContext, ctx_b: TTContext, stop_event: thre
 def reader_thread(ctx: TTContext,
                    start_barrier: threading.Barrier,
                    stop_event: threading.Event,
+                   base: str,
+                   outdir: str,
                    target_detections: Optional[int] = None,
                    per_call_cap: int = 4_000_000) -> None:
     '''Waits at the barrier so streams across TimeTaggers start in lockstep,
-    then loops read_stream() until stopped, disconnected, or target reached'''
+    then loops read_stream() until stopped, disconnected, or target reached.
+    base/outdir: this recording's eventual output filename stem/directory,
+    needed here (not just at the final write) so a long run can spill old
+    frames to a scratch file instead of buffering everything in RAM, see
+    _flush_overflow'''
     try:
         start_barrier.wait(timeout=10.0)
     except threading.BrokenBarrierError:
@@ -293,6 +340,7 @@ def reader_thread(ctx: TTContext,
         with ctx.lock:
             ctx.channels.append(ch)
             ctx.timestamps.append(ts)
+            _flush_overflow(ctx, base, outdir)
         total_detections += ch.size
 
         meta = {
@@ -353,14 +401,31 @@ def ctx_failure_reason(ctx: TTContext) -> Optional[str]:
     return None
 
 
+def _read_and_clear_scratch(path: Optional[str], dtype) -> np.ndarray:
+    '''Reads back everything _flush_overflow spilled to disk during
+    recording (empty array if nothing ever overflowed), then removes the
+    scratch file -- its content now lives only in the final .npy'''
+    if path is None or not os.path.exists(path):
+        return np.array([], dtype=dtype)
+    arr = np.fromfile(path, dtype=dtype)
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    return arr
+
+
 def write_outputs(ctx: TTContext, base: str, outdir: str) -> None:
-    '''Concatenates the buffered arrays and writes the .npy + .json sidecar'''
+    '''Concatenates the buffered arrays (scratch-file overflow first, then
+    whatever's still in RAM, chronological order) and writes the .npy + .json sidecar'''
     if not ctx.frames_meta:
         safe_print(f'[{ctx.tag}] no data captured, skipping write')
         return
 
-    ch = np.concatenate(ctx.channels) if ctx.channels else np.array([], dtype=np.int8)
-    ts = np.concatenate(ctx.timestamps) if ctx.timestamps else np.array([], dtype=np.int64)
+    scratch_ch = _read_and_clear_scratch(ctx.scratch_ch_path, np.int8)
+    scratch_ts = _read_and_clear_scratch(ctx.scratch_ts_path, np.int64)
+    ch = np.concatenate([scratch_ch, *ctx.channels]) if (scratch_ch.size or ctx.channels) else np.array([], dtype=np.int8)
+    ts = np.concatenate([scratch_ts, *ctx.timestamps]) if (scratch_ts.size or ctx.timestamps) else np.array([], dtype=np.int64)
 
     ch_path = os.path.join(outdir, f'{base}_channel_sequence.npy')
     ts_path = os.path.join(outdir, f'{base}_timestamp_sequence.npy')
@@ -455,10 +520,13 @@ def main(argv: Optional[list] = None) -> int:
     # barrier sized to the survivors, so start_stream() fires across TimeTaggers in lockstep
     barrier = threading.Barrier(len(live))
     threads = []
+    # base is computed here (not just at the final write) so reader_thread can
+    # name its scratch files with the same stem write_outputs will use later
     for ctx in live:
+        base = make_file_basename(ctx.cfg['tt_ip'], ctx.cfg['tt_port'], started_at)
         t = threading.Thread(
             target=reader_thread,
-            args=(ctx, barrier, stop_event, target_detections, per_call_cap),
+            args=(ctx, barrier, stop_event, base, output_dir, target_detections, per_call_cap),
             name=f'reader-{ctx.tag}',
             daemon=False,
         )
@@ -513,7 +581,16 @@ def main(argv: Optional[list] = None) -> int:
     if failed:
         for tag, reason in failed.items():
             safe_print(f'[{tag}] FAILED: {reason}')
-        safe_print('Both TimeTaggers required -- discarding all data, nothing saved.')
+        safe_print('Both TimeTaggers required: discarding all data, nothing saved.')
+        # "zero files behind" above includes any scratch files _flush_overflow
+        # wrote mid-recording, not just the final .npy this branch never gets to
+        for ctx in live:
+            for path in (ctx.scratch_ch_path, ctx.scratch_ts_path):
+                if path and os.path.exists(path):
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
         rc = 1
     else:
         # basename uses the same wall-clock tag for both TimeTaggers

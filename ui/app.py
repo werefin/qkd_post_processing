@@ -69,6 +69,12 @@ UPLOADED_CONFIG_PATH = CONFIG_DIR / 'config.json'
 # a big upload over a slow link doesn't get killed mid-transfer before it ever hits this size check
 UPLOAD_MAX_MB = int(os.environ.get('UPLOAD_MAX_MB', '102400'))  # 100 GiB
 
+# Unlike the keystore, recordings are raw, irreplaceable TimeTagger captures
+# never auto-delete them by default. 0 = unlimited/disabled; set this to
+# opt into oldest-first pruning once RECORDINGS_DIR passes the cap, see
+# _enforce_recordings_cap()
+RECORDINGS_MAX_GB = float(os.environ.get('RECORDINGS_MAX_GB', '0'))
+
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = (UPLOAD_MAX_MB * 1024 * 1024) or None
 
@@ -128,11 +134,59 @@ def _list_recordings():
     return sorted(p.name for p in RECORDINGS_DIR.glob('*_timestamp_sequence.npy'))
 
 
+def _recording_base(ts_name):
+    return ts_name.removesuffix('_timestamp_sequence.npy')
+
+
+def _recording_group_paths(base):
+    '''All files belonging to one recording (timestamp + channel + meta),
+    whichever of them actually exist'''
+    return [p for suffix in _RECORDING_SUFFIXES if (p := RECORDINGS_DIR / f'{base}{suffix}').is_file()]
+
+
+def _recordings_total_bytes():
+    return sum(p.stat().st_size for p in RECORDINGS_DIR.glob('*') if p.is_file())
+
+
+def _delete_recording(base):
+    '''Removes one recording's files (all of timestamp/channel/meta that
+    exist). Returns how many bytes were freed'''
+    freed = 0
+    for p in _recording_group_paths(base):
+        try:
+            freed += p.stat().st_size
+            p.unlink()
+        except OSError:
+            pass
+    return freed
+
+
+def _enforce_recordings_cap():
+    '''Opt-in (RECORDINGS_MAX_GB > 0): deletes the OLDEST recordings, one at
+    a time, until RECORDINGS_DIR is back under the cap --> raw TimeTagger
+    captures are irreplaceable, so this never runs unless explicitly
+    configured, see RECORDINGS_MAX_GB'''
+    if RECORDINGS_MAX_GB <= 0:
+        return
+    cap_bytes = RECORDINGS_MAX_GB * 1024 ** 3
+    names = _list_recordings()  # sorted --> oldest (by recording timestamp prefix) first
+    i = 0
+    while _recordings_total_bytes() > cap_bytes and i < len(names):
+        base = _recording_base(names[i])
+        freed = _delete_recording(base)
+        if freed:
+            print(f'[recordings] RECORDINGS_MAX_GB={RECORDINGS_MAX_GB:g} exceeded, '
+                  f'deleted oldest recording {base!r} ({freed / 1024**2:.1f} MiB)')
+        i += 1
+
+
 @app.route('/api/status')
 def api_status():
     return jsonify({
         'keys_saved': _count_keys(),
         'recordings': _list_recordings(),
+        'recordings_bytes': _recordings_total_bytes(),
+        'recordings_max_gb': RECORDINGS_MAX_GB,
         'timestamp': int(time.time()),
     })
 
@@ -235,14 +289,53 @@ def api_upload():
             continue
         f.save(RECORDINGS_DIR / name)
         saved.append(name)
+    # No manual cache-bust needed: _get_analysis() keys on file mtime, so a
+    # newly saved recording is picked up on the very next analysis call
     if saved:
-        _align_cache['t'] = 0.0  # force the next /api/align/live to recompute
-    return jsonify({'saved': saved, 'skipped': skipped, 'recordings': _list_recordings()})
+        _enforce_recordings_cap()
+    return jsonify({
+        'saved': saved, 'skipped': skipped, 'recordings': _list_recordings(),
+        'recordings_bytes': _recordings_total_bytes(),
+    })
 
 
 @app.route('/api/recordings')
 def api_recordings():
-    return jsonify({'files': _list_recordings()})
+    names = _list_recordings()
+    items = [{
+        'base': _recording_base(n),
+        'name': n,
+        'bytes': sum(p.stat().st_size for p in _recording_group_paths(_recording_base(n))),
+    } for n in names]
+    return jsonify({
+        'files': names, 'items': items,
+        'total_bytes': _recordings_total_bytes(), 'max_gb': RECORDINGS_MAX_GB,
+    })
+
+
+@app.route('/api/recordings', methods=['DELETE'])
+def api_delete_all_recordings():
+    '''Bulk cleanup: deletes every recording currently listed, same
+    one-at-a-time removal as api_delete_recording(), just for all of them'''
+    freed = 0
+    deleted = []
+    for n in _list_recordings():
+        base = _recording_base(n)
+        freed += _delete_recording(base)
+        deleted.append(base)
+    return jsonify({'deleted': deleted, 'freed_bytes': freed, 'recordings': _list_recordings()})
+
+
+@app.route('/api/recordings/<base>', methods=['DELETE'])
+def api_delete_recording(base):
+    '''Manual cleanup: removes one recording's files regardless of
+    RECORDINGS_MAX_GB, so disk space can be managed deliberately once a
+    recording's key has been extracted and it's no longer needed'''
+    base = secure_filename(base)
+    if not (RECORDINGS_DIR / f'{base}_timestamp_sequence.npy').is_file():
+        return jsonify({'error': f'no such recording: {base}'}), 404
+    freed = _delete_recording(base)
+    return jsonify({'deleted': base, 'freed_bytes': freed, 'recordings': _list_recordings()})
 
 
 # API: load config.json (uploaded, or pasted as raw JSON) --> same shape
@@ -324,6 +417,10 @@ def _read_acquire_output(proc):
     for line in proc.stdout:
         _acquire['log'].append(line.rstrip('\n'))
     proc.wait()
+    # tt_record_dual.py just wrote this recording's *.npy files (or decided
+    # not to, on a failed run) --> runs once per completed recording, not on
+    # every status poll, see RECORDINGS_MAX_GB
+    _enforce_recordings_cap()
 
 
 @app.route('/api/acquire/start', methods=['POST'])
@@ -387,9 +484,8 @@ def api_acquire_status():
 # final report cmd/importtt reads --> not the fast fit_skew=False variant
 # tt_record_dual.py's live monitor uses while still recording, since these
 # are complete, already-uploaded files: full result is what matters
-_align_cache = {'t': 0.0, 'data': None}
-_ALIGN_CACHE_S = 30.0
-_align_lock = threading.Lock()
+_analysis_cache = {'key': None, 'report': None, 'diagnostics': None}
+_analysis_lock = threading.Lock()
 
 
 def _load_timestamps(path):
@@ -398,6 +494,24 @@ def _load_timestamps(path):
     if arr.ndim != 1 or not np.issubdtype(arr.dtype, np.integer) or arr.shape[0] < 2:
         raise ValueError(f'{path.name}: not a valid timestamp array')
     return np.asarray(arr)
+
+
+def _get_analysis(path_a, path_b):
+    '''Cached analyze_arrays(strict=False) over this exact pair of files
+    always non-strict so one computation serves every caller; a caller that
+    needs strict (refuse an unconfirmed peak) checks report["detected"]
+    itself, see _prepared_recording_dir()'''
+    key = (path_a.name, path_a.stat().st_mtime_ns, path_b.name, path_b.stat().st_mtime_ns)
+    if _analysis_cache['key'] == key:
+        return _analysis_cache['report'], _analysis_cache['diagnostics']
+    with _analysis_lock:
+        if _analysis_cache['key'] == key:
+            return _analysis_cache['report'], _analysis_cache['diagnostics']
+        a = _load_timestamps(path_a)
+        b = _load_timestamps(path_b)
+        report, diagnostics = coincidence_peak.analyze_arrays(a, b, strict=False)
+        _analysis_cache.update(key=key, report=report, diagnostics=diagnostics)
+    return report, diagnostics
 
 
 # Max points sent per plot series --> these feed <canvas> line charts in the
@@ -478,9 +592,11 @@ def _run_alignment_check():
         return {'ready': False, 'reason': f'need 2 recordings, have {len(files)}'}
     path_a, path_b = files[-2], files[-1]
     try:
+        # mmap'd, so this is just a header read --> the expensive part is the
+        # FFT search inside _get_analysis(), which is cached by file identity
         a = _load_timestamps(path_a)
         b = _load_timestamps(path_b)
-        report, diagnostics = coincidence_peak.analyze_arrays(a, b, strict=False)
+        report, diagnostics = _get_analysis(path_a, path_b)
         shift = report['constant_shift']
         skew = report['clock_skew']
         return {
@@ -504,16 +620,12 @@ def _run_alignment_check():
 
 @app.route('/api/align/live')
 def api_align_live():
-    now = time.time()
-    if _align_cache['data'] is not None and now - _align_cache['t'] < _ALIGN_CACHE_S:
-        return jsonify(_align_cache['data'])
-    with _align_lock:
-        now = time.time()
-        if _align_cache['data'] is not None and now - _align_cache['t'] < _ALIGN_CACHE_S:
-            return jsonify(_align_cache['data'])
-        data = _run_alignment_check()
-        data['timestamp'] = int(time.time())
-        _align_cache.update(t=time.time(), data=data)
+    # No time-based cache needed here any more: _get_analysis() already
+    # caches the expensive part by file identity, so a cache hit here is
+    # just cheap dict/array bookkeeping, and a genuinely new upload is
+    # reflected on the very next poll instead of waiting out a timer
+    data = _run_alignment_check()
+    data['timestamp'] = int(time.time())
     return jsonify(data)
 
 
@@ -531,12 +643,17 @@ def _prepared_recording_dir():
         raise ValueError(f'need 2 recordings, have {len(files)}')
     path_a, path_b = files[-2], files[-1]
 
-    a = _load_timestamps(path_a)
-    b = _load_timestamps(path_b)
-    # strict=True: refuse to run a real analysis on an alignment that was
-    # never actually confirmed, same guard cmd/importtt's and
-    # chsh_diagnostic.py's own find_recording() apply to the report
-    report, _diagnostics = coincidence_peak.analyze_arrays(a, b, strict=True)
+    # Same cached analysis /api/align/live already (maybe) computed for this
+    # exact pair --> strict=True's only real job is refusing an unconfirmed
+    # peak, reproduced here instead of recomputing just to get that check
+    cached_report, _diagnostics = _get_analysis(path_a, path_b)
+    if not cached_report['detected']:
+        score = cached_report['constant_shift']['window']['local_score']
+        raise ValueError(
+            f'no significant coincidence peak found (best local score {score:.2f}, '
+            f'required {coincidence_peak.MIN_PEAK_SCORE:.2f})'
+        )
+    report = dict(cached_report)  # don't let input_a/input_b below leak into the shared cache
     report['input_a'] = path_a.name
     report['input_b'] = path_b.name
 

@@ -97,4 +97,4 @@ docker run --rm qoj-post-processing qoj_post_processing -n 300000 -err 0.005 -ch
 docker run --rm -v "$(pwd)/acquisition:/app/acquisition" qoj-post-processing importtt -dir acquisition/example/20260909
 ```
 
-One image, no server: Python 3.12 + Go 1.24, with `qoj_post_processing`/`importtt`/`tuneblock` prebuilt to `/usr/local/bin`. Mount `acquisition/` whenever a command needs to read or write a recording. For the dashboard instead, see `ui/` (separate Docker + Caddy deployment).
+One image, no server: Python 3.12 + Go 1.24, with `qoj_post_processing`/`importtt`/`tuneblock` prebuilt to `/usr/local/bin`. Mount `acquisition/` whenever a command needs to read or write a recording. For the dashboard instead, see `ui/` (separate Docker + Caddy deployment, see `ui/deploy.md`).

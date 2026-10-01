@@ -444,6 +444,8 @@ function navigate(sectionName) {
   } else if (sectionName === 'acquire') {
     refreshAcquireStatus();
     acquirePollInterval = setInterval(refreshAcquireStatus, 2000);
+  } else if (sectionName === 'recordings') {
+    refreshRecordingsList();
   }
 }
 
@@ -628,7 +630,7 @@ function uploadRecordings(files) {
       const rows = d.saved.map(n => `<div class="ok">saved: ${n}</div>`)
         .concat(d.skipped.map(n => `<div class="bad">skipped (unexpected name): ${n}</div>`));
       list.innerHTML = rows.join('');
-      renderRecordings(d.recordings);
+      refreshRecordingsList();
     } catch (e) {
       list.innerHTML = `<div class="bad">upload failed</div>`;
     }
@@ -638,11 +640,66 @@ function uploadRecordings(files) {
 }
 setupDropzone('rec-drop', 'rec-file-input', uploadRecordings);
 
-function renderRecordings(files) {
-  const el = document.getElementById('recordings-list');
-  if (!el) return;
-  el.textContent = files.length ? files.join(', ') : 'none uploaded yet';
+function formatBytes(n) {
+  if (!n) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let u = 0;
+  while (n >= 1024 && u < units.length - 1) { n /= 1024; u++; }
+  return (u === 0 ? n : n.toFixed(1)) + ' ' + units[u];
 }
+
+async function refreshRecordingsList() {
+  const badge = document.getElementById('recordings-usage-badge');
+  const tbody = document.getElementById('recordings-table-body');
+  if (!badge || !tbody) return;
+  try {
+    const d = await apiFetch('/api/recordings');
+    const capBytes = d.max_gb > 0 ? d.max_gb * 1024 ** 3 : null;
+    badge.textContent = formatBytes(d.total_bytes) + (capBytes ? ` / ${d.max_gb}GB cap` : ' (no cap set)');
+    badge.className = 'badge ' + (capBytes && d.total_bytes > capBytes * 0.9 ? 'badge-warn' : 'badge-muted');
+
+    if (!d.items.length) {
+      tbody.innerHTML = `<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:1.5rem">none uploaded yet</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = d.items.map(it => `
+      <tr>
+        <td>${it.name}</td>
+        <td>${formatBytes(it.bytes)}</td>
+        <td><button class="btn btn-outline" style="padding:.3rem .6rem;font-size:.72rem" data-delete-recording="${it.base}">Delete</button></td>
+      </tr>
+    `).join('');
+  } catch (e) { /* backend not reachable yet */ }
+}
+
+document.getElementById('recordings-table-body').addEventListener('click', async e => {
+  const btn = e.target.closest('[data-delete-recording]');
+  if (!btn) return;
+  const base = btn.dataset.deleteRecording;
+  if (!confirm(`Delete recording "${base}"? This removes the raw TimeTagger files from disk (not reversible).`)) return;
+  btn.disabled = true;
+  try {
+    await apiFetch(`/api/recordings/${encodeURIComponent(base)}`, { method: 'DELETE' });
+    refreshRecordingsList();
+  } catch (err) {
+    alert('Delete failed: ' + err.message);
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('recordings-delete-all-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('recordings-delete-all-btn');
+  if (!confirm('Delete ALL stored recordings? This removes every raw TimeTagger file from disk (not reversible).')) return;
+  btn.disabled = true;
+  try {
+    await apiFetch('/api/recordings', { method: 'DELETE' });
+    refreshRecordingsList();
+  } catch (err) {
+    alert('Delete all failed: ' + err.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 // Live alignment: same 4 diagnostic panels coincidence_peak.py's save_plot()
 // draws (coarse correlation, best constant-shift peak, clock-rate drift,

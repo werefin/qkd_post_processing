@@ -139,10 +139,14 @@ def build_blocks(
     roi2_width_ns: float | None,
 ) -> tuple[dict[str, Any], list[str], list[list[int]]]:
     ts_path_a, ts_path_b, report = _find_recording(directory)
-    ts_a = np.asarray(np.load(ts_path_a, allow_pickle=False))
-    ch_a = np.asarray(np.load(_channel_path(ts_path_a), allow_pickle=False))
-    ts_b = np.asarray(np.load(ts_path_b, allow_pickle=False))
-    ch_b = np.asarray(np.load(_channel_path(ts_path_b), allow_pickle=False))
+    # mmap_mode='r': a real recording's arrays can be large; np.asarray() on a
+    # memmap shares its buffer rather than copying, so this only pulls pages
+    # into RAM as block_singles/block_roi_coincidences actually touch them,
+    # same approach ui/app.py's _load_timestamps already uses
+    ts_a = np.asarray(np.load(ts_path_a, allow_pickle=False, mmap_mode='r'))
+    ch_a = np.asarray(np.load(_channel_path(ts_path_a), allow_pickle=False, mmap_mode='r'))
+    ts_b = np.asarray(np.load(ts_path_b, allow_pickle=False, mmap_mode='r'))
+    ch_b = np.asarray(np.load(_channel_path(ts_path_b), allow_pickle=False, mmap_mode='r'))
     if len(ts_a) != len(ch_a):
         raise click.ClickException(f"{ts_path_a}: {len(ts_a)} timestamps but {len(ch_a)} channels")
     if len(ts_b) != len(ch_b):

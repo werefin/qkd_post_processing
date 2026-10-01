@@ -9,6 +9,8 @@
 /ui/keys
 /ui/recordings
 /ui/config
+# Extracted Caddy CA (machine-local), written by ui/trust_caddy_ca.sh
+/ui/caddy-root-ca.crt
 __pycache__/
 .venv/
 venv/
