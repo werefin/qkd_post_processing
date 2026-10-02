@@ -689,6 +689,10 @@ def api_align_run():
                 if v not in (None, ''):
                     args += [flag, str(cast(v))]
 
+            # Override the auto-fitted corrected_window with an explicit one
+            # (picoseconds) when the caller knows the real coincidence window independently
+            add(args, '-window', 'window_ps', int)
+
             if method == 'winnow':
                 args.append('-winnow')
                 add(args, '-winnow-blocks', 'winnow_blocks', str)

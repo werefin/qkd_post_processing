@@ -48,4 +48,6 @@ EXPOSE 9823
 WORKDIR /app/ui
 # --timeout is generous (not gunicorn's 30s default): huge recording upload over a slow link can legitimately take a long time,
 # request must stay alive for the whole transfer, not just the size check at the end of it
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:9823", "--workers", "2", "--timeout", "3600"]
+# --workers 1: app.py keeps all of its state (acquisition status/log, analysis cache, simulated-key tracking, CHSH cache)
+# as plain in-process globals, not in a shared store
+CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:9823", "--workers", "1", "--threads", "4", "--worker-class", "gthread", "--timeout", "3600"]

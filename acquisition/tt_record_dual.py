@@ -528,7 +528,9 @@ def main(argv: Optional[list] = None) -> int:
             target=reader_thread,
             args=(ctx, barrier, stop_event, base, output_dir, target_detections, per_call_cap),
             name=f'reader-{ctx.tag}',
-            daemon=False,
+            # daemon=True: a TimeTagger that stops responding mid-read leaves
+            # this thread permanently blocked inside read_stream()
+            daemon=True,
         )
         threads.append(t)
         t.start()
@@ -569,10 +571,17 @@ def main(argv: Optional[list] = None) -> int:
         stop_event.set()
 
     # the next read_stream() can take up to ~10s to return at high rates; give threads time
-    for t in threads:
+    for t, ctx in zip(threads, live):
         t.join(timeout=30.0)
         if t.is_alive():
-            safe_print(f'WARNING: thread {t.name} did not finish within 30s')
+            safe_print(f'WARNING: thread {t.name} did not finish within 30s, forcing its connection closed')
+            # Best-effort unblock: closing the socket out from under a thread
+            # stuck in read_stream() usually makes that call raise/return
+            # immediately instead of waiting for it to time out
+            try:
+                ctx.stream.disconnect()
+            except Exception:
+                pass
 
     # strict quorum: both TimeTaggers must be healthy, or nothing is saved
     # checked before any write, so a failed run leaves zero files behind
