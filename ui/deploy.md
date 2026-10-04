@@ -55,7 +55,7 @@ Back up `ui/keys/` like any secret store; `ui/recordings/` is regenerable from t
 ### Sizing
 
 - **RAM**: 8 GB minimum, 16 GB comfortable. The coincidence-peak FFT search caps itself at `max_memory_gib` (4 GiB default, in `config.json`'s `coincidence_peak` section) --> don't raise that on a tight host
-- **CPU**: 2+ cores; the FFT search and LDPC/Winnow correction benefit from more
+- **CPU**: 4+ cores recommended. Candidate refinement and clock-skew fitting now parallelize across all available cores (`coincidence_peak.py`'s dominant cost on real recordings); LDPC/Winnow correction also benefit from more
 - **Disk**: size `ui/recordings/` for your actual recording volume, not the 100 GiB cap.
 - Gunicorn runs 1 worker, 4 threads (`ui/Dockerfile`'s `CMD`) — intentionally one process: `app.py`'s state (acquisition status, caches) is in-process, not shared, so more than one worker sees inconsistent state across requests. Add a Docker memory limit (`deploy.resources.limits.memory` in `docker-compose.yml`) on a genuinely tight host instead of adding workers.
 

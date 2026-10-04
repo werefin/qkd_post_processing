@@ -20,7 +20,7 @@ type WinnowRunResult struct {
 	WinnowLeakedBits  int
 	CRCVerify         CRCVerifyResult
 
-	LeakedBits int // total classical-channel bits: QBER sample + Winnow syndromes + CRCs
+	LeakedBits int // total classical-channel bits: Winnow syndromes + CRCs
 
 	FinalKeyBits  []byte
 	FinalKeyBytes []byte

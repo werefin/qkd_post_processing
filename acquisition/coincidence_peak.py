@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import math
+import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -506,15 +508,12 @@ def _fit_clock_skew(
         raise click.ClickException("the selected lag has no timestamp overlap")
 
     boundaries = np.linspace(overlap_start, overlap_end, segments + 1, dtype=np.int64)
-    elapsed_ps: list[int] = []
-    local_lags_ps: list[float] = []
-    scores: list[float] = []
 
-    for start_ps, end_ps in zip(boundaries[:-1], boundaries[1:]):
+    def _fit_one_segment(start_ps: int, end_ps: int) -> tuple[int, float, float] | None:
         left = int(np.searchsorted(a, a_origin + int(start_ps), side="left"))
         right = int(np.searchsorted(a, a_origin + int(end_ps), side="left"))
         if right - left < 2:
-            continue
+            return None
         histogram = _difference_histogram(
             a[left:right], b, a_origin, b_origin, lag_ps, radius_ps, fine_bin_ps
         )
@@ -525,7 +524,7 @@ def _fit_clock_skew(
             center_limit_ps=min(radius_ps // 2, 500 * PS_PER_NS),
         )
         if window.score < MIN_SEGMENT_SCORE:
-            continue
+            return None
         local_lag_ps = int(round(lag_ps + window.center_ps))
         half_window_ps = max(fine_bin_ps, window.width_ps // 2)
         central_count, central_sum = _pair_elapsed_moments(
@@ -559,15 +558,32 @@ def _fit_clock_skew(
         background_count = (left_count + right_count) / 2
         excess_count = central_count - background_count
         if excess_count <= 0:
-            continue
+            return None
         pair_elapsed_ps = (
             central_sum - (left_sum + right_sum) / 2
         ) / excess_count
         if not start_ps <= pair_elapsed_ps < end_ps:
+            return None
+        return int(round(pair_elapsed_ps)), float(local_lag_ps), window.score
+    # Same independence + GIL-releasing-numba reasoning as the candidate
+    # refinement above: each segment's fit only touches its own slice of a
+    # (plus the full, read-only b), so segments run concurrently in threads
+    with ThreadPoolExecutor(max_workers=min(32, os.cpu_count() or 4)) as pool:
+        segment_results = list(pool.map(
+            lambda bounds: _fit_one_segment(*bounds),
+            zip(boundaries[:-1].tolist(), boundaries[1:].tolist()),
+        ))
+
+    elapsed_ps: list[int] = []
+    local_lags_ps: list[float] = []
+    scores: list[float] = []
+    for result in segment_results:
+        if result is None:
             continue
-        elapsed_ps.append(int(round(pair_elapsed_ps)))
-        local_lags_ps.append(float(local_lag_ps))
-        scores.append(window.score)
+        segment_elapsed, segment_lag, segment_score = result
+        elapsed_ps.append(segment_elapsed)
+        local_lags_ps.append(segment_lag)
+        scores.append(segment_score)
 
     if len(elapsed_ps) < 3:
         raise _SkewUnavailable(
@@ -714,17 +730,14 @@ def analyze_arrays(
         max_memory_gib=max_memory_gib,
     )
     click.echo("Refining coarse candidates with exact timestamp differences")
-    refined = [
-        _refine_candidate(
-            a,
-            b,
-            lag,
-            refine_radius_ps,
-            fine_bin_ps,
-            center_limit_ps=max(2 * coarse_bin_ps, 200 * PS_PER_NS),
-        )
-        for lag in coarse["candidate_lags_ps"]
-    ]
+    # 80% of total runtime, measured; candidates are independent and the
+    # @njit scan releases the GIL, so threads give real parallelism here
+    center_limit_ps = max(2 * coarse_bin_ps, 200 * PS_PER_NS)
+    with ThreadPoolExecutor(max_workers=min(32, os.cpu_count() or 4)) as pool:
+        refined = list(pool.map(
+            lambda lag: _refine_candidate(a, b, lag, refine_radius_ps, fine_bin_ps, center_limit_ps),
+            coarse["candidate_lags_ps"],
+        ))
     refined = [
         item
         for item in refined
