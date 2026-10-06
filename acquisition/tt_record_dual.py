@@ -131,6 +131,13 @@ def safe_print(msg: str) -> None:
         print(msg, flush=True)
 
 
+def log(level: str, tag: Optional[str], msg: str) -> None:
+    '''arnika-style log line: "[LEVEL] [tag] message", one severity tag per
+    line and the reason spelled out in the message itself, not a bare symbol'''
+    prefix = f'[{tag}] ' if tag else ''
+    safe_print(f'[{level}] {prefix}{msg}')
+
+
 @dataclass
 class TTContext:
     '''Per-TimeTagger runtime state shared between main and its reader thread'''
@@ -196,8 +203,8 @@ def _trim_to_window(ts: np.ndarray, window_ps: int) -> np.ndarray:
 
 
 # Without this, ctx.channels/ctx.timestamps buffer the WHOLE recording in RAM
-# (every frame appended, never freed until the final write) --> for a long
-# run or a high-count-rate detector that fills memory in minutes, not hours.
+# (every frame appended, never freed until the final write), which for a long
+# run or a high-count-rate detector fills memory in minutes, not hours.
 _FLUSH_KEEP_EVENTS = 2_000_000
 
 
@@ -213,7 +220,7 @@ def _flush_overflow(ctx: 'TTContext', base: str, outdir: str) -> None:
     '''Spills whole frames from the front of ctx.channels/timestamps (oldest
     first) to a per-TT scratch file once more than _FLUSH_KEEP_EVENTS
     detections are buffered, always leaving at least the newest frame in
-    RAM. Caller must hold ctx.lock --> see reader_thread'''
+    RAM. Caller must hold ctx.lock; see reader_thread'''
     total = sum(a.size for a in ctx.timestamps)
     if total <= _FLUSH_KEEP_EVENTS:
         return
@@ -265,24 +272,25 @@ def live_coincidence_thread(ctx_a: TTContext, ctx_b: TTContext, stop_event: thre
         a = _trim_to_window(_snapshot_timestamps(ctx_a), window_ps)
         b = _trim_to_window(_snapshot_timestamps(ctx_b), window_ps)
         if a.size < 2 or b.size < 2:
-            safe_print(f'[live] not enough data yet (A={a.size}, B={b.size})')
+            log('INFO', 'live', f'not enough data buffered yet to check for a coincidence peak (A={a.size}, B={b.size} detections so far)')
             continue
         try:
             report, _ = analyze_arrays(a, b, strict=False, fit_skew=False, **analyze_kwargs)
         except Exception as exc:
-            safe_print(f'[live] coincidence check failed: {exc}')
+            log('WARN', 'live', f'coincidence check on the trailing window failed, will retry next interval: {exc}')
             continue
         shift = report['constant_shift']
-        status = 'PEAK' if report['detected'] else 'no peak yet'
         # clock skew isn't fit live (fit_skew=False, see above), only the
-        # constant-lag search --> the final report still fits it properly
-        safe_print(
-            f'[live] n=({a.size},{b.size}) '
-            f'lag={shift["relative_lag_ps"] / 1_000:.1f}ns '
-            f'window={shift["window"]["width_ps"] / 1_000:g}ns '
-            f'score={shift["window"]["local_score"]:.2f} '
-            f'[{status}]'
-        )
+        # constant-lag search; the final report (after recording ends) fits it properly
+        if report['detected']:
+            log('INFO', 'live',
+                f'[OK] coincidence peak visible: lag={shift["relative_lag_ps"] / 1_000:.1f}ns, '
+                f'window={shift["window"]["width_ps"] / 1_000:g}ns, score={shift["window"]["local_score"]:.2f} '
+                f'(sample sizes A={a.size}, B={b.size})')
+        else:
+            log('INFO', 'live',
+                f'no peak detected yet (sample sizes A={a.size}, B={b.size}); '
+                f'this is normal early in a recording and should resolve as more data accumulates')
 
 
 def reader_thread(ctx: TTContext,
@@ -302,28 +310,22 @@ def reader_thread(ctx: TTContext,
         start_barrier.wait(timeout=10.0)
     except threading.BrokenBarrierError:
         ctx.error = 'barrier_broken'
-        safe_print(f'[{ctx.tag}] barrier broken before start_stream')
+        log('ERROR', ctx.tag, '[STOP] the other TimeTagger never became ready within 10s, so this one never started; nothing was recorded for this run')
         return
 
     if not ctx.stream.start_stream():
         ctx.error = 'start_stream_failed'
-        safe_print(f'[{ctx.tag}] start_stream FAILED')
+        log('ERROR', ctx.tag, '[STOP] the TimeTagger rejected the start-measurement request; check it is reachable and not already exclusively held by another client')
         return
 
     ctx.stream_started = True
     ctx.wall_start_s = time.monotonic()
-    safe_print(f'[{ctx.tag}] stream started')
+    log('INFO', ctx.tag, '[OK] measurement started, now streaming detections')
 
     total_detections = 0
     reached_target = False
 
-    while not stop_event.is_set() and ctx.stream.is_connected():
-        frame = ctx.stream.read_stream()
-        if frame is None:
-            ctx.error = 'read_stream_failed'
-            safe_print(f'[{ctx.tag}] read_stream returned None, stopping')
-            break
-
+    def ingest(frame: dict, total: int) -> int:
         # int8 covers physical channels 1...4 (and any negative falling-edge tags);
         # int64 holds picosecond timestamps, which can exceed 2^32 for long runs
         ch = np.asarray(frame['channel_sequence'], dtype=np.int8)
@@ -331,8 +333,8 @@ def reader_thread(ctx: TTContext,
 
         # detection_count mode: trim this frame if it would push us past the target
         trimmed = False
-        if target_detections is not None and total_detections + ch.size >= target_detections:
-            keep = target_detections - total_detections
+        if target_detections is not None and total + ch.size >= target_detections:
+            keep = target_detections - total
             ch = ch[:keep]
             ts = ts[:keep]
             trimmed = True
@@ -341,7 +343,7 @@ def reader_thread(ctx: TTContext,
             ctx.channels.append(ch)
             ctx.timestamps.append(ts)
             _flush_overflow(ctx, base, outdir)
-        total_detections += ch.size
+        total += ch.size
 
         meta = {
             'unixtime_readout': frame['unixtime_readout'],
@@ -356,29 +358,51 @@ def reader_thread(ctx: TTContext,
         }
         ctx.frames_meta.append(meta)
 
-        cap_warn = '  !! CAPPED, likely lost detections' if meta['capped'] else ''
-        trim_note = '  (trimmed to target)' if meta['trimmed'] else ''
-        safe_print(
-            f'[{ctx.tag}] '
-            f'up={meta["stream_uptime_s"]:7.2f}s '
-            f'detections={meta["n_detections"]:>7d} '
-            f'total={total_detections:>9d} '
-            f't0={meta["frame_start_ps"]} '
-            f't1={meta["frame_end_ps"]} '
-            f'unix={meta["unixtime_readout"]:.3f}'
-            f'{cap_warn}{trim_note}'
-        )
+        log('INFO', ctx.tag,
+            f'read {meta["n_detections"]} detections this cycle (running total {total}), '
+            f'device uptime {meta["stream_uptime_s"]:.2f}s')
+        if meta['capped']:
+            # the server never returns more than per_call_cap detections in one read; if more
+            # than that arrived since our last read, the excess is simply never retrieved, and
+            # this read hitting the cap exactly is the only signal we get that this may have happened
+            log('WARN', ctx.tag,
+                f'this read came back at the server\'s maximum batch size ({per_call_cap} detections); '
+                f'detections may be arriving faster than single reads can drain them, so some from this '
+                f'interval could be missing; read more often (shorter loop_period_s) or expect this at high count rates')
+        if meta['trimmed']:
+            log('INFO', ctx.tag, 'stopped partway through this batch, having reached the requested detection-count target exactly')
+        return total
+
+    while not stop_event.is_set() and ctx.stream.is_connected():
+        frame = ctx.stream.read_stream()
+        if frame is None:
+            ctx.error = 'read_stream_failed'
+            log('ERROR', ctx.tag, '[STOP] the TimeTagger stopped responding to reads; this recording will be discarded')
+            break
+
+        total_detections = ingest(frame, total_detections)
 
         if target_detections is not None and total_detections >= target_detections:
             reached_target = True
-            safe_print(f'[{ctx.tag}] target {target_detections} detections reached')
+            log('INFO', ctx.tag, f'[OK] reached the requested target of {target_detections} detections, stopping')
             break
+
+    # the loop above checks stop_event BEFORE each read, so duration mode can
+    # exit with one frame's worth already buffered server-side since the last
+    # read; one more drain picks that up. NOT a loop: a high-rate TT (e.g.
+    # Trnava) streams continuously regardless of stop_event, so repeated
+    # draining never reaches an empty backlog; it just keeps recording
+    if ctx.error is None and not reached_target and stop_event.is_set() and ctx.stream.is_connected():
+        frame = ctx.stream.read_stream()
+        if frame is not None:
+            total_detections = ingest(frame, total_detections)
+        log('INFO', ctx.tag, f'[OK] final read after stop, recording complete: {total_detections} detections total')
 
     # No stop request and no target reached leaves only a dropped connection,
     # flagged here so main discards the whole recording instead of saving a short file
     if ctx.error is None and not reached_target and not stop_event.is_set():
         ctx.error = 'disconnected'
-        safe_print(f'[{ctx.tag}] stream disconnected before stop')
+        log('ERROR', ctx.tag, '[STOP] connection dropped unexpectedly, before the requested stop was ever sent; this recording will be discarded')
 
     try:
         ctx.stream.disconnect()
@@ -404,7 +428,7 @@ def ctx_failure_reason(ctx: TTContext) -> Optional[str]:
 def _read_and_clear_scratch(path: Optional[str], dtype) -> np.ndarray:
     '''Reads back everything _flush_overflow spilled to disk during
     recording (empty array if nothing ever overflowed), then removes the
-    scratch file -- its content now lives only in the final .npy'''
+    scratch file; its content now lives only in the final .npy'''
     if path is None or not os.path.exists(path):
         return np.array([], dtype=dtype)
     arr = np.fromfile(path, dtype=dtype)
@@ -419,7 +443,7 @@ def write_outputs(ctx: TTContext, base: str, outdir: str) -> None:
     '''Concatenates the buffered arrays (scratch-file overflow first, then
     whatever's still in RAM, chronological order) and writes the .npy + .json sidecar'''
     if not ctx.frames_meta:
-        safe_print(f'[{ctx.tag}] no data captured, skipping write')
+        log('WARN', ctx.tag, 'no detections were captured during this recording, skipping the write')
         return
 
     scratch_ch = _read_and_clear_scratch(ctx.scratch_ch_path, np.int8)
@@ -449,10 +473,7 @@ def write_outputs(ctx: TTContext, base: str, outdir: str) -> None:
     with open(meta_path, 'w') as f:
         json.dump(sidecar, f, indent=2)
 
-    safe_print(
-        f'[{ctx.tag}] wrote {ch.size} detections across '
-        f'{len(ctx.frames_meta)} frames --> {base}_*'
-    )
+    log('INFO', ctx.tag, f'[OK] saved {ch.size} detections across {len(ctx.frames_meta)} reads to {base}_*')
 
 
 def main(argv: Optional[list] = None) -> int:
@@ -464,7 +485,7 @@ def main(argv: Optional[list] = None) -> int:
         site_a_name, site_b_name, link_label = resolve_link(
             cfg, args.config, args.link, args.site_a, args.site_b)
     except SystemExit as ex:
-        safe_print(str(ex))
+        log('ERROR', None, str(ex))
         return 2
 
     stop_mode = args.stop_mode or rec['stop_mode']
@@ -473,7 +494,7 @@ def main(argv: Optional[list] = None) -> int:
     output_dir = args.output_dir or rec['output_dir']
     per_call_cap = rec.get('per_call_detection_cap', 4_000_000)
 
-    safe_print(f'link: {link_label} ({site_a_name} + {site_b_name})')
+    log('INFO', None, f'[CONF] link "{link_label}": {site_a_name} + {site_b_name}')
     tt_a_conn, tt_a_settings = site_connection_and_settings(sites[site_a_name])
     tt_b_conn, tt_b_settings = site_connection_and_settings(sites[site_b_name])
 
@@ -488,19 +509,19 @@ def main(argv: Optional[list] = None) -> int:
     # connect each TimeTagger sequentially; collect the survivors
     live = []
     for ctx in contexts:
-        safe_print(f'[{ctx.tag}] connecting...')
+        log('INFO', ctx.tag, '[REQ] connecting...')
         if ctx.stream.connect():
             live.append(ctx)
+            log('INFO', ctx.tag, '[OK] connected')
         else:
             ctx.error = 'connect_failed'
-            safe_print(f'[{ctx.tag}] connect FAILED, skipping')
+            log('ERROR', ctx.tag, '[STOP] could not connect, skipping this TimeTagger')
 
     if len(live) < len(contexts):
         failed = [ctx.tag for ctx in contexts if ctx.error == 'connect_failed']
-        safe_print(
-            f'Both TimeTaggers required, only {len(live)}/{len(contexts)} reachable '
-            f'({", ".join(failed)} failed) --> aborting, nothing recorded.'
-        )
+        log('ERROR', None,
+            f'[STOP] both TimeTaggers are required; only {len(live)}/{len(contexts)} reachable '
+            f'({", ".join(failed)} failed), aborting with nothing recorded')
         for ctx in live:
             try:
                 ctx.stream.disconnect()
@@ -510,12 +531,14 @@ def main(argv: Optional[list] = None) -> int:
 
     if stop_mode == 'duration':
         target_detections = None
-        safe_print(f'mode=duration: recording for {record_duration_s:.1f}s on '
-                   f'{site_a_name} + {site_b_name}, {len(live)} TimeTagger(s): {[c.tag for c in live]}')
+        log('INFO', None,
+            f'[REQ] recording for {record_duration_s:.1f}s on {site_a_name} + {site_b_name} '
+            f'({len(live)} TimeTagger(s): {[c.tag for c in live]})')
     else:
         target_detections = target_detection_count
-        safe_print(f'mode=detection_count: recording until {target_detections} detections per TT on '
-                   f'{site_a_name} + {site_b_name}, {len(live)} TimeTagger(s): {[c.tag for c in live]}')
+        log('INFO', None,
+            f'[REQ] recording until {target_detections} detections per TimeTagger on {site_a_name} + {site_b_name} '
+            f'({len(live)} TimeTagger(s): {[c.tag for c in live]})')
 
     # barrier sized to the survivors, so start_stream() fires across TimeTaggers in lockstep
     barrier = threading.Barrier(len(live))
@@ -551,7 +574,7 @@ def main(argv: Optional[list] = None) -> int:
             daemon=True,
         )
         live_thread.start()
-        safe_print(f'live coincidence check: every {interval_s:.1f}s over the trailing {window_s:.1f}s')
+        log('INFO', None, f'[CONF] live coincidence preview enabled: checking every {interval_s:.1f}s over the trailing {window_s:.1f}s of buffered data')
 
     # main waits for the appropriate stop signal:
     # duration mode: timeout on stop_event, then set it
@@ -560,13 +583,13 @@ def main(argv: Optional[list] = None) -> int:
         if stop_mode == 'duration':
             stopped_early = stop_event.wait(timeout=record_duration_s)
             if not stopped_early:
-                safe_print('duration elapsed, stopping...')
+                log('INFO', None, 'requested duration reached, stopping both streams')
         else:
             for t in threads:
                 while t.is_alive():
                     t.join(timeout=0.5)
     except KeyboardInterrupt:
-        safe_print('\nKeyboardInterrupt, stopping...')
+        log('INFO', None, 'received Ctrl+C, stopping both streams')
     finally:
         stop_event.set()
 
@@ -574,7 +597,7 @@ def main(argv: Optional[list] = None) -> int:
     for t, ctx in zip(threads, live):
         t.join(timeout=30.0)
         if t.is_alive():
-            safe_print(f'WARNING: thread {t.name} did not finish within 30s, forcing its connection closed')
+            log('WARN', t.name, 'did not finish within 30s of being asked to stop, forcing its connection closed')
             # Best-effort unblock: closing the socket out from under a thread
             # stuck in read_stream() usually makes that call raise/return
             # immediately instead of waiting for it to time out
@@ -589,8 +612,8 @@ def main(argv: Optional[list] = None) -> int:
     failed = {tag: reason for tag, reason in failed.items() if reason is not None}
     if failed:
         for tag, reason in failed.items():
-            safe_print(f'[{tag}] FAILED: {reason}')
-        safe_print('Both TimeTaggers required: discarding all data, nothing saved.')
+            log('ERROR', tag, f'[STOP] this TimeTagger\'s recording is unusable ({reason})')
+        log('ERROR', None, '[STOP] both TimeTaggers are required to be healthy; discarding all data from this run, nothing saved')
         # "zero files behind" above includes any scratch files _flush_overflow
         # wrote mid-recording, not just the final .npy this branch never gets to
         for ctx in live:
@@ -608,38 +631,42 @@ def main(argv: Optional[list] = None) -> int:
             write_outputs(ctx, base, output_dir)
         rc = 0
 
-    # per-TT data-loss summary: host wall-clock recording duration vs. the TT's last reported stream_uptime_s
-    # meaningful deficit (more than a frame's worth) means the TT's ring buffer overflowed and detections were lost
-    # only meaningful in duration mode --> in detection_count mode we deliberately stop once the target is hit, so a deficit there is
-    # expected and does NOT indicate loss inside the kept window
+    # per-TT data-loss check: host wall-clock recording time vs. the TT's own last
+    # reported stream uptime. A meaningful gap (more than about one read's worth)
+    # means detections accumulated server-side faster than we could read them.
+    # Only meaningful in duration mode; in detection_count mode we deliberately
+    # stop once the target is hit, so a gap there is expected, not data loss.
     safe_print('')
-    safe_print('=== summary ===')
+    log('INFO', None, '[CONF] ==== recording summary ====')
     for ctx in live:
         if not ctx.frames_meta or ctx.wall_start_s is None or ctx.wall_end_s is None:
-            safe_print(f'[{ctx.tag}] no frames captured')
+            log('WARN', ctx.tag, 'no data was captured during this recording')
             continue
         wall_s = ctx.wall_end_s - ctx.wall_start_s
         tt_up_s = ctx.frames_meta[-1]['stream_uptime_s']
-        deficit_s = wall_s - tt_up_s
+        gap_s = wall_s - tt_up_s
         n_detections = sum(m['n_detections'] for m in ctx.frames_meta)
         n_capped = sum(1 for m in ctx.frames_meta if m['capped'])
         rate_dps = n_detections / tt_up_s if tt_up_s > 0 else 0.0
-        if stop_mode == 'duration':
-            loss_flag = '  !! LIKELY LOST DATA' if (deficit_s > 0.5 or n_capped > 0) else ''
-        else:
-            loss_flag = ''   # expected behavior in detection_count mode
-        safe_print(
-            f'[{ctx.tag}] frames={len(ctx.frames_meta):>3d} '
-            f'capped={n_capped:>3d} '
-            f'detections={n_detections:>10d} '
-            f'rate={rate_dps * 1e-6:6.2f} Mdet/s '
-            f'wall={wall_s:6.2f}s '
-            f'tt_uptime={tt_up_s:6.2f}s '
-            f'deficit={deficit_s:+6.2f}s'
-            f'{loss_flag}'
-        )
 
-    safe_print('done.')
+        log('INFO', ctx.tag,
+            f'{n_detections} detections across {len(ctx.frames_meta)} reads, '
+            f'average rate {rate_dps * 1e-6:.2f} Mdet/s over {tt_up_s:.2f}s of device uptime')
+
+        likely_loss = stop_mode == 'duration' and (gap_s > 0.5 or n_capped > 0)
+        if not likely_loss:
+            log('INFO', ctx.tag, '[OK] no sign of data loss: host recording time matches the device\'s own reported uptime')
+            continue
+        if n_capped > 0:
+            log('WARN', ctx.tag,
+                f'{n_capped} of {len(ctx.frames_meta)} reads came back at the server\'s maximum batch size; '
+                f'this detector\'s rate may exceed what single reads can keep up with')
+        if gap_s > 0.5:
+            log('WARN', ctx.tag,
+                f'the device\'s last reported uptime ({tt_up_s:.2f}s) is {gap_s:.2f}s behind how long we were '
+                f'actually recording ({wall_s:.2f}s); detections from roughly that last {gap_s:.2f}s window may be missing')
+
+    log('INFO', None, 'recording finished')
     return rc
 
 

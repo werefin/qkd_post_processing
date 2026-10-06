@@ -3,15 +3,16 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import os
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
-import click
 import numpy as np
 from numba import njit
 from scipy import fft
@@ -22,6 +23,16 @@ PS_PER_MS = 1_000_000_000
 PS_PER_S = 1_000_000_000_000
 MIN_PEAK_SCORE = 6.0
 MIN_SEGMENT_SCORE = 5.0
+
+
+class AnalysisError(Exception):
+    '''A user-facing input/data problem, as opposed to an internal bug;
+    the CLI entry point catches this and prints it as an [ERROR] line'''
+
+
+def log(level: str, msg: str) -> None:
+    '''arnika-style log line: "[LEVEL] message", one severity tag per line'''
+    print(f'[{level}] {msg}', flush=True)
 
 
 @dataclass
@@ -171,13 +182,13 @@ def _pair_elapsed_moments(
 def _validate_timestamps(path: Path) -> np.ndarray:
     timestamps = np.load(path, mmap_mode="r", allow_pickle=False)
     if timestamps.ndim != 1:
-        raise click.ClickException(f"{path}: expected a one-dimensional array")
+        raise AnalysisError(f"{path}: expected a one-dimensional array")
     if not np.issubdtype(timestamps.dtype, np.integer):
-        raise click.ClickException(f"{path}: expected integer picosecond timestamps")
+        raise AnalysisError(f"{path}: expected integer picosecond timestamps")
     if len(timestamps) < 2:
-        raise click.ClickException(f"{path}: at least two timestamps are required")
+        raise AnalysisError(f"{path}: at least two timestamps are required")
     if np.any(timestamps[1:] < timestamps[:-1]):
-        raise click.ClickException(f"{path}: timestamps are not sorted")
+        raise AnalysisError(f"{path}: timestamps are not sorted")
     return timestamps
 
 
@@ -185,7 +196,7 @@ def resolve_inputs(inputs: tuple[Path, ...]) -> tuple[Path, Path, str]:
     if len(inputs) == 1 and inputs[0].is_dir():
         paths = sorted(inputs[0].glob("*_timestamp_sequence.npy"))
         if len(paths) != 2:
-            raise click.ClickException(
+            raise AnalysisError(
                 f"{inputs[0]}: expected exactly two *_timestamp_sequence.npy files, "
                 f"found {len(paths)}"
             )
@@ -194,7 +205,12 @@ def resolve_inputs(inputs: tuple[Path, ...]) -> tuple[Path, Path, str]:
         name_a = inputs[0].name.removesuffix("_timestamp_sequence.npy")
         name_b = inputs[1].name.removesuffix("_timestamp_sequence.npy")
         return inputs[0], inputs[1], f"{name_a}_vs_{name_b}"
-    raise click.ClickException("provide one recording directory or two timestamp NPY files")
+    raise AnalysisError("provide one recording directory or two timestamp NPY files")
+
+
+def _channel_path(path: Path) -> Path:
+    '''Sibling *_channel_sequence.npy for a *_timestamp_sequence.npy path'''
+    return path.with_name(path.name.removesuffix("_timestamp_sequence.npy") + "_channel_sequence.npy")
 
 
 def _meta_for(path: Path) -> dict[str, Any] | None:
@@ -234,20 +250,20 @@ def slice_to_wall_overlap(
     margin_s: float = 2.0,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     """Restrict both streams to their wall-clock overlap (from *_meta.json)
-    Returns the sliced arrays plus an info dict --> raises click.ClickException
+    Returns the sliced arrays plus an info dict; raises AnalysisError
     when the overlap is empty or a slice would be left with fewer than two timestamps
     """
     meta_a = _meta_for(path_a)
     meta_b = _meta_for(path_b)
     if meta_a is None or meta_b is None:
         missing = str(path_a) if meta_a is None else str(path_b)
-        raise click.ClickException(f"{missing}: sibling *_meta.json not found")
+        raise AnalysisError(f"{missing}: sibling *_meta.json not found")
     start_a, end_a, frame_start_a, _ = _wall_interval(meta_a)
     start_b, end_b, frame_start_b, _ = _wall_interval(meta_b)
     overlap_start = max(start_a, start_b) - margin_s
     overlap_end = min(end_a, end_b) + margin_s
     if overlap_end <= overlap_start:
-        raise click.ClickException("wall-clock recordings do not overlap")
+        raise AnalysisError("wall-clock recordings do not overlap")
 
     a0, b0 = int(a[0]), int(b[0])
     wall_a0 = start_a + (a0 - frame_start_a) / PS_PER_S
@@ -267,7 +283,7 @@ def slice_to_wall_overlap(
     a_cut, a_left, a_right = _slice(a, a0, wall_a0)
     b_cut, b_left, b_right = _slice(b, b0, wall_b0)
     if len(a_cut) < 2 or len(b_cut) < 2:
-        raise click.ClickException(
+        raise AnalysisError(
             "wall-overlap slice left fewer than two timestamps; "
             "increase --overlap-margin-s or use --no-meta"
         )
@@ -292,7 +308,7 @@ def _upper_limits(
 ) -> list[dict[str, Any]]:
     """Poisson detection floor per coincidence window width
     Accidentals assume uniform singles rates over the lag overlap:
-    bg = R_A * R_B * W * T --> min_excess is the excess needed for a local score of MIN_PEAK_SCORE
+    bg = R_A * R_B * W * T; min_excess is the excess needed for a local score of MIN_PEAK_SCORE
     """
     duration_a = int(a[-1]) - int(a[0])
     duration_b = int(b[-1]) - int(b[0])
@@ -340,21 +356,20 @@ def _coarse_search(
         ):
             break
         coarse_bin_ps *= 2
-        click.echo(
-            f"Coarse FFT would need approximately {estimated_gib:.1f} GiB; "
-            f"widening coarse bin to {coarse_bin_ps / PS_PER_NS:g} ns"
-        )
+        log('WARN',
+            f"the coarse search at this bin width would need about {estimated_gib:.1f} GiB of memory "
+            f"(over the --max-memory-gib budget); widening the bin to {coarse_bin_ps / PS_PER_NS:g} ns to fit, "
+            f"which trades timing resolution for a smaller search")
     n_bins = duration_ps // coarse_bin_ps + 2
     max_lag_bins = min(max_lag_ps // coarse_bin_ps, n_bins - 1)
     if max_lag_bins < 1:
-        raise click.ClickException("maximum lag is smaller than the coarse bin width")
+        raise AnalysisError("maximum lag is smaller than the coarse bin width")
 
     n_fft = fft.next_fast_len(2 * n_bins - 1)
     estimated_gib = (2 * n_bins * 4 + 3 * (n_fft // 2 + 1) * 8) / (1024**3)
-    click.echo(
-        f"Coarse FFT: {n_bins:,} bins, {coarse_bin_ps / PS_PER_NS:g} ns/bin, "
-        f"approximately {estimated_gib:.2f} GiB working memory"
-    )
+    log('INFO',
+        f"coarse search: {n_bins} bins at {coarse_bin_ps / PS_PER_NS:g} ns/bin, "
+        f"about {estimated_gib:.2f} GiB of working memory")
 
     counts_a = _bin_timestamps(a, a_origin, coarse_bin_ps, n_bins)
     counts_b = _bin_timestamps(b, b_origin, coarse_bin_ps, n_bins)
@@ -486,6 +501,33 @@ def _refine_candidate(
     return HistogramResult(lag_ps, radius_ps, fine_bin_ps, counts, window)
 
 
+def calibrate_channel_delays(
+    ts_a: np.ndarray, ch_a: np.ndarray, ts_b: np.ndarray, ch_b: np.ndarray,
+    shift_b_to_a, radius_ps: int = 3000, fine_bin_ps: int = 20, center_limit_ps: int = 500,
+) -> dict[str, Any]:
+    '''Per-channel residual delay on top of the already-fitted lag+skew; our
+    best-effort match to the vendor's delay_ch0_ps..delay_ch3_ps, not confirmed-identical'''
+    ts_b_aligned = shift_b_to_a(ts_b)
+    results: dict[str, Any] = {}
+    for label, ts_side, ch_side, other_ts in (('a', ts_a, ch_a, ts_b_aligned), ('b', ts_b_aligned, ch_b, ts_a)):
+        per_channel = {}
+        for ch in (1, 2, 3, 4):
+            subset = np.sort(ts_side[ch_side == ch].astype(np.int64))
+            other_sorted = np.sort(other_ts.astype(np.int64))
+            if subset.size < 2 or other_sorted.size < 2:
+                per_channel[str(ch)] = {'offset_ps': 0, 'score': 0.0, 'n': int(subset.size)}
+                continue
+            lag_ps = int(subset[0]) - int(other_sorted[0])
+            hist = _refine_candidate(subset, other_sorted, lag_ps, radius_ps, fine_bin_ps, center_limit_ps)
+            per_channel[str(ch)] = {
+                'offset_ps': int(round(hist.window.center_ps)),
+                'score': float(hist.window.score),
+                'n': int(subset.size),
+            }
+        results[label] = per_channel
+    return results
+
+
 class _SkewUnavailable(Exception):
     pass
 
@@ -505,7 +547,7 @@ def _fit_clock_skew(
     overlap_start = max(0, -lag_ps)
     overlap_end = min(duration_a, duration_b - lag_ps)
     if overlap_end <= overlap_start:
-        raise click.ClickException("the selected lag has no timestamp overlap")
+        raise AnalysisError("the selected lag has no timestamp overlap")
 
     boundaries = np.linspace(overlap_start, overlap_end, segments + 1, dtype=np.int64)
 
@@ -713,11 +755,11 @@ def analyze_arrays(
     for a live check that must stay fast even with no peak found yet
     """
     if fine_bin_ps > refine_radius_ps:
-        raise click.ClickException(
+        raise AnalysisError(
             "fine bin width must not exceed the refinement radius"
         )
     if (2 * refine_radius_ps) % fine_bin_ps:
-        raise click.ClickException(
+        raise AnalysisError(
             "twice the refinement radius must be divisible by the fine bin width"
         )
 
@@ -729,7 +771,7 @@ def analyze_arrays(
         candidate_count=candidate_count,
         max_memory_gib=max_memory_gib,
     )
-    click.echo("Refining coarse candidates with exact timestamp differences")
+    log('INFO', "refining the coarse search's top candidate lags using exact (not binned) timestamp differences")
     # 80% of total runtime, measured; candidates are independent and the
     # @njit scan releases the GIL, so threads give real parallelism here
     center_limit_ps = max(2 * coarse_bin_ps, 200 * PS_PER_NS)
@@ -744,7 +786,7 @@ def analyze_arrays(
         if abs(item.lag_ps + item.window.center_ps) <= max_lag_ps
     ]
     if not refined:
-        raise click.ClickException("no refined candidate remains inside the lag range")
+        raise AnalysisError("no refined candidate remains inside the lag range")
     selected = max(refined, key=lambda item: item.window.score)
     detected = selected.window.score >= MIN_PEAK_SCORE
     lag_ps = int(round(selected.lag_ps + selected.window.center_ps))
@@ -782,7 +824,7 @@ def analyze_arrays(
         )
     constant_lag_ps = lag_ps
     if abs(constant_lag_ps) > max_lag_ps:
-        raise click.ClickException("refined coincidence peak lies outside the lag range")
+        raise AnalysisError("refined coincidence peak lies outside the lag range")
 
     if detected and fit_skew:
         try:
@@ -795,7 +837,7 @@ def analyze_arrays(
                 segments,
             )
         except _SkewUnavailable as exc:
-            click.echo(f"Segment skew fit failed ({exc}); trying slope grid search")
+            log('WARN', f"could not fit clock skew from per-segment peaks ({exc}); falling back to a slower slope grid search")
             skew = _grid_search_clock_skew(
                 a,
                 b,
@@ -893,7 +935,7 @@ def analyze_arrays(
         "corrected_window": corrected_window,
     }
     if strict and not detected:
-        raise click.ClickException(
+        raise AnalysisError(
             f"no significant coincidence peak found (best local score "
             f"{selected.window.score:.2f}, required {MIN_PEAK_SCORE:.2f})"
         )
@@ -914,18 +956,16 @@ def analyze_files(
     """
     raw_a = _validate_timestamps(path_a)
     raw_b = _validate_timestamps(path_b)
-    click.echo(f"A: {path_a} ({len(raw_a):,} timestamps)")
-    click.echo(f"B: {path_b} ({len(raw_b):,} timestamps)")
+    log('INFO', f"A: {path_a} ({len(raw_a)} timestamps)")
+    log('INFO', f"B: {path_b} ({len(raw_b)} timestamps)")
     overlap_info: dict[str, Any] | None = None
     if use_meta:
         a, b, overlap_info = slice_to_wall_overlap(
             np.asarray(raw_a), np.asarray(raw_b), path_a, path_b, overlap_margin_s
         )
-        click.echo(
-            f"Wall-overlap slice: A {len(a):,}/{len(raw_a):,} "
-            f"({overlap_info['kept_fraction_a']:.1%}), "
-            f"B {len(b):,}/{len(raw_b):,} ({overlap_info['kept_fraction_b']:.1%})"
-        )
+        log('INFO',
+            f"kept only the wall-clock overlap between the two recordings: A {len(a)}/{len(raw_a)} "
+            f"({overlap_info['kept_fraction_a']:.1%}), B {len(b)}/{len(raw_b)} ({overlap_info['kept_fraction_b']:.1%})")
     else:
         a = np.asarray(raw_a)
         b = np.asarray(raw_b)
@@ -936,7 +976,33 @@ def analyze_files(
     report["overlap"] = overlap_info
     report["parameters"]["use_meta"] = bool(overlap_info is not None)
     report["parameters"]["overlap_margin_s"] = float(overlap_margin_s)
+
+    ch_path_a, ch_path_b = _channel_path(path_a), _channel_path(path_b)
+    if ch_path_a.is_file() and ch_path_b.is_file():
+        ch_a = np.load(ch_path_a, allow_pickle=False)
+        ch_b = np.load(ch_path_b, allow_pickle=False)
+        shift = _shift_to_a_from_report(report, int(raw_a[0]), int(raw_b[0]))
+        report["channel_delays"] = calibrate_channel_delays(np.asarray(raw_a), ch_a, np.asarray(raw_b), ch_b, shift)
+        for side, chs in report["channel_delays"].items():
+            summary = ", ".join(f"ch{ch}={d['offset_ps']:+d}ps(score={d['score']:.1f})" for ch, d in chs.items())
+            log('INFO', f"per-channel delay calibration, side {side}: {summary}")
+    else:
+        report["channel_delays"] = None
     return report, diagnostics
+
+
+def _shift_to_a_from_report(report: dict[str, Any], a0: int, b0: int):
+    '''Builds the same B-onto-A timestamp shift cmd/importtt applies, from
+    this report's own fitted lag+skew, for calibrate_channel_delays to reuse'''
+    skew = report["clock_skew"]
+    ref, lag_ref, frac = skew["reference_elapsed_ps"], skew["lag_at_reference_ps"], skew["skew_fraction"]
+
+    def shift(ts_b: np.ndarray) -> np.ndarray:
+        b_rel = ts_b.astype(np.float64) - b0
+        a_rel = ref + (b_rel - (ref + lag_ref)) / (1 + frac)
+        return (a0 + np.round(a_rel)).astype(np.int64)
+
+    return shift
 
 
 def _format_span(ps: float) -> str:
@@ -955,7 +1021,7 @@ def _peak_xlim_ns(
 ) -> tuple[float, float]:
     """X limits (ns) for a peak panel, scaled to the detected window
     The shaded window occupies about 25% of the panel width (half-span is four half-widths)
-    with a floor of 5 ns / 50 bins so sub-ns windows still show surrounding background --> clipped to histogram radius
+    with a floor of 5 ns / 50 bins so sub-ns windows still show surrounding background, clipped to histogram radius
     """
     half_width_ps = width_ps / 2
     half_span_ps = max(4 * half_width_ps, 5 * PS_PER_NS, 50 * bin_ps)
@@ -1034,92 +1100,133 @@ def save_plot(report: dict[str, Any], diagnostics: dict[str, Any], path: Path) -
     plt.close(figure)
 
 
-def _apply_config_defaults(
-    ctx: click.Context, param: click.Parameter, value: Path | None
-) -> Path | None:
-    """Eager --config callback: loads the JSON file's "coincidence_peak"
-    section as this command's option defaults, so an explicit flag still
-    overrides it. Runs before the other options are resolved (is_eager=True).
-    """
-    if value is not None:
-        try:
-            data = json.loads(value.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            raise click.ClickException(f"{value}: {exc}")
-        ctx.default_map = data.get("coincidence_peak", {})
-    return value
+def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
+    '''CLI for analyze_files: one recording directory or two timestamp NPY
+    files, plus the search tuning options. Each tuning option defaults to
+    None here so --config's values (if given) can supply the real default
+    before this module's own hardcoded fallback applies; see main()'''
+    parser = argparse.ArgumentParser(description="Analyze one recording directory or two timestamp sequence NPY files")
+    parser.add_argument("inputs", nargs="*", type=Path)
+    parser.add_argument("--config", type=Path, default=None,
+                         help='JSON file (see acquisition/config.json\'s "coincidence_peak" section) '
+                              'supplying default values for the options below; explicit flags still override it.')
+    parser.add_argument("--max-lag-ms", type=float, default=None)
+    parser.add_argument("--coarse-bin-ns", type=float, default=None)
+    parser.add_argument("--fine-bin-ps", type=int, default=None)
+    parser.add_argument("--candidates", type=int, default=None)
+    parser.add_argument("--segments", type=int, default=None)
+    parser.add_argument("--refine-radius-ns", type=float, default=None)
+    parser.add_argument("--output-dir", type=Path, default=None,
+                         help="Directory for the JSON/PNG reports. Defaults to the input "
+                              "recording directory; required when passing two files explicitly.")
+    plot_group = parser.add_mutually_exclusive_group()
+    plot_group.add_argument("--plot", dest="plot", action="store_true", default=None)
+    plot_group.add_argument("--no-plot", dest="plot", action="store_false")
+    meta_group = parser.add_mutually_exclusive_group()
+    meta_group.add_argument("--meta", dest="use_meta", action="store_true", default=None,
+                             help="Restrict both streams to their wall-clock overlap from *_meta.json.")
+    meta_group.add_argument("--no-meta", dest="use_meta", action="store_false")
+    parser.add_argument("--overlap-margin-s", type=float, default=None)
+    parser.add_argument("--max-memory-gib", type=float, default=None)
+    parser.add_argument("--slope-range-ppb", type=float, default=None)
+    strict_group = parser.add_mutually_exclusive_group()
+    strict_group.add_argument("--strict", dest="strict", action="store_true", default=None,
+                               help="Exit nonzero when no peak passes the detection threshold.")
+    strict_group.add_argument("--no-strict", dest="strict", action="store_false")
+    return parser.parse_args(argv)
 
 
-@click.command(context_settings={"show_default": True})
-@click.argument("inputs", nargs=-1, type=click.Path(exists=True, path_type=Path))
-@click.option(
-    "--config",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    default=None,
-    is_eager=True,
-    expose_value=False,
-    callback=_apply_config_defaults,
-    help="JSON file (see acquisition/config.json's \"coincidence_peak\" section) "
-    "supplying default values for the options below; explicit flags still override it.",
-)
-@click.option("--max-lag-ms", type=click.FloatRange(min=0, min_open=True), default=1_000.0)
-@click.option("--coarse-bin-ns", type=click.FloatRange(min=0, min_open=True), default=100.0)
-@click.option("--fine-bin-ps", type=click.IntRange(min=1), default=100)
-@click.option("--candidates", type=click.IntRange(min=1), default=16)
-@click.option("--segments", type=click.IntRange(min=3), default=6)
-@click.option("--refine-radius-ns", type=click.FloatRange(min=10), default=2_000.0)
-@click.option("--output-dir", type=click.Path(path_type=Path), default=None,
-              help="Directory for the JSON/PNG reports. Defaults to the input "
-              "recording directory; required when passing two files explicitly.")
-@click.option("--plot/--no-plot", default=True)
-@click.option("--meta/--no-meta", "use_meta", default=False,
-              help="Restrict both streams to their wall-clock overlap from *_meta.json.")
-@click.option("--overlap-margin-s", type=click.FloatRange(min=0), default=2.0)
-@click.option("--max-memory-gib", type=click.FloatRange(min=0.1), default=4.0)
-@click.option("--slope-range-ppb", type=click.FloatRange(min=0, min_open=True), default=200.0)
-@click.option("--strict/--no-strict", default=True,
-              help="Exit nonzero when no peak passes the detection threshold.")
-def main(
-    inputs: tuple[Path, ...],
-    max_lag_ms: float,
-    coarse_bin_ns: float,
-    fine_bin_ps: int,
-    candidates: int,
-    segments: int,
-    refine_radius_ns: float,
-    output_dir: Path | None,
-    plot: bool,
-    use_meta: bool,
-    overlap_margin_s: float,
-    max_memory_gib: float,
-    slope_range_ppb: float,
-    strict: bool,
-) -> None:
+def _resolve_option(cli_value: Any, cfg: dict, key: str, default: Any) -> Any:
+    '''--flag (if given) overrides --config's value (if given), which
+    overrides this module's own hardcoded default'''
+    return cli_value if cli_value is not None else cfg.get(key, default)
+
+
+def main(argv: Optional[list] = None) -> int:
     """Analyze one recording directory or two timestamp sequence NPY files"""
-    path_a, path_b, result_name = resolve_inputs(inputs)
-    if len(inputs) == 1 and inputs[0].is_dir():
-        resolved_output_dir = output_dir if output_dir is not None else path_a.parent
-    elif output_dir is None:
-        raise click.ClickException(
-            "--output-dir is required when passing two timestamp files explicitly"
+    args = parse_args(argv)
+
+    cfg: dict = {}
+    if args.config is not None:
+        try:
+            cfg = json.loads(args.config.read_text(encoding="utf-8")).get("coincidence_peak", {})
+        except (OSError, ValueError) as exc:
+            log('ERROR', f"{args.config}: {exc}")
+            return 1
+
+    for path in args.inputs:
+        if not path.exists():
+            log('ERROR', f"{path}: no such file or directory")
+            return 1
+
+    max_lag_ms = _resolve_option(args.max_lag_ms, cfg, "max_lag_ms", 1_000.0)
+    coarse_bin_ns = _resolve_option(args.coarse_bin_ns, cfg, "coarse_bin_ns", 100.0)
+    fine_bin_ps = _resolve_option(args.fine_bin_ps, cfg, "fine_bin_ps", 100)
+    candidates = _resolve_option(args.candidates, cfg, "candidates", 16)
+    segments = _resolve_option(args.segments, cfg, "segments", 6)
+    refine_radius_ns = _resolve_option(args.refine_radius_ns, cfg, "refine_radius_ns", 2_000.0)
+    output_dir = args.output_dir
+    plot = _resolve_option(args.plot, cfg, "plot", True)
+    use_meta = _resolve_option(args.use_meta, cfg, "use_meta", False)
+    overlap_margin_s = _resolve_option(args.overlap_margin_s, cfg, "overlap_margin_s", 2.0)
+    max_memory_gib = _resolve_option(args.max_memory_gib, cfg, "max_memory_gib", 4.0)
+    slope_range_ppb = _resolve_option(args.slope_range_ppb, cfg, "slope_range_ppb", 200.0)
+    strict = _resolve_option(args.strict, cfg, "strict", True)
+
+    if max_lag_ms <= 0:
+        log('ERROR', "--max-lag-ms must be positive")
+        return 1
+    if coarse_bin_ns <= 0:
+        log('ERROR', "--coarse-bin-ns must be positive")
+        return 1
+    if fine_bin_ps < 1:
+        log('ERROR', "--fine-bin-ps must be at least 1")
+        return 1
+    if candidates < 1:
+        log('ERROR', "--candidates must be at least 1")
+        return 1
+    if segments < 3:
+        log('ERROR', "--segments must be at least 3")
+        return 1
+    if refine_radius_ns < 10:
+        log('ERROR', "--refine-radius-ns must be at least 10")
+        return 1
+    if overlap_margin_s < 0:
+        log('ERROR', "--overlap-margin-s cannot be negative")
+        return 1
+    if max_memory_gib < 0.1:
+        log('ERROR', "--max-memory-gib must be at least 0.1")
+        return 1
+    if slope_range_ppb <= 0:
+        log('ERROR', "--slope-range-ppb must be positive")
+        return 1
+
+    try:
+        path_a, path_b, result_name = resolve_inputs(args.inputs)
+        if len(args.inputs) == 1 and args.inputs[0].is_dir():
+            resolved_output_dir = output_dir if output_dir is not None else path_a.parent
+        elif output_dir is None:
+            raise AnalysisError("--output-dir is required when passing two timestamp files explicitly")
+        else:
+            resolved_output_dir = output_dir
+        report, diagnostics = analyze_files(
+            path_a,
+            path_b,
+            max_lag_ps=int(round(max_lag_ms * PS_PER_MS)),
+            coarse_bin_ps=int(round(coarse_bin_ns * PS_PER_NS)),
+            fine_bin_ps=fine_bin_ps,
+            candidate_count=candidates,
+            segments=segments,
+            refine_radius_ps=int(round(refine_radius_ns * PS_PER_NS)),
+            use_meta=use_meta,
+            overlap_margin_s=overlap_margin_s,
+            max_memory_gib=max_memory_gib,
+            slope_range_ppb=slope_range_ppb,
+            strict=strict,
         )
-    else:
-        resolved_output_dir = output_dir
-    report, diagnostics = analyze_files(
-        path_a,
-        path_b,
-        max_lag_ps=int(round(max_lag_ms * PS_PER_MS)),
-        coarse_bin_ps=int(round(coarse_bin_ns * PS_PER_NS)),
-        fine_bin_ps=fine_bin_ps,
-        candidate_count=candidates,
-        segments=segments,
-        refine_radius_ps=int(round(refine_radius_ns * PS_PER_NS)),
-        use_meta=use_meta,
-        overlap_margin_s=overlap_margin_s,
-        max_memory_gib=max_memory_gib,
-        slope_range_ppb=slope_range_ppb,
-        strict=strict,
-    )
+    except AnalysisError as exc:
+        log('ERROR', str(exc))
+        return 1
 
     resolved_output_dir.mkdir(parents=True, exist_ok=True)
     report_path = resolved_output_dir / f"{result_name}_coincidence.json"
@@ -1130,19 +1237,26 @@ def main(
 
     constant = report["constant_shift"]
     skew = report["clock_skew"]
-    click.echo(f"\nResult (delay is B - A) detected={report.get('detected', True)}:")
-    click.echo(f"Relative lag: {constant['relative_lag_ps'] / PS_PER_MS:.9f} ms")
-    click.echo(f"Add to B: {constant['shift_to_add_to_b_ps']} ps")
-    click.echo(f"Constant coincidence window: {constant['window']['width_ps'] / PS_PER_NS:g} ns")
-    click.echo(f"Constant-window local score: {constant['window']['local_score']:.2f}")
-    click.echo(f"Clock skew: {skew['skew_ppb']:.3f} ppb ({skew['slope_ps_per_s']:.1f} ps/s) [{skew.get('skew_method', '?')}]")
-    click.echo(f"Corrected coincidence window: {skew['corrected_window']['width_ps'] / PS_PER_NS:g} ns")
-    click.echo(f"JSON: {report_path}")
+    detected = report.get("detected", True)
+    print()
+    if detected:
+        log('INFO', f"[OK] coincidence peak found (score {constant['window']['local_score']:.2f}, "
+                    f"required {MIN_PEAK_SCORE:.2f}); the two recordings are the same quantum link")
+    else:
+        log('WARN', f"no coincidence peak found (best score {constant['window']['local_score']:.2f}, "
+                        f"required {MIN_PEAK_SCORE:.2f}); treat the numbers below as unreliable")
+    log('INFO', f"relative lag (B minus A): {constant['relative_lag_ps'] / PS_PER_MS:.9f} ms")
+    log('INFO', f"shift to add to B's timestamps to align them onto A's clock: {constant['shift_to_add_to_b_ps']} ps")
+    log('INFO', f"coincidence window used for the lag search: {constant['window']['width_ps'] / PS_PER_NS:g} ns")
+    log('INFO', f"clock skew between the two TimeTaggers: {skew['skew_ppb']:.3f} ppb ({skew['slope_ps_per_s']:.1f} ps/s), fitted by {skew.get('skew_method', '?')}")
+    log('INFO', f"tighter window achievable once clock skew is corrected for: {skew['corrected_window']['width_ps'] / PS_PER_NS:g} ns")
+    log('INFO', f"full report written to {report_path}")
     if plot:
-        click.echo(f"  Plot: {plot_path}")
-    if strict and not report.get("detected", True):
-        raise SystemExit(2)
+        log('INFO', f"plot written to {plot_path}")
+    if strict and not detected:
+        return 2
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

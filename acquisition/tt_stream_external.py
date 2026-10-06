@@ -61,14 +61,15 @@ class TimeTaggerStream():
         self.socket_timeout_s = 5.0
         self.hmac_hashlib = hashlib.sha256
 
-        logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
+        logging.addLevelName(logging.WARNING, 'WARN')
+        logging.basicConfig(format='[%(levelname)s] %(message)s', level=logging.DEBUG)
 
     def get_custom_multiprocess_communication_module(self) -> object:
         '''
         Ensures the same authentication challenge across Python versions on the listener and client side, allows higher socket timeouts, and
-        makes the HMAC hash function configurable (multiprocessing.connection hardcodes md5) --> redefines "deliver_challenge" and "answer_challenge";
+        makes the HMAC hash function configurable (multiprocessing.connection hardcodes md5), by redefining "deliver_challenge" and "answer_challenge";
         the hashlib in "self.hmac_hashlib" is used for both; from Python 3.12 on this is already implemented in the original module, but this
-        override still works fine there too --> ref: https://github.com/python/cpython/blob/3.10/Lib/multiprocessing/connection.py
+        override still works fine there too; ref: https://github.com/python/cpython/blob/3.10/Lib/multiprocessing/connection.py
         '''
         MESSAGE_LENGTH = 20
         CHALLENGE = b'#CHALLENGE#'
@@ -118,16 +119,16 @@ class TimeTaggerStream():
         return mp_connection
 
     def update_tt_settings(self, new_settings: dict):
-        '''Updates the TimeTagger settings --> not all keys need to be present'''
+        '''Updates the TimeTagger settings; not all keys need to be present'''
         for elem_key in new_settings:
             if elem_key not in self.tt_settings:
-                logging.warning(f'unknown key "{elem_key}" passed to "update_tt_settings" method')
+                logging.warning(f'update_tt_settings: ignoring unknown setting "{elem_key}"')
                 continue
 
             elem_val = new_settings[elem_key]
             elem_type_class = type(self.tt_settings[elem_key])
             if type(elem_val) != elem_type_class:
-                logging.warning(f'unmatching type for key "{elem_key}" passed to "update_tt_settings" method, must be f{elem_type_class}')
+                logging.warning(f'update_tt_settings: ignoring "{elem_key}", expected a {elem_type_class} value')
                 continue
 
             self.tt_settings[elem_key] = elem_val
@@ -138,13 +139,13 @@ class TimeTaggerStream():
         '''Updates the connection parameters (IP, port, auth key) for the TimeTagger interface'''
         for elem_key in new_connection:
             if elem_key not in self.tt_connection_params:
-                logging.warning(f'unknown key "{elem_key}" passed to "update_tt_connection_params" method')
+                logging.warning(f'update_tt_connection_params: ignoring unknown setting "{elem_key}"')
                 continue
 
             elem_val = new_connection[elem_key]
             elem_type_class = type(self.tt_connection_params[elem_key])
             if type(elem_val) != elem_type_class:
-                logging.warning(f'unmatching type for key "{elem_key}" passed to "update_tt_connection_params" method, must be f{elem_type_class}')
+                logging.warning(f'update_tt_connection_params: ignoring "{elem_key}", expected a {elem_type_class} value')
                 continue
 
             self.tt_connection_params[elem_key] = elem_val
@@ -152,9 +153,9 @@ class TimeTaggerStream():
         self.tt_connection_params['updated'] = True
 
     def connect(self) -> bool:
-        '''Connects to the TimeTagger interface --> call "update_tt_connection_params" first'''
+        '''Connects to the TimeTagger interface; call "update_tt_connection_params" first'''
         if not self.tt_connection_params.get('updated', False):
-            logging.error('"connect" method aborted, please update TT connection via "update_tt_connection" first')
+            logging.error('connect: call update_tt_connection_params() first, there is no connection target set yet')
             return False
 
         if self.is_connected():
@@ -164,7 +165,7 @@ class TimeTaggerStream():
         tt_address = (self.tt_connection_params['tt_ip'], self.tt_connection_params['tt_port'])
         auth_key_hex = bytes.fromhex(self.tt_connection_params['auth_key_hex'])
 
-        logging.info('try to connect to TimeTagger interface...')
+        logging.info(f'connecting to TimeTagger interface at {tt_address[0]}:{tt_address[1]}...')
 
         attempts_left = 3
         while 1:
@@ -175,22 +176,22 @@ class TimeTaggerStream():
                 logging.info('connection to TimeTagger interface established')
                 return True
 
-            except (ConnectionRefusedError, ConnectionResetError, OSError):
+            except (ConnectionRefusedError, ConnectionResetError, OSError) as exc:
                 attempts_left -= 1
                 if attempts_left < 1:
-                    logging.warning('connection refused, TimeTagger interface not found, check IP and port')
+                    logging.warning(f'connection refused after 3 attempts ({exc}); check the IP and port are correct and the TimeTagger interface is running')
                     self.disconnect()
                     return False
                 time.sleep(0.5)
-                logging.info(f'...({attempts_left})')
+                logging.info(f'connection refused, retrying ({attempts_left} attempt(s) left)...')
 
             except AuthenticationError:
-                logging.error('connection refused, authentication failed, check authentication key')
+                logging.error('connection refused: authentication key does not match the TimeTagger interface')
                 self.disconnect()
                 return False
 
-            except Exception:
-                logging.error('connection aborted')
+            except Exception as exc:
+                logging.error(f'connection aborted by an unexpected error: {exc}')
                 return False
 
     def disconnect(self):
@@ -212,38 +213,38 @@ class TimeTaggerStream():
         return self.tt_connection is not self.TT_CONNECTION_DEFAULT
 
     def send_data(self, data_send):
-        '''TX implementation --> sends data via TCP/IP'''
+        '''TX implementation; sends data via TCP/IP'''
         if not self.is_connected():
-            logging.warning('"send_data" TimeTagger interface not connected')
+            logging.warning('send_data: cannot send, not connected to the TimeTagger interface')
             return False
 
         try:
             self.tt_connection.send(data_send)
             return True
-        except (ConnectionRefusedError, ConnectionResetError, EOFError, OSError):
-            logging.error('"send_data" connection lost')
+        except (ConnectionRefusedError, ConnectionResetError, EOFError, OSError) as exc:
+            logging.error(f'send_data: connection lost ({exc})')
             self.disconnect()
             return False
 
     def recv_data(self):
-        '''RX implementation --> receives data via TCP/IP'''
+        '''RX implementation; receives data via TCP/IP'''
         data_recv = None
         if not self.is_connected():
-            logging.warning('"recv_data" TimeTagger interface not connected')
+            logging.warning('recv_data: cannot receive, not connected to the TimeTagger interface')
             return data_recv
 
         try:
             data_recv = self.tt_connection.recv()
             return data_recv
-        except (ConnectionRefusedError, ConnectionResetError, EOFError, OSError):
-            logging.error('"recv_data" connection lost')
+        except (ConnectionRefusedError, ConnectionResetError, EOFError, OSError) as exc:
+            logging.error(f'recv_data: connection lost ({exc})')
             self.disconnect()
             return data_recv
 
     def start_stream(self):
-        '''Starts a data stream --> returns the resulting connection status'''
+        '''Starts a data stream; returns the resulting connection status'''
         if self.stream_connected:
-            logging.error('data stream already established')
+            logging.warning('start_stream: a data stream is already established, nothing to do')
             return True
 
         data_send = {

@@ -3,19 +3,29 @@
 
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
-import click
 import numpy as np
 from numba import njit
 
 PS_PER_NS = 1_000
 PS_PER_S = 1_000_000_000_000
+
+
+class AnalysisError(Exception):
+    '''A user-facing input/data problem, as opposed to an internal bug;
+    the CLI entry point catches this and prints it as an [ERROR] line'''
+
+
+def log(level: str, msg: str) -> None:
+    '''arnika-style log line: "[LEVEL] message", one severity tag per line'''
+    print(f'[{level}] {msg}', flush=True)
 
 # Same physical channel wiring cmd/importtt/main.go channelToBasisBit
 # assumes: 1-2 one polarization basis, 3-4 the other
@@ -79,19 +89,19 @@ def _find_recording(directory: Path) -> tuple[Path, Path, dict[str, Any]]:
     mirrors cmd/importtt/main.go findRecording"""
     ts_files = sorted(directory.glob("*_timestamp_sequence.npy"))
     if len(ts_files) != 2:
-        raise click.ClickException(
+        raise AnalysisError(
             f"{directory}: expected exactly two *_timestamp_sequence.npy files, "
             f"found {len(ts_files)}"
         )
     coincidence_files = sorted(directory.glob("*_coincidence.json"))
     if len(coincidence_files) != 1:
-        raise click.ClickException(
+        raise AnalysisError(
             f"{directory}: expected exactly one *_coincidence.json report, found "
             f"{len(coincidence_files)}; run coincidence_peak.py on this directory first"
         )
     report = json.loads(coincidence_files[0].read_text(encoding="utf-8"))
     if not report.get("detected", False):
-        raise click.ClickException(
+        raise AnalysisError(
             f"{coincidence_files[0]}: no significant coincidence peak was detected; "
             "the clock alignment in this report is not trustworthy"
         )
@@ -148,11 +158,11 @@ def build_blocks(
     ts_b = np.asarray(np.load(ts_path_b, allow_pickle=False, mmap_mode='r'))
     ch_b = np.asarray(np.load(_channel_path(ts_path_b), allow_pickle=False, mmap_mode='r'))
     if len(ts_a) != len(ch_a):
-        raise click.ClickException(f"{ts_path_a}: {len(ts_a)} timestamps but {len(ch_a)} channels")
+        raise AnalysisError(f"{ts_path_a}: {len(ts_a)} timestamps but {len(ch_a)} channels")
     if len(ts_b) != len(ch_b):
-        raise click.ClickException(f"{ts_path_b}: {len(ts_b)} timestamps but {len(ch_b)} channels")
+        raise AnalysisError(f"{ts_path_b}: {len(ts_b)} timestamps but {len(ch_b)} channels")
     if len(ts_a) == 0 or len(ts_b) == 0:
-        raise click.ClickException("empty recording")
+        raise AnalysisError("empty recording")
 
     a0, b0 = int(ts_a[0]), int(ts_b[0])
     ts_b_shifted = _shift_to_a_clock(ts_b, a0, b0, report["clock_skew"])
@@ -167,14 +177,14 @@ def build_blocks(
         width_ps=int(round(roi2_width_ns * PS_PER_NS)) if roi2_width_ns is not None else roi1.width_ps,
     )
     if roi1.width_ps <= 0 or roi2.width_ps <= 0:
-        raise click.ClickException("ROI widths must be positive")
+        raise AnalysisError("ROI widths must be positive")
 
     a_channels = {ch: _channel_slice(ts_a, ch_a, ch) for ch in MEASUREMENT_CHANNELS}
     b_channels = {ch: _channel_slice(ts_b_shifted, ch_b, ch) for ch in MEASUREMENT_CHANNELS}
 
     block_ps = int(round(block_s * PS_PER_S))
     if block_ps <= 0:
-        raise click.ClickException("block duration must be positive")
+        raise AnalysisError("block duration must be positive")
     origin_ps = min(a0, int(ts_b_shifted[0]))
     end_ps = max(int(ts_a[-1]), int(ts_b_shifted[-1]))
     n_blocks = max(1, math.ceil((end_ps - origin_ps + 1) / block_ps))
@@ -234,65 +244,88 @@ def build_blocks(
         "pair_order": pair_names,
         "clock_skew_ppb": report["clock_skew"]["skew_ppb"],
         "note": "roi1 is the real+accidental coincidence window; roi2 is an equal-width "
-        "accidental-only baseline offset from the peak --> subtract (properly scaled if the "
+        "accidental-only baseline offset from the peak; subtract (properly scaled if the "
         "windows differ in width) roi2 from roi1 per pair per block to get the background-"
         "subtracted coincidence count feeding N++/N+-/N-+/N-- per measurement setting.",
     }
     return metadata, columns, rows
 
 
-def _apply_config_defaults(ctx: click.Context, param: click.Parameter, value: Path | None) -> Path | None:
-    """Eager config callback loading the chsh_diagnostic section as defaults, an explicit flag still overrides it"""
-    if value is not None:
+def _resolve_option(cli_value: Any, cfg: dict, key: str, default: Any) -> Any:
+    '''--flag (if given) overrides --config's value (if given), which
+    overrides this module's own hardcoded default'''
+    return cli_value if cli_value is not None else cfg.get(key, default)
+
+
+def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
+    '''CLI for build_blocks: a recording directory plus the ROI tuning
+    options, each defaulting to None here so --config's values (if given)
+    can supply the real default before this module's own fallback applies'''
+    parser = argparse.ArgumentParser(
+        description="Per-block singles and ROI1/ROI2 coincidence counts for the CHSH analysis; "
+                     "DIRECTORY is a recording already processed by tt_record_dual.py and coincidence_peak.py")
+    parser.add_argument("directory", type=Path)
+    parser.add_argument("--config", type=Path, default=None,
+                         help='JSON file (see acquisition/config.json\'s "chsh_diagnostic" section) '
+                              'supplying default values for the options below; explicit flags still override it.')
+    parser.add_argument("--block-s", type=float, default=None, help="Integration time per output row (default 1.0).")
+    parser.add_argument("--roi1-width-ns", type=float, default=None,
+                         help="ROI1 width. Defaults to coincidence_peak.py's fitted peak window width.")
+    parser.add_argument("--roi1-center-ns", type=float, default=None,
+                         help="ROI1 center, relative to the aligned coincidence peak; defaults to "
+                              "coincidence_peak.py's fitted peak center (near 0).")
+    parser.add_argument("--roi2-offset-ns", type=float, default=None,
+                         help="ROI2 center offset from ROI1's center, e.g. one laser repetition period. "
+                              "Required (here or via --config); depends on the source's rep rate.")
+    parser.add_argument("--roi2-width-ns", type=float, default=None,
+                         help="ROI2 width; defaults to the same width as ROI1.")
+    parser.add_argument("--output", type=Path, default=None,
+                         help="Output CSV path; defaults to <directory>/<directory name>_chsh_blocks.csv.")
+    return parser.parse_args(argv)
+
+
+def main(argv: Optional[list] = None) -> int:
+    args = parse_args(argv)
+
+    if not args.directory.is_dir():
+        log('ERROR', f"{args.directory}: no such directory")
+        return 1
+
+    cfg: dict = {}
+    if args.config is not None:
         try:
-            data = json.loads(value.read_text(encoding="utf-8"))
+            cfg = json.loads(args.config.read_text(encoding="utf-8")).get("chsh_diagnostic", {})
         except (OSError, ValueError) as exc:
-            raise click.ClickException(f"{value}: {exc}")
-        ctx.default_map = data.get("chsh_diagnostic", {})
-    return value
+            log('ERROR', f"{args.config}: {exc}")
+            return 1
 
+    block_s = _resolve_option(args.block_s, cfg, "block_s", 1.0)
+    roi1_width_ns = _resolve_option(args.roi1_width_ns, cfg, "roi1_width_ns", None)
+    roi1_center_ns = _resolve_option(args.roi1_center_ns, cfg, "roi1_center_ns", None)
+    roi2_offset_ns = _resolve_option(args.roi2_offset_ns, cfg, "roi2_offset_ns", None)
+    roi2_width_ns = _resolve_option(args.roi2_width_ns, cfg, "roi2_width_ns", None)
+    output = args.output
 
-@click.command(context_settings={"show_default": True})
-@click.argument("directory", type=click.Path(exists=True, file_okay=False, path_type=Path))
-@click.option(
-    "--config",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    default=None,
-    is_eager=True,
-    expose_value=False,
-    callback=_apply_config_defaults,
-    help="JSON file (see acquisition/config.json's \"chsh_diagnostic\" section) "
-    "supplying default values for the options below; explicit flags still override it.",
-)
-@click.option("--block-s", type=click.FloatRange(min=0, min_open=True), default=1.0, help="Integration time per output row.")
-@click.option("--roi1-width-ns", type=click.FloatRange(min=0, min_open=True), default=None,
-              help="ROI1 width. Defaults to coincidence_peak.py's fitted peak window width.")
-@click.option("--roi1-center-ns", type=float, default=None,
-              help="ROI1 center, relative to the aligned coincidence peak --> defaults to "
-              "coincidence_peak.py's fitted peak center (near 0).")
-@click.option("--roi2-offset-ns", type=float, required=True,
-              help="ROI2 center offset from ROI1's center, e.g. one laser repetition period. "
-              "No safe default --> depends on the source's rep rate.")
-@click.option("--roi2-width-ns", type=click.FloatRange(min=0, min_open=True), default=None,
-              help="ROI2 width --> defaults to the same width as ROI1.")
-@click.option("--output", type=click.Path(path_type=Path), default=None,
-              help="Output CSV path --> defaults to <directory>/<directory name>_chsh_blocks.csv.")
-def main(
-    directory: Path,
-    block_s: float,
-    roi1_width_ns: float | None,
-    roi1_center_ns: float | None,
-    roi2_offset_ns: float,
-    roi2_width_ns: float | None,
-    output: Path | None,
-) -> None:
-    """Per-block singles and ROI1/ROI2 coincidence counts for the CHSH analysis,
-    reads DIRECTORY, a recording already processed by tt_record_dual.py and coincidence_peak.py"""
-    metadata, columns, rows = build_blocks(
-        directory, block_s, roi1_width_ns, roi1_center_ns, roi2_offset_ns, roi2_width_ns,
-    )
+    if roi2_offset_ns is None:
+        log('ERROR', "--roi2-offset-ns is required (directly, or via --config's chsh_diagnostic.roi2_offset_ns)")
+        return 1
+    if block_s <= 0:
+        log('ERROR', "--block-s must be positive")
+        return 1
+    for name, value in (("--roi1-width-ns", roi1_width_ns), ("--roi2-width-ns", roi2_width_ns)):
+        if value is not None and value <= 0:
+            log('ERROR', f"{name} must be positive")
+            return 1
 
-    output_path = output if output is not None else directory / f"{directory.name}_chsh_blocks.csv"
+    try:
+        metadata, columns, rows = build_blocks(
+            args.directory, block_s, roi1_width_ns, roi1_center_ns, roi2_offset_ns, roi2_width_ns,
+        )
+    except AnalysisError as exc:
+        log('ERROR', str(exc))
+        return 1
+
+    output_path = output if output is not None else args.directory / f"{args.directory.name}_chsh_blocks.csv"
     with output_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(columns)
@@ -301,12 +334,13 @@ def main(
     metadata_path = output_path.with_suffix(".json")
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
 
-    click.echo(f"Blocks: {metadata['n_blocks']} x {block_s:g} s")
-    click.echo(f"ROI1: center {metadata['roi1']['center_ps'] / PS_PER_NS:g} ns, width {metadata['roi1']['width_ps'] / PS_PER_NS:g} ns")
-    click.echo(f"ROI2: center {metadata['roi2']['center_ps'] / PS_PER_NS:g} ns, width {metadata['roi2']['width_ps'] / PS_PER_NS:g} ns")
-    click.echo(f"CSV: {output_path}")
-    click.echo(f"Metadata: {metadata_path}")
+    log('INFO', f"[OK] {metadata['n_blocks']} blocks of {block_s:g}s each")
+    log('INFO', f"ROI1 (signal + accidentals): center {metadata['roi1']['center_ps'] / PS_PER_NS:g} ns, width {metadata['roi1']['width_ps'] / PS_PER_NS:g} ns")
+    log('INFO', f"ROI2 (accidentals-only baseline): center {metadata['roi2']['center_ps'] / PS_PER_NS:g} ns, width {metadata['roi2']['width_ps'] / PS_PER_NS:g} ns")
+    log('INFO', f"block counts written to {output_path}")
+    log('INFO', f"metadata written to {metadata_path}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
