@@ -131,7 +131,9 @@ def _shift_to_a_clock(timestamps_b: np.ndarray, a0: int, b0: int, clock_skew: di
     reference_ps = clock_skew["reference_elapsed_ps"]
     lag_at_reference_ps = clock_skew["lag_at_reference_ps"]
     skew_fraction = clock_skew["skew_fraction"]
-    b_rel = (timestamps_b.astype(np.float64) - b0)
+    # int64 subtraction first: raw ts are ~1e18, past float64's exact
+    # range, so casting before subtracting b0 rounds to the nearest 512ps
+    b_rel = (timestamps_b.astype(np.int64) - np.int64(b0)).astype(np.float64)
     a_rel = reference_ps + (b_rel - (reference_ps + lag_at_reference_ps)) / (1 + skew_fraction)
     return (a0 + np.round(a_rel)).astype(np.int64)
 

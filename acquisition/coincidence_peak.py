@@ -506,14 +506,19 @@ def calibrate_channel_delays(
     shift_b_to_a, radius_ps: int = 3000, fine_bin_ps: int = 20, center_limit_ps: int = 500,
 ) -> dict[str, Any]:
     '''Per-channel residual delay on top of the already-fitted lag+skew; our
-    best-effort match to the vendor's delay_ch0_ps..delay_ch3_ps, not confirmed-identical'''
+    best-effort match to the vendor's delay_ch0_ps..delay_ch3_ps, not confirmed-identical
+    Each channel is matched only against its own same-numbered channel on
+    the other side --> pooling in the other 3 just adds background, no signal'''
     ts_b_aligned = shift_b_to_a(ts_b)
     results: dict[str, Any] = {}
-    for label, ts_side, ch_side, other_ts in (('a', ts_a, ch_a, ts_b_aligned), ('b', ts_b_aligned, ch_b, ts_a)):
+    for label, ts_side, ch_side, other_ts, other_ch in (
+        ('a', ts_a, ch_a, ts_b_aligned, ch_b),
+        ('b', ts_b_aligned, ch_b, ts_a, ch_a),
+    ):
         per_channel = {}
         for ch in (1, 2, 3, 4):
             subset = np.sort(ts_side[ch_side == ch].astype(np.int64))
-            other_sorted = np.sort(other_ts.astype(np.int64))
+            other_sorted = np.sort(other_ts[other_ch == ch].astype(np.int64))
             if subset.size < 2 or other_sorted.size < 2:
                 per_channel[str(ch)] = {'offset_ps': 0, 'score': 0.0, 'n': int(subset.size)}
                 continue
@@ -998,7 +1003,9 @@ def _shift_to_a_from_report(report: dict[str, Any], a0: int, b0: int):
     ref, lag_ref, frac = skew["reference_elapsed_ps"], skew["lag_at_reference_ps"], skew["skew_fraction"]
 
     def shift(ts_b: np.ndarray) -> np.ndarray:
-        b_rel = ts_b.astype(np.float64) - b0
+        # int64 subtraction first: raw ts are 1e18, past float64's exact
+        # range, so casting before subtracting b0 rounds to the nearest 512ps
+        b_rel = (ts_b.astype(np.int64) - np.int64(b0)).astype(np.float64)
         a_rel = ref + (b_rel - (ref + lag_ref)) / (1 + frac)
         return (a0 + np.round(a_rel)).astype(np.int64)
 

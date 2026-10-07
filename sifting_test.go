@@ -286,3 +286,45 @@ func TestMatchCoincidencesAgainstBruteForceWithTiesAndLargeTimestamps(t *testing
 		}
 	}
 }
+
+// TestMatchCoincidencesAgainstBruteForceExtremeRateAsymmetry: real recordings have one side clicking 60-100x faster than the other
+// bobLo two-pointer sweep is only exercised meaningfully when one side vastly outnumbers the other, so that's what this checks
+func TestMatchCoincidencesAgainstBruteForceExtremeRateAsymmetry(t *testing.T) {
+	for seed := int64(0); seed < 60; seed++ {
+		r := rand.New(rand.NewSource(5000 + seed))
+		spanPS := int64(200_000 + r.Intn(800_000))
+		windowPS := int64(50 + r.Intn(2000))
+
+		fastIsAlice := r.Intn(2) == 0
+		nFast := 400 + r.Intn(1600)
+		nSlow := 3 + r.Intn(20)
+
+		mk := func(n int) []PublicEvent {
+			out := make([]PublicEvent, n)
+			for i := range out {
+				out[i] = PublicEvent{
+					TimestampPS: r.Int63n(spanPS),
+					Basis:       Basis(r.Intn(2)),
+					MultiPhoton: r.Float64() < 0.02,
+				}
+			}
+			return out
+		}
+
+		var alice, bob []PublicEvent
+		if fastIsAlice {
+			alice, bob = mk(nFast), mk(nSlow)
+		} else {
+			alice, bob = mk(nSlow), mk(nFast)
+		}
+
+		got := MatchCoincidences(alice, bob, windowPS)
+		want := bruteForceMatch(alice, bob, windowPS)
+
+		if !pairSetEqual(t, got, want) {
+			t.Fatalf("seed=%d window=%d fastIsAlice=%v: disagreement under extreme rate asymmetry\n"+
+				"len(alice)=%d len(bob)=%d\ngot=%+v\nwant=%+v",
+				seed, windowPS, fastIsAlice, len(alice), len(bob), got, want)
+		}
+	}
+}
