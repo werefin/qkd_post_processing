@@ -253,6 +253,41 @@ def build_blocks(
     return metadata, columns, rows
 
 
+def compute_qoj_qber(columns: list[str], rows: list[list[int]], pair_names: list[str]) -> dict[str, Optional[float]]:
+    '''Background-subtracted QBER estimate, built to match production's own
+    qber_bs/qber_bs_hv/qber_bs_da: sum roi1 and roi2 across all blocks per
+    channel pair, subtract (roi1-roi2) to estimate the real-pair-only
+    coincidence count per pair, then apply the same wrong/(correct+wrong)
+    formula CalculateQBER uses'''
+    roi1_idx = {p: columns.index(f"roi1_{p}") for p in pair_names}
+    roi2_idx = {p: columns.index(f"roi2_{p}") for p in pair_names}
+
+    def excess(pair: str) -> int:
+        r1 = sum(row[roi1_idx[pair]] for row in rows)
+        r2 = sum(row[roi2_idx[pair]] for row in rows)
+        return r1 - r2
+
+    hh, vv, hv, vh = excess("A_H_B_H"), excess("A_V_B_V"), excess("A_H_B_V"), excess("A_V_B_H")
+    dd, aa, da, ad = excess("A_D_B_D"), excess("A_A_B_A"), excess("A_D_B_A"), excess("A_A_B_D")
+
+    def qber(*, correct: int, wrong: int) -> Optional[float]:
+        correct, wrong = max(correct, 0), max(wrong, 0)
+        total = correct + wrong
+        return wrong / total if total > 0 else None
+
+    qoj_qber_hv = qber(correct=hh + vv, wrong=hv + vh)
+    qoj_qber_da = qber(correct=dd + aa, wrong=da + ad)
+    qoj_qber = qber(correct=max(hh, 0) + max(vv, 0) + max(dd, 0) + max(aa, 0),
+                     wrong=max(hv, 0) + max(vh, 0) + max(da, 0) + max(ad, 0))
+
+    return {
+        "qoj_qber_hv": qoj_qber_hv,
+        "qoj_qber_da": qoj_qber_da,
+        "qoj_qber": qoj_qber,
+        "excess_counts": {"HH": hh, "VV": vv, "HV": hv, "VH": vh, "DD": dd, "AA": aa, "DA": da, "AD": ad},
+    }
+
+
 def _resolve_option(cli_value: Any, cfg: dict, key: str, default: Any) -> Any:
     '''--flag (if given) overrides --config's value (if given), which
     overrides this module's own hardcoded default'''
@@ -333,12 +368,17 @@ def main(argv: Optional[list] = None) -> int:
         writer.writerow(columns)
         writer.writerows(rows)
 
+    metadata["qoj_qber"] = compute_qoj_qber(columns, rows, metadata["pair_order"])
+
     metadata_path = output_path.with_suffix(".json")
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
 
     log('INFO', f"[OK] {metadata['n_blocks']} blocks of {block_s:g}s each")
     log('INFO', f"ROI1 (signal + accidentals): center {metadata['roi1']['center_ps'] / PS_PER_NS:g} ns, width {metadata['roi1']['width_ps'] / PS_PER_NS:g} ns")
     log('INFO', f"ROI2 (accidentals-only baseline): center {metadata['roi2']['center_ps'] / PS_PER_NS:g} ns, width {metadata['roi2']['width_ps'] / PS_PER_NS:g} ns")
+    qq = metadata["qoj_qber"]
+    fmt = lambda v: f"{v*100:.2f}%" if v is not None else "n/a (no coincidences)"
+    log('INFO', f"qoj_qber_hv={fmt(qq['qoj_qber_hv'])}  qoj_qber_da={fmt(qq['qoj_qber_da'])}  qoj_qber={fmt(qq['qoj_qber'])}")
     log('INFO', f"block counts written to {output_path}")
     log('INFO', f"metadata written to {metadata_path}")
     return 0
