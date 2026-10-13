@@ -17,7 +17,8 @@ import (
 	"strings"
 	"time"
 
-	qkd "qkd_post_processing"
+	"qkd_post_processing/kms"
+	"qkd_post_processing/qkd"
 )
 
 // simulateOffline is a click-stream generator used only to design a
@@ -110,18 +111,18 @@ func saveToKeystore(keystoreDir string, finalKeyBytes []byte, maxKeys int, jsonO
 			}
 			return 0
 		}
-		if capBytes := remaining * qkd.ETSI014KeySizeBytes; len(finalKeyBytes) > capBytes {
+		if capBytes := remaining * kms.ETSI014KeySizeBytes; len(finalKeyBytes) > capBytes {
 			finalKeyBytes = finalKeyBytes[:capBytes]
 		}
 	}
-	if len(finalKeyBytes) < qkd.ETSI014KeySizeBytes {
+	if len(finalKeyBytes) < kms.ETSI014KeySizeBytes {
 		if !jsonOut {
 			field("Keystore", "skipped")
 			note(colorWarn, "WARN", "this run's distilled key is shorter than one ETSI 014 key (256 bits); nothing to save yet")
 		}
 		return 0
 	}
-	stored, discardedBits, err := qkd.SaveKeys256(keystoreDir, finalKeyBytes)
+	stored, discardedBits, err := kms.SaveKeys256(keystoreDir, finalKeyBytes)
 	if !jsonOut {
 		if err != nil {
 			field("Keystore", "save failed")
@@ -177,8 +178,10 @@ type jsonReport struct {
 	FilterWindowPS     int64              `json:"filter_window_ps,omitempty"`
 	FilterAccidental   float64            `json:"filter_predicted_accidental_fraction,omitempty"`
 	FilterDriftSlices  int                `json:"filter_drift_slices_trusted,omitempty"`
+	FilterSigmaPS      float64            `json:"filter_sigma_ps,omitempty"`
 	TimingFlatBound    float64            `json:"timing_flat_bound,omitempty"`
 	TimingSoftBound    float64            `json:"timing_soft_bound,omitempty"`
+	FiniteKey          *finiteKeyJSON     `json:"finite_key,omitempty"` // nil in asymptotic mode and for block discard
 	ChunksTotal        int                `json:"chunks_total"`
 	ChunksKept         int                `json:"chunks_kept"`
 	ChunksDropped      int                `json:"chunks_dropped"`
@@ -687,7 +690,7 @@ func main() {
 
 	alignBits := 0
 	if *keystoreDir != "" {
-		alignBits = qkd.ETSI014KeySizeBits // no remainder left for SaveKeys256 to discard
+		alignBits = kms.ETSI014KeySizeBits // no remainder left for SaveKeys256 to discard
 	}
 
 	t0 := time.Now()
@@ -768,6 +771,7 @@ func main() {
 			rep.FilterWindowPS = filterResult.WindowPS
 			rep.FilterAccidental = filterResult.AccidentalFraction
 			rep.FilterDriftSlices = filterResult.DriftTrusted
+			rep.FilterSigmaPS = filterResult.Fit.SigmaPS
 		}
 		rep.ElapsedMS = elapsed.Milliseconds()
 		if windowBuckets != nil {
@@ -1018,6 +1022,7 @@ func runWinnowPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, blockS
 		SiftedBits:        res.SiftedBits,
 		WinnowCorrections: res.WinnowCorrections,
 		WinnowLeakedBits:  res.WinnowLeakedBits,
+		FiniteKey:         toFiniteKeyJSON(res.FiniteKey),
 		ChunksTotal:       cv.ChunksTotal,
 		ChunksKept:        cv.ChunksKept,
 		ChunksDropped:     cv.ChunksDropped,
@@ -1104,6 +1109,7 @@ func runLDPCPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, blockLen
 		LDPCLeakedBits:  res.LDPCLeakedBits,
 		TimingFlatBound: timingFlat(res.Timing),
 		TimingSoftBound: timingSoft(res.Timing),
+		FiniteKey:       toFiniteKeyJSON(res.FiniteKey),
 		ChunksTotal:     cv.ChunksTotal,
 		ChunksKept:      cv.ChunksKept,
 		ChunksDropped:   cv.ChunksDropped,
@@ -1178,6 +1184,7 @@ func runPolarPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, blockLe
 		PolarLeakedBits:    res.PolarLeakedBits,
 		TimingFlatBound:    timingFlat(res.Timing),
 		TimingSoftBound:    timingSoft(res.Timing),
+		FiniteKey:          toFiniteKeyJSON(res.FiniteKey),
 		ChunksTotal:        cv.ChunksTotal,
 		ChunksKept:         cv.ChunksKept,
 		ChunksDropped:      cv.ChunksDropped,
@@ -1460,4 +1467,21 @@ func roundDelays(d [2][2]float64) [2][2]float64 {
 		}
 	}
 	return d
+}
+
+// finiteKeyJSON is the -json view of a finite-key report; nil (asymptotic mode) stays nil
+type finiteKeyJSON struct {
+	PhaseErrorPoint float64 `json:"phase_error_point"`
+	PhaseErrorBound float64 `json:"phase_error_bound"`
+	TagBits         int     `json:"tag_bits"`
+	Verified        bool    `json:"verified"`
+	SurvivingBits   int     `json:"surviving_bits"`
+	ChargedBits     int     `json:"charged_bits"`
+}
+
+func toFiniteKeyJSON(r *qkd.FiniteKeyReport) *finiteKeyJSON {
+	if r == nil {
+		return nil
+	}
+	return &finiteKeyJSON{PhaseErrorPoint: r.PhiPoint, PhaseErrorBound: r.Phi, TagBits: r.TagBits, Verified: r.Verified, SurvivingBits: r.Bits, ChargedBits: r.LeakedBits}
 }

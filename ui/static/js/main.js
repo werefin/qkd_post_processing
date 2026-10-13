@@ -469,24 +469,41 @@ const PLOTS = [
   { title: 'Leaked bits (total)', short: 'Leaked', color: '#F59E0B', key: 'leaked', val: m => m.leaked_bits_total },
 ];
 
-function renderMetrics(m) {
-  const chips = document.getElementById('run-chips');
+// One chip list for any run's -json output, simulated or real: filter, correction, finite key
+function metricItems(m) {
   const items = [['Sifted bits', m.sifted_bits]];
-  if (m.method === 'winnow') {
+  if (m.filter_window_ps) {
+    items.push(['Window (fit HWHM)', `\u00b1${m.filter_window_ps} ps`],
+      ['Predicted accidentals', ((m.filter_predicted_accidental_fraction || 0) * 100).toFixed(1) + '%']);
+  }
+  if (m.method === 'polar') {
+    items.push(['Polar blocks', m.polar_blocks], ['Bits corrected', m.polar_bits_corrected], ['Leaked (frozen values)', m.polar_leaked_bits]);
+  } else if (m.method === 'winnow') {
     items.push(['Corrections', m.winnow_corrections], ['Leaked (syndromes)', m.winnow_leaked_bits]);
   } else if (m.method === 'ldpc') {
-    items.push(['Blocks converged', `${m.ldpc_converged} / ${m.ldpc_blocks}`], ['Leaked (syndromes)', m.ldpc_leaked_bits]);
+    items.push(['Blocks converged', `${m.ldpc_converged || 0} / ${m.ldpc_blocks}`], ['Leaked (syndromes)', m.ldpc_leaked_bits]);
   } else {
     items.push(['Blocks kept', `${m.blocks_kept} / ${m.blocks_total}`]);
   }
-  items.push(
-    ['QBER', (m.qber * 100).toFixed(2) + '%'],
-    ['Final key', m.final_key_bits + ' bits'],
-    ['Compression', m.compression_rate.toFixed(4)],
-    ['Keys saved', m.keys_saved],
-    ['Elapsed', m.elapsed_ms + ' ms'],
-  );
-  chips.innerHTML = items.map(([k, v]) => `<div class="chip"><span class="chip-k">${k}</span><span class="chip-v">${v}</span></div>`).join('');
+  items.push(['QBER', (m.qber * 100).toFixed(2) + '%']);
+  const fk = m.finite_key;
+  if (fk) {
+    items.push(['Phase-error bound', (fk.phase_error_bound * 100).toFixed(2) + '%'],
+      ['Correctness check', fk.surviving_bits === 0 ? 'nothing survived' : fk.verified ? 'hash match' : 'MISMATCH, no key']);
+  } else {
+    items.push(['Key length', 'asymptotic (no finite-size guarantee)']);
+  }
+  items.push(['Final key', m.final_key_bits + ' bits'], ['Compression', m.compression_rate.toFixed(4)], ['Keys saved', m.keys_saved]);
+  return items;
+}
+
+function chipsHTML(items) {
+  return items.map(([k, v]) => `<div class="chip"><span class="chip-k">${k}</span><span class="chip-v">${v}</span></div>`).join('');
+}
+
+function renderMetrics(m) {
+  const chips = document.getElementById('run-chips');
+  chips.innerHTML = chipsHTML([...metricItems(m), ['Elapsed', m.elapsed_ms + ' ms']]);
 
   PLOTS.forEach(p => history[p.key].push(p.val(m) * 1) > METRICS_MAX_HISTORY && history[p.key].shift());
   lastMetrics = m;
@@ -508,9 +525,9 @@ function redrawRunPlots() {
 
 const methodSelect = document.getElementById('f-method');
 function syncMethodFields() {
-  document.getElementById('method-discard').style.display = methodSelect.value === 'discard' ? '' : 'none';
-  document.getElementById('method-winnow').style.display = methodSelect.value === 'winnow' ? '' : 'none';
-  document.getElementById('method-ldpc').style.display = methodSelect.value === 'ldpc' ? '' : 'none';
+  for (const name of ['polar', 'ldpc', 'winnow', 'discard']) {
+    document.getElementById('method-' + name).style.display = methodSelect.value === name ? '' : 'none';
+  }
 }
 methodSelect.addEventListener('change', syncMethodFields);
 syncMethodFields();
@@ -529,14 +546,16 @@ document.getElementById('run-form').addEventListener('submit', async e => {
       err: Number(document.getElementById('f-err').value),
       method,
       save_keystore: true,
+      asymptotic: document.getElementById('f-asymptotic').checked,
     };
-    if (method === 'winnow') {
+    if (method === 'polar') {
+      body.polar_margin = Number(document.getElementById('f-polar-margin').value);
+      body.polar_list = Number(document.getElementById('f-polar-list').value);
+    } else if (method === 'winnow') {
       body.winnow_blocks = document.getElementById('f-winnow-blocks').value;
-      body.winnow_sample = Number(document.getElementById('f-winnow-sample').value);
     } else if (method === 'ldpc') {
       body.ldpc_wc = Number(document.getElementById('f-ldpc-wc').value);
       body.ldpc_wr = Number(document.getElementById('f-ldpc-wr').value);
-      body.ldpc_sample = Number(document.getElementById('f-ldpc-sample').value);
     } else {
       // no matrix field to send: the backend defaults -matrix to bch,
       // the only fixed matrix left, unless a searched one is requested
@@ -774,25 +793,18 @@ document.getElementById('align-run-btn').addEventListener('click', async () => {
   badge.className = 'badge badge-muted';
   try {
     const method = document.getElementById('align-run-method').value;
-    const m = await apiFetch('/api/align/run', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ method }),
-    });
-    const items = [['Sifted bits', m.sifted_bits]];
-    if (m.method === 'winnow') {
-      items.push(['Corrections', m.winnow_corrections], ['Leaked (syndromes)', m.winnow_leaked_bits]);
-    } else if (m.method === 'ldpc') {
-      items.push(['Blocks converged', `${m.ldpc_converged || 0} / ${m.ldpc_blocks}`], ['Leaked (syndromes)', m.ldpc_leaked_bits]);
-    } else {
-      items.push(['Blocks kept', `${m.blocks_kept} / ${m.blocks_total}`]);
+    const body = {
+      method,
+      filter: document.getElementById('align-run-filter').checked,
+      asymptotic: document.getElementById('align-run-asymptotic').checked,
+    };
+    if (document.getElementById('align-run-soft').checked && (method === 'polar' || method === 'ldpc')) {
+      body.soft_bins = 16;
     }
-    items.push(
-      ['QBER', (m.qber * 100).toFixed(2) + '%'],
-      ['Final key', m.final_key_bits + ' bits'],
-      ['Compression', m.compression_rate.toFixed(4)],
-      ['Keys saved', m.keys_saved],
-      ['Keys in store', m.keys_in_store],
-      ['Elapsed', m.elapsed_ms + ' ms'],
-    );
+    const m = await apiFetch('/api/align/run', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const items = [...metricItems(m), ['Keys in store', m.keys_in_store], ['Elapsed', m.elapsed_ms + ' ms']];
     // final_key_bits is what the pipeline distilled; keys_saved*256 is what
     // actually got written --> a gap between them means -keystore-max held
     // some of it back (the keystore is at its cap), see cmd/importtt's
@@ -802,7 +814,7 @@ document.getElementById('align-run-btn').addEventListener('click', async () => {
     if (heldBackBits > 0) {
       items.push(['Held back (keystore cap)', heldBackBits + ' bits']);
     }
-    chips.innerHTML = items.map(([k, v]) => `<div class="chip"><span class="chip-k">${k}</span><span class="chip-v">${v}</span></div>`).join('');
+    chips.innerHTML = chipsHTML(items);
     if (heldBackBits > 0) {
       badge.textContent = 'Keystore at cap';
       badge.className = 'badge badge-warn';
@@ -810,7 +822,7 @@ document.getElementById('align-run-btn').addEventListener('click', async () => {
       badge.textContent = 'Key saved';
       badge.className = 'badge badge-success';
     } else {
-      badge.textContent = 'No key (QBER/leakage too high)';
+      badge.textContent = 'No key (too few pairs or QBER too high for the finite-key bound)';
       badge.className = 'badge badge-warn';
     }
     if (m.keys_in_store != null) lastKeysSaved = m.keys_in_store;

@@ -11,13 +11,14 @@ import (
 	"net/http"
 	"strings"
 
-	qkd "qkd_post_processing"
+	"qkd_post_processing/kms"
+	"qkd_post_processing/relay"
 )
 
 // relayHandler wraps a RelayNode, its neighbors' base URLs, and the (mutual TLS) client
 // used to reach them
 type relayHandler struct {
-	node     *qkd.RelayNode
+	node     *relay.RelayNode
 	peerURLs map[string]string // neighbor node ID -> its kms-server base URL
 	client   *http.Client
 }
@@ -32,7 +33,7 @@ type relayResult struct {
 
 // handleRelay is POST /api/v1/relay: one hop's RelayedPacket, from a neighbor
 func (h *relayHandler) handleRelay(w http.ResponseWriter, r *http.Request) {
-	var pkt qkd.RelayedPacket
+	var pkt relay.RelayedPacket
 	if err := json.NewDecoder(r.Body).Decode(&pkt); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid packet: "+err.Error())
 		return
@@ -86,7 +87,7 @@ func (h *relayHandler) handleOriginate(w http.ResponseWriter, r *http.Request) {
 }
 
 // forward POSTs pkt to the next hop toward dest and returns that hop's answer
-func (h *relayHandler) forward(dest string, pkt qkd.RelayedPacket) (relayResult, error) {
+func (h *relayHandler) forward(dest string, pkt relay.RelayedPacket) (relayResult, error) {
 	hop := h.node.NextHop[dest]
 	url, ok := h.peerURLs[hop]
 	if !ok {
@@ -131,7 +132,7 @@ func parseAssignments(spec string) (map[string]string, error) {
 
 // newRelayHandler builds the node from flags: every route's next hop must have both a key
 // pool directory (that link's QKD output) and a peer URL
-func newRelayHandler(nodeID string, local *qkd.KMS, masterKey []byte, routesSpec, peersSpec, poolsSpec string, client *http.Client) (*relayHandler, error) {
+func newRelayHandler(nodeID string, local *kms.KMS, masterKey []byte, routesSpec, peersSpec, poolsSpec string, client *http.Client) (*relayHandler, error) {
 	routes, err := parseAssignments(routesSpec)
 	if err != nil {
 		return nil, fmt.Errorf("-relay-routes: %w", err)
@@ -144,9 +145,9 @@ func newRelayHandler(nodeID string, local *qkd.KMS, masterKey []byte, routesSpec
 	if err != nil {
 		return nil, fmt.Errorf("-relay-pools: %w", err)
 	}
-	pools := map[string]*qkd.KMS{}
+	pools := map[string]*kms.KMS{}
 	for hop, dir := range poolDirs {
-		if pools[hop], err = qkd.NewKMS(dir, masterKey); err != nil {
+		if pools[hop], err = kms.NewKMS(dir, masterKey); err != nil {
 			return nil, fmt.Errorf("pool for %s: %w", hop, err)
 		}
 	}
@@ -155,5 +156,5 @@ func newRelayHandler(nodeID string, local *qkd.KMS, masterKey []byte, routesSpec
 			return nil, fmt.Errorf("route to %s goes via %s, which needs both -relay-pools and -relay-peers entries", dest, hop)
 		}
 	}
-	return &relayHandler{node: qkd.NewRelayNode(nodeID, local, pools, routes), peerURLs: peers, client: client}, nil
+	return &relayHandler{node: relay.NewRelayNode(nodeID, local, pools, routes), peerURLs: peers, client: client}, nil
 }

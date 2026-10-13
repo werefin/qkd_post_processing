@@ -99,8 +99,16 @@ def index():
     return render_template('index.html')
 
 
+_key_count_cache = {'mtime': None, 'count': 0}
+
+
 def _count_keys():
-    return sum(1 for _ in KEYSTORE_DIR.glob('*.json'))
+    # a directory's mtime changes whenever a file is added or removed, so the up-to-30000-file
+    # scan only reruns when the keystore actually changed, not on every status poll
+    mtime = KEYSTORE_DIR.stat().st_mtime_ns
+    if _key_count_cache['mtime'] != mtime:
+        _key_count_cache.update(mtime=mtime, count=sum(1 for _ in KEYSTORE_DIR.glob('*.json')))
+    return _key_count_cache['count']
 
 
 def _keystore_snapshot():
@@ -181,52 +189,66 @@ def api_status():
     })
 
 
+# Default CRC chunk per method: polar and LDPC either correct a block or fail it whole, so a
+# coarse chunk keeps the CRC's 16-bit-per-chunk disclosure small; Winnow leaves scattered
+# residual errors, so it needs fine chunks or each one discards many good bits
+_DEFAULT_CHUNK = {'polar': 1024, 'ldpc': 1024, 'winnow': 128}
+
+
+def _add_arg(body, args, flag, key, cast):
+    v = body.get(key)
+    if v not in (None, ''):
+        args += [flag, str(cast(v))]
+
+
+def _method_args(body, args, real):
+    '''Error-correction and key-length flags shared by the simulator and the real run;
+    real adds the coincidence-filter and timing options only cmd/importtt has'''
+    method = body.get('method', 'polar')
+    if method == 'polar':
+        args.append('-polar')
+        _add_arg(body, args, '-polar-margin', 'polar_margin', float)
+        _add_arg(body, args, '-polar-list', 'polar_list', int)
+        if real:
+            _add_arg(body, args, '-soft-bins', 'soft_bins', int)
+    elif method == 'ldpc':
+        args.append('-ldpc')
+        for flag, key, cast in (('-ldpc-block', 'ldpc_block', int), ('-ldpc-wc', 'ldpc_wc', int),
+                                ('-ldpc-wr', 'ldpc_wr', int), ('-ldpc-iterations', 'ldpc_iterations', int)):
+            _add_arg(body, args, flag, key, cast)
+        if real:
+            _add_arg(body, args, '-soft-bins', 'soft_bins', int)
+    elif method == 'winnow':
+        args.append('-winnow')
+        _add_arg(body, args, '-winnow-blocks', 'winnow_blocks', str)
+    elif body.get('search_matrix'):
+        args.append('-search-matrix')
+    else:
+        _add_arg(body, args, '-matrix', 'matrix', str)
+
+    if body.get('chunk') not in (None, ''):
+        _add_arg(body, args, '-chunk', 'chunk', int)
+    elif method in _DEFAULT_CHUNK:
+        args += ['-chunk', str(_DEFAULT_CHUNK[method])]
+
+    if body.get('asymptotic'):
+        args.append('-asymptotic')
+    if real:
+        if body.get('filter') is False:
+            args.append('-filter=false')
+        _add_arg(body, args, '-filter-e0', 'filter_e0', float)
+
+
 # API: run the simulated pipeline (cmd/qkd_post_processing -json) and
 # return its metrics --> the JS keeps a rolling history for the sparklines
 @app.route('/api/run', methods=['POST'])
 def api_run():
     body = request.get_json(silent=True) or {}
-
-    def add(args, flag, key, cast):
-        v = body.get(key)
-        if v not in (None, ''):
-            args += [flag, str(cast(v))]
-
-    method = body.get('method', 'discard')
-
     args = [QKD_BIN, '-json']
-    add(args, '-n', 'n', int)
-    add(args, '-err', 'err', float)
-    add(args, '-multiphoton', 'multiphoton', float)
-    add(args, '-window', 'window', int)
-    add(args, '-jitter', 'jitter', int)
-    add(args, '-seed', 'seed', int)
-
-    if method == 'winnow':
-        args.append('-winnow')
-        add(args, '-winnow-blocks', 'winnow_blocks', str)
-        add(args, '-winnow-sample', 'winnow_sample', float)
-    elif method == 'ldpc':
-        args.append('-ldpc')
-        add(args, '-ldpc-block', 'ldpc_block', int)
-        add(args, '-ldpc-wc', 'ldpc_wc', int)
-        add(args, '-ldpc-wr', 'ldpc_wr', int)
-        add(args, '-ldpc-iterations', 'ldpc_iterations', int)
-        add(args, '-ldpc-sample', 'ldpc_sample', float)
-    else:
-        if body.get('search_matrix'):
-            args.append('-search-matrix')
-            add(args, '-search-m', 'search_m', int)
-            add(args, '-search-p', 'search_p', int)
-        else:
-            add(args, '-matrix', 'matrix', str)
-
-    # Winnow/LDPC's syndrome exchange needs a much finer CRC chunk than block-discard's
-    # default (see -chunk's help text); only default it down if the caller didn't pick one
-    if 'chunk' in body and body['chunk'] not in (None, ''):
-        add(args, '-chunk', 'chunk', int)
-    elif method in ('winnow', 'ldpc'):
-        args += ['-chunk', '128']
+    for flag, key, cast in (('-n', 'n', int), ('-err', 'err', float), ('-multiphoton', 'multiphoton', float),
+                            ('-window', 'window', int), ('-jitter', 'jitter', int), ('-seed', 'seed', int)):
+        _add_arg(body, args, flag, key, cast)
+    _method_args(body, args, real=False)
 
     save_keystore = body.get('save_keystore', True)
     if save_keystore:
@@ -457,7 +479,7 @@ def api_acquire_status():
 
 # Real, full analyze_arrays() call with clock-skew fit, not the fast fit_skew=False variant
 # the live monitor uses mid-recording -- these files are already complete
-_analysis_cache = {'key': None, 'report': None, 'diagnostics': None}
+_analysis_cache = {'key': None, 'report': None, 'diagnostics': None, 'plots': None}
 _analysis_lock = threading.Lock()
 
 
@@ -481,8 +503,19 @@ def _get_analysis(path_a, path_b):
         a = _load_timestamps(path_a)
         b = _load_timestamps(path_b)
         report, diagnostics = coincidence_peak.analyze_arrays(a, b, strict=False)
-        _analysis_cache.update(key=key, report=report, diagnostics=diagnostics)
+        _analysis_cache.update(key=key, report=report, diagnostics=diagnostics, plots=None)
     return report, diagnostics
+
+
+def _get_plots(report, diagnostics):
+    '''Serialized plot data for the cached analysis, built once per recording pair instead of
+    on every 5-second alignment poll'''
+    if _analysis_cache['report'] is report and _analysis_cache['plots'] is not None:
+        return _analysis_cache['plots']
+    plots = _serialize_plots(report, diagnostics)
+    if _analysis_cache['report'] is report:
+        _analysis_cache['plots'] = plots
+    return plots
 
 
 # Max points sent per plot series --> these feed <canvas> line charts in the
@@ -578,7 +611,7 @@ def _run_alignment_check():
             'b': path_b.name,
             'n_a': int(a.shape[0]),
             'n_b': int(b.shape[0]),
-            'plots': _serialize_plots(report, diagnostics),
+            'plots': _get_plots(report, diagnostics),
         }
     except Exception as e:
         return {'ready': False, 'reason': str(e)[:200]}
@@ -622,7 +655,12 @@ def _prepared_recording_dir():
             for suffix in _RECORDING_SUFFIXES:
                 sibling = RECORDINGS_DIR / f'{base}{suffix}'
                 if sibling.is_file():
-                    shutil.copy2(sibling, run_dir / sibling.name)
+                    # a symlink, not a copy: recordings run to hundreds of MB, and both
+                    # importtt and chsh_diagnostic only read them
+                    try:
+                        os.symlink(sibling, run_dir / sibling.name)
+                    except OSError:
+                        shutil.copy2(sibling, run_dir / sibling.name)
         report_base = path_a.name.removesuffix('_timestamp_sequence.npy')
         (run_dir / f'{report_base}_coincidence.json').write_text(json.dumps(report))
         yield run_dir, path_a, path_b, report
@@ -637,36 +675,10 @@ def api_align_run():
     body = request.get_json(silent=True) or {}
     try:
         with _prepared_recording_dir() as (run_dir, path_a, path_b, _report):
-            method = body.get('method', 'discard')
             args = [IMPORTTT_BIN, '-json', '-dir', str(run_dir), '-keystore', str(KEYSTORE_DIR), '-keystore-max', str(KEYSTORE_MAX)]
-
-            def add(args, flag, key, cast):
-                v = body.get(key)
-                if v not in (None, ''):
-                    args += [flag, str(cast(v))]
-
-            # Override the auto-fitted corrected_window with an explicit one
-            # (picoseconds) when the caller knows the real coincidence window independently
-            add(args, '-window', 'window_ps', int)
-
-            if method == 'winnow':
-                args.append('-winnow')
-                add(args, '-winnow-blocks', 'winnow_blocks', str)
-                add(args, '-winnow-sample', 'winnow_sample', float)
-            elif method == 'ldpc':
-                args.append('-ldpc')
-                add(args, '-ldpc-block', 'ldpc_block', int)
-                add(args, '-ldpc-wc', 'ldpc_wc', int)
-                add(args, '-ldpc-wr', 'ldpc_wr', int)
-                add(args, '-ldpc-iterations', 'ldpc_iterations', int)
-                add(args, '-ldpc-sample', 'ldpc_sample', float)
-            else:
-                add(args, '-matrix', 'matrix', str)
-
-            if 'chunk' in body and body['chunk'] not in (None, ''):
-                add(args, '-chunk', 'chunk', int)
-            elif method in ('winnow', 'ldpc'):
-                args += ['-chunk', '128']
+            # an explicit window (ps) overrides the coincidence filter's fitted HWHM
+            _add_arg(body, args, '-window', 'window_ps', int)
+            _method_args(body, args, real=True)
 
             try:
                 proc = subprocess.run(args, capture_output=True, text=True, timeout=600)
@@ -778,4 +790,7 @@ def api_chsh_download():
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=9823, debug=True)
+    # Werkzeug's debugger executes arbitrary code for whoever reaches it, so it stays off unless
+    # asked for, and then only on localhost
+    debug = os.environ.get('FLASK_DEBUG') == '1'
+    app.run(host='127.0.0.1' if debug else '0.0.0.0', port=9823, debug=debug)

@@ -24,9 +24,10 @@ separate key-management layer (`kms.go`, `cmd/kms-server`) and multi-hop relay
 layer (`relay.go`) sit downstream of the distilled key, independent of which
 reconciliation strategy produced it.
 
-The Go library is package `qkd_post_processing` (module `qkd_post_processing`,
-Go 1.24, see `go.mod`); it has one external dependency,
-`golang.org/x/crypto` (for Poly1305 and HKDF). Python scripts under
+The Go module `qkd_post_processing` (Go 1.24, see `go.mod`) has three library
+packages: `qkd` (the post-processing chain), `kms` (key store) and `relay`
+(multi-hop relay, which imports `kms`); `qkd` imports neither. The one external
+dependency is `golang.org/x/crypto` (Poly1305). Python scripts under
 `acquisition/` are a separate, loosely-coupled layer: they produce the two
 `.npy`/`.json` recording files that `cmd/importtt` consumes, but the Go pipeline
 never calls into Python and vice versa.
@@ -35,27 +36,18 @@ never calls into Python and vice versa.
 
 | Path | Purpose |
 |---|---|
-| `*.go` (repo root) | The `qkd_post_processing` library: sifting, reconciliation, verification, QBER, privacy amplification, finite-key sizing, KMS, relay, encryption |
-| `*_test.go` (repo root) | Unit, property, fuzz, and benchmark tests for the library, one file per subject plus `property_test.go`, `fuzz_test.go`, `bench_test.go`, `split_e2e_test.go` |
+| `qkd/` | Package `qkd`: sifting, coincidence filtering, reconciliation, verification, QBER, finite-key privacy amplification, orchestrators, and their tests; `qkd/testdata/` holds fixed Toeplitz test vectors |
+| `kms/` | Package `kms`: lifecycle-managed key store, ETSI 014 key records, AES-256-GCM at rest |
+| `relay/` | Package `relay`: multi-hop trusted-node relay, one-time pad plus Poly1305 per hop |
 | `cmd/qkd_post_processing/` | CLI: runs the full chain over a simulated click stream |
-| `cmd/importtt/` | CLI: runs the full chain over a real dual-TimeTagger recording |
+| `cmd/importtt/` | CLI: runs the full chain over real dual-TimeTagger recordings |
 | `cmd/tuneblock/` | CLI: sweeps step-2 generator matrices for the highest key rate on one fixed batch |
-| `cmd/kms-server/` | HTTP server: ETSI GS QKD 014 key-delivery endpoints plus multi-hop relay forwarding |
+| `cmd/kms-server/` | HTTP server: ETSI GS QKD 014 key delivery plus multi-hop relay, over mutual TLS |
 | `acquisition/` | Python: records from two TimeTaggers, finds their clock offset/skew, a standalone CHSH/Bell diagnostic |
 | `ui/` | Flask dashboard: run the pipeline, watch metrics, manage recordings/keystore, drive acquisition remotely |
-| `docs/` | Vendor PDFs, including the post-processing review `doc/finite_key_procedure.md` responds to |
-| `doc/` | This document, `security_proof.md`, and the formal procedures `finite_key_procedure.md`, `coincidence_filtering.md`, `timing_aware_reconciliation.md` |
-| `scripts/` | `test.sh` (build+vet+fmt+race+cross-arch), `tune-blocksize.sh` |
-| `testdata/` | `toeplitz_vectors.json`, fixed test vectors for the Toeplitz hash |
-| `Dockerfile` | Single image: Go toolchain output (`qkd_post_processing`, `importtt`, `tuneblock`) plus the Python acquisition dependencies |
-| `Makefile` | `build`/`test`/`test-all`/`bench`/`tune`/`run`/`vet`/`fmt`/`clean`/`check` targets |
-| `go.mod` / `go.sum` | Module `qkd_post_processing`, Go 1.24, one direct dependency (`golang.org/x/crypto`) |
-
-Three items at the repository root — `qoj_post_processing`, `qoj_post_processing.test`,
-`qoj_patent_post_processing_en.md` — are pre-rename build/doc artifacts
-(the module and `cmd/qoj_post_processing` were renamed to `qkd_post_processing`
-/ `cmd/qkd_post_processing`, per the git history) and are not part of the
-current source tree.
+| `doc/` | This document, `security_proof.md`, the formal procedures, and `doc/references/` (vendor PDFs) |
+| `scripts/` | `test.sh` (build+vet+fmt+race+cross-arch), `tune-blocksize.sh`, `cross_check_toeplitz.py` |
+| `Dockerfile`, `Makefile`, `go.mod`, `go.sum` | Build: single image with the CLIs and Python dependencies; `make` targets; module definition |
 
 ## 2. Data flow
 
@@ -765,77 +757,84 @@ the key-generation chain and its output does not feed `cmd/importtt`.
 
 ## 8. File-by-file reference
 
-### 8.1 Library (repo root)
+### 8.1 Package `qkd` (`qkd/`)
 
 | Path | Purpose | Key exported identifiers |
 |---|---|---|
-| `events.go` | Core event/basis types | `Basis`, `DetectionEvent` |
-| `coincfilter.go` | Pruning, drift tracking and Gaussian-fit HWHM window from public timing | `PruneToCoincidenceRange`, `DriftConfig`, `DriftModel`, `EstimateDrift`, `ApplyDrift`, `PeakProfile`, `GaussianFit`, `WindowConfig`, `CoincidenceFilter`, `FilterCoincidences` |
-| `detdelay.go` | Per-detector delay calibration and timing-leak estimate | `DetectorDelays`, `PairPeak`, `CalibrateDetectorDelays`, `ApplyDetectorDelays`, `TimingLeakBits` |
-| `sifting.go` | Coincidence-window + basis sifting | `SiftedBit`, `PublicEvent`, `StripBit`, `MatchedPair`, `MatchCoincidences`, `Sift` |
-| `blockdetect.go` | Block parity error detection (discard strategy) | `GeneratorMatrix`, `CascadeGeneratorMatrices`, `ComputeBlockParity`, `BlockReconcileResult`, `ReconcileBlocks`, `BlockDetectResult`, `BlockErrorDetect` |
-| `bch.go` | BCH generator matrix construction | `BCHGeneratorMatrix`, `GeneratorMatrixBCHt2` |
-| `matrixsearch.go` | Hill-climbed generator matrix search | `SearchGeneratorMatrix` |
-| `winnow.go` | Winnow single-error correction primitives | `HammingGeneratorMatrix`, `WinnowCorrect`, `WinnowPassResult`, `WinnowPass`, `WinnowConfig`, `WinnowReconcile`, `GeneratePermutation` |
-| `pipeline_winnow.go` | Winnow orchestrator | `WinnowRunConfig`, `WinnowRunResult`, `RunWinnow` |
-| `ldpc.go` | LDPC matrix construction + min-sum decoder | `LDPCMatrix`, `BuildRegularLDPC`, `BuildPEGLDPC`, `(*LDPCMatrix).Syndrome`, `LDPCDecodeConfig`, `LDPCDecode`, `LDPCReconcileResult`, `LDPCPass`, `LDPCReconcile` |
-| `pipeline_ldpc.go` | LDPC orchestrator | `LDPCRunConfig`, `LDPCRunResult`, `RunLDPC` |
-| `polar.go` | Polar transform, Gaussian-approximation construction, SC/SCL decoder | `PolarTransform`, `PolarCode`, `BuildPolarCode`, `PolarDecodeConfig`, `PolarSCDecode`, `PolarReconcileResult`, `PolarPass`, `PolarReconcile` |
-| `pipeline_polar.go` | Polar orchestrator | `PolarRunConfig`, `PolarRunResult`, `RunPolar` |
-| `softrecon.go` | Timing-aware soft reconciliation for LDPC and polar | `TimingErrorModel`, `EstimateTimingErrorModel`, `SoftLLRs`, `SlepianWolfBounds`, `PolarReconcileSoft`, `LDPCReconcileSoft`, `TimingReport` |
-| `crcverify.go` | CRC-16 chunk verification | `CRCVerifyResult`, `ComputeChunkCRC`, `ChunkReconcileResult`, `ReconcileChunks`, `CRCVerify` |
-| `qber.go` | QBER estimation (both estimator families) | `QBERResult`, `CalculateQBER` |
-| `privacyamp.go` | Asymptotic privacy amplification | `SecureKeyLength`, `PrivacyAmplify` |
-| `toeplitz.go` | Toeplitz hash (POPCNT path), bit-packing helpers | (mostly unexported; `toeplitzHashFast`, `toeplitzSeed` are the stable internal entry points) |
-| `toeplitz_clmul_amd64.go` | Toeplitz hash, hardware CLMUL path (amd64) | (unexported; registered into `toeplitzImpl` via `init()`) |
-| `toeplitz_clmul_amd64.s` | PCLMULQDQ/CPUID assembly backing the above | `clmul64`, `hasCLMUL` (Go-declared, asm-defined) |
-| `finitekey.go` | Finite-key sizing: exact hypergeometric phase-error bound, sample optimizer, distillation | `PhaseErrorEstimate`, `EstimatePhaseError`, `HypergeomUpperRate`, `OptimalSampleFraction`, `FiniteKeySecureKeyLength`, `SecurityBudget`, `SplitSecurityBudget`, `FiniteKeyConfig`, `FiniteKeyReport` |
-| `universalhash.go` | Toeplitz-based universal-hash correctness check | `UniversalHashTagBits`, `ComputeUniversalHashTag`, `UniversalHashSeed`, `VerifyUniversalHash` |
-| `pipeline.go` | Block-discard orchestrator (the original `Run`) | `Config`, `Result`, `Run` |
-| `epoch.go` | Per-time-epoch independent reruns of `Run` | `EpochResult`, `EpochedResult`, `RunEpoched` |
-| `windowreport.go` | Diagnostic per-time-bucket QBER reporting | `WindowReportConfig`, `WindowBucketReport`, `ReportWindowQuality` |
-| `encryption.go` | AEAD encrypt/decrypt with a distilled key | `EncryptWithKey`, `DecryptWithKey` |
-| `keystore.go` | Local ETSI 014 key container JSON files, no server | `StoredKey`, `ETSI014KeySizeBytes`, `ETSI014KeySizeBits`, `SaveKeys256`, `SaveKey`, `LoadKey` |
-| `kms.go` | Lifecycle-managed key store (single delivery, TTL, at-rest encryption) | `ErrKeyNotFound`, `ErrKeyConsumed`, `ErrKeyExpired`, `KMS`, `NewKMS`, `(*KMS).Put`, `(*KMS).PutWithID`, `(*KMS).Get`, `DeliveredKey`, `(*KMS).GetNext`, `(*KMS).GetNextBytes`, `(*KMS).GetBytes`, `Status`, `(*KMS).Status` |
-| `relay.go` | Multi-hop OTP+MAC relay between `RelayNode`s | `RelayXOR`, `RelayNode`, `NewRelayNode`, `RelayedPacket`, `(*RelayNode).Originate`, `(*RelayNode).Receive`, `(*RelayNode).Handle` |
-| `polymac.go` | Poly1305 MAC under a single-use QKD-derived key | `PolyMACKeyBytes`, `ComputePolyMAC`, `VerifyPolyMAC` |
+| `qkd/events.go` | Core event/basis types | `Basis`, `DetectionEvent` |
+| `qkd/coincfilter.go` | Pruning, drift tracking and Gaussian-fit HWHM window from public timing | `PruneToCoincidenceRange`, `DriftConfig`, `DriftModel`, `EstimateDrift`, `ApplyDrift`, `PeakProfile`, `GaussianFit`, `WindowConfig`, `CoincidenceFilter`, `FilterCoincidences` |
+| `qkd/detdelay.go` | Per-detector delay calibration and timing-leak estimate | `DetectorDelays`, `PairPeak`, `CalibrateDetectorDelays`, `ApplyDetectorDelays`, `TimingLeakBits` |
+| `qkd/sifting.go` | Coincidence-window + basis sifting | `SiftedBit`, `PublicEvent`, `StripBit`, `MatchedPair`, `MatchCoincidences`, `Sift` |
+| `qkd/blockdetect.go` | Block parity error detection (discard strategy) | `GeneratorMatrix`, `CascadeGeneratorMatrices`, `ComputeBlockParity`, `BlockReconcileResult`, `ReconcileBlocks`, `BlockDetectResult`, `BlockErrorDetect` |
+| `qkd/bch.go` | BCH generator matrix construction | `BCHGeneratorMatrix`, `GeneratorMatrixBCHt2` |
+| `qkd/matrixsearch.go` | Hill-climbed generator matrix search | `SearchGeneratorMatrix` |
+| `qkd/winnow.go` | Winnow single-error correction primitives | `HammingGeneratorMatrix`, `WinnowCorrect`, `WinnowPassResult`, `WinnowPass`, `WinnowConfig`, `WinnowReconcile`, `GeneratePermutation` |
+| `qkd/pipeline_winnow.go` | Winnow orchestrator | `WinnowRunConfig`, `WinnowRunResult`, `RunWinnow` |
+| `qkd/ldpc.go` | LDPC matrix construction + min-sum decoder | `LDPCMatrix`, `BuildRegularLDPC`, `BuildPEGLDPC`, `(*LDPCMatrix).Syndrome`, `LDPCDecodeConfig`, `LDPCDecode`, `LDPCReconcileResult`, `LDPCPass`, `LDPCReconcile` |
+| `qkd/pipeline_ldpc.go` | LDPC orchestrator | `LDPCRunConfig`, `LDPCRunResult`, `RunLDPC` |
+| `qkd/polar.go` | Polar transform, Gaussian-approximation construction, SC/SCL decoder | `PolarTransform`, `PolarCode`, `BuildPolarCode`, `PolarDecodeConfig`, `PolarSCDecode`, `PolarReconcileResult`, `PolarPass`, `PolarReconcile` |
+| `qkd/pipeline_polar.go` | Polar orchestrator | `PolarRunConfig`, `PolarRunResult`, `RunPolar` |
+| `qkd/softrecon.go` | Timing-aware soft reconciliation for LDPC and polar | `TimingErrorModel`, `EstimateTimingErrorModel`, `SoftLLRs`, `SlepianWolfBounds`, `PolarReconcileSoft`, `LDPCReconcileSoft`, `TimingReport` |
+| `qkd/crcverify.go` | CRC-16 chunk verification | `CRCVerifyResult`, `ComputeChunkCRC`, `ChunkReconcileResult`, `ReconcileChunks`, `CRCVerify` |
+| `qkd/qber.go` | QBER estimation (both estimator families) | `QBERResult`, `CalculateQBER` |
+| `qkd/privacyamp.go` | Asymptotic privacy amplification | `SecureKeyLength`, `PrivacyAmplify` |
+| `qkd/toeplitz.go` | Toeplitz hash (POPCNT path), bit-packing helpers | (mostly unexported; `toeplitzHashFast`, `toeplitzSeed` are the stable internal entry points) |
+| `qkd/toeplitz_clmul_amd64.go` | Toeplitz hash, hardware CLMUL path (amd64) | (unexported; registered into `toeplitzImpl` via `init()`) |
+| `qkd/toeplitz_clmul_amd64.s` | PCLMULQDQ/CPUID assembly backing the above | `clmul64`, `hasCLMUL` (Go-declared, asm-defined) |
+| `qkd/finitekey.go` | Finite-key sizing: exact hypergeometric phase-error bound, sample optimizer, distillation | `PhaseErrorEstimate`, `EstimatePhaseError`, `HypergeomUpperRate`, `OptimalSampleFraction`, `FiniteKeySecureKeyLength`, `SecurityBudget`, `SplitSecurityBudget`, `FiniteKeyConfig`, `FiniteKeyReport` |
+| `qkd/universalhash.go` | Toeplitz-based universal-hash correctness check | `UniversalHashTagBits`, `ComputeUniversalHashTag`, `UniversalHashSeed`, `VerifyUniversalHash` |
+| `qkd/pipeline.go` | Block-discard orchestrator (the original `Run`) | `Config`, `Result`, `Run` |
+| `qkd/epoch.go` | Per-time-epoch independent reruns of `Run` | `EpochResult`, `EpochedResult`, `RunEpoched` |
+| `qkd/windowreport.go` | Diagnostic per-time-bucket QBER reporting | `WindowReportConfig`, `WindowBucketReport`, `ReportWindowQuality` |
 
-### 8.2 Tests and support (repo root)
+### 8.2 Packages `kms` and `relay`
+
+| Path | Purpose | Key exported identifiers |
+|---|---|---|
+| `kms/encryption.go` | AEAD encrypt/decrypt with a distilled key | `EncryptWithKey`, `DecryptWithKey` |
+| `kms/keystore.go` | Local ETSI 014 key container JSON files, no server | `StoredKey`, `ETSI014KeySizeBytes`, `ETSI014KeySizeBits`, `SaveKeys256`, `SaveKey`, `LoadKey` |
+| `kms/kms.go` | Lifecycle-managed key store (single delivery, TTL, at-rest encryption) | `ErrKeyNotFound`, `ErrKeyConsumed`, `ErrKeyExpired`, `KMS`, `NewKMS`, `(*KMS).Put`, `(*KMS).PutWithID`, `(*KMS).Get`, `DeliveredKey`, `(*KMS).GetNext`, `(*KMS).GetNextBytes`, `(*KMS).GetBytes`, `Status`, `(*KMS).Status` |
+| `relay/relay.go` | Multi-hop OTP+MAC relay between `RelayNode`s | `RelayXOR`, `RelayNode`, `NewRelayNode`, `RelayedPacket`, `(*RelayNode).Originate`, `(*RelayNode).Receive`, `(*RelayNode).Handle` |
+| `relay/polymac.go` | Poly1305 MAC under a single-use QKD-derived key | `PolyMACKeyBytes`, `ComputePolyMAC`, `VerifyPolyMAC` |
+
+### 8.3 Tests and support
 
 | Path | Purpose |
 |---|---|
-| `bch_test.go` | `BCHGeneratorMatrix` / `GeneratorMatrixBCHt2` correctness |
-| `blockdetect_test.go` | Block parity detect/reconcile correctness, including parallel-path coverage |
-| `coincfilter_test.go` | Drift tracking accuracy, QBER restoration on a drifting link, independence from bit values |
-| `crcverify_test.go` | CRC-16 computation and chunk reconciliation |
-| `encryption_test.go` | AEAD round-trip and key-length-floor behavior |
-| `epoch_test.go` | `RunEpoched` bucketing and key concatenation |
-| `finitekey_test.go` | `EstimatePhaseError` / `FiniteKeySecureKeyLength` / `SplitSecurityBudget` |
-| `fuzz_test.go` | Fuzz targets over sifting/reconciliation/CRC inputs |
-| `keystore_test.go` | `SaveKey(s256)` / `LoadKey` round-trip |
-| `kms_test.go` | `KMS` single-delivery, TTL, concurrency behavior |
-| `ldpc_test.go` | LDPC construction, decode convergence, rate-vs-threshold behavior |
-| `matrixsearch_test.go` | `SearchGeneratorMatrix` hill-climbing behavior |
-| `pipeline_test.go` | `Run` end-to-end |
-| `pipeline_winnow_test.go` | `RunWinnow` end-to-end |
-| `pipeline_polar_test.go` | `RunPolar` end-to-end, plus a four-strategy key-yield comparison |
-| `polar_test.go` | Transform self-inverse, brute-force ML cross-check, reliability ordering, SC vs. SCL block failure |
-| `softrecon_test.go` | Jensen bound, timing-model recovery, timing-aware vs. flat polar and LDPC on a simulated accidental-dominated link |
-| `property_test.go` | Property-based invariants across stages |
-| `relay_test.go` | `RelayNode` multi-hop `Originate`/`Handle` sequences |
-| `sifting_test.go` | `MatchCoincidences` / `Sift` correctness, including ambiguous-match handling |
-| `split_e2e_test.go` | End-to-end test using the split, one-sided API (Alice/Bob as independent processes) |
-| `toeplitz_test.go` | Toeplitz hash correctness (naive vs. fast implementations) |
-| `toeplitz_vectors_test.go` | Toeplitz hash against `testdata/toeplitz_vectors.json` fixed vectors |
-| `universalhash_test.go` | Universal-hash tag computation and verification |
-| `windowreport_test.go` | `ReportWindowQuality` bucketing |
-| `winnow_test.go` | Winnow correction/reconciliation correctness |
-| `bench_test.go` | Benchmarks (`go test -bench`) |
-| `testdata/toeplitz_vectors.json` | Fixed Toeplitz-hash test vectors |
+| `qkd/bch_test.go` | `BCHGeneratorMatrix` / `GeneratorMatrixBCHt2` correctness |
+| `qkd/blockdetect_test.go` | Block parity detect/reconcile correctness, including parallel-path coverage |
+| `qkd/coincfilter_test.go` | Drift tracking accuracy, QBER restoration on a drifting link, independence from bit values |
+| `qkd/crcverify_test.go` | CRC-16 computation and chunk reconciliation |
+| `kms/encryption_test.go` | AEAD round-trip and key-length-floor behavior |
+| `qkd/epoch_test.go` | `RunEpoched` bucketing and key concatenation |
+| `qkd/finitekey_test.go` | `EstimatePhaseError` / `FiniteKeySecureKeyLength` / `SplitSecurityBudget` |
+| `qkd/fuzz_test.go` | Fuzz targets over sifting/reconciliation/CRC inputs |
+| `kms/keystore_test.go` | `SaveKey(s256)` / `LoadKey` round-trip |
+| `kms/kms_test.go` | `KMS` single-delivery, TTL, concurrency behavior |
+| `qkd/ldpc_test.go` | LDPC construction, decode convergence, rate-vs-threshold behavior |
+| `qkd/matrixsearch_test.go` | `SearchGeneratorMatrix` hill-climbing behavior |
+| `qkd/pipeline_test.go` | `Run` end-to-end |
+| `qkd/pipeline_winnow_test.go` | `RunWinnow` end-to-end |
+| `qkd/pipeline_polar_test.go` | `RunPolar` end-to-end, plus a four-strategy key-yield comparison |
+| `qkd/polar_test.go` | Transform self-inverse, brute-force ML cross-check, reliability ordering, SC vs. SCL block failure |
+| `qkd/softrecon_test.go` | Jensen bound, timing-model recovery, timing-aware vs. flat polar and LDPC on a simulated accidental-dominated link |
+| `qkd/property_test.go` | Property-based invariants across stages |
+| `relay/relay_test.go` | `RelayNode` multi-hop `Originate`/`Handle` sequences |
+| `relay/polymac_test.go` | Poly1305 round trip, tamper detection, forgery-rate check |
+| `qkd/sifting_test.go` | `MatchCoincidences` / `Sift` correctness, including ambiguous-match handling |
+| `qkd/split_e2e_test.go` | End-to-end test using the split, one-sided API (Alice/Bob as independent processes) |
+| `qkd/toeplitz_test.go` | Toeplitz hash correctness (naive vs. fast implementations) |
+| `qkd/toeplitz_vectors_test.go` | Toeplitz hash against `testdata/toeplitz_vectors.json` fixed vectors |
+| `qkd/universalhash_test.go` | Universal-hash tag computation and verification |
+| `qkd/windowreport_test.go` | `ReportWindowQuality` bucketing |
+| `qkd/winnow_test.go` | Winnow correction/reconciliation correctness |
+| `qkd/bench_test.go` | Benchmarks (`go test -bench`) |
+| `qkd/testdata/toeplitz_vectors.json` | Fixed Toeplitz-hash test vectors |
 | `scripts/test.sh` | `make test-all`: build+vet+fmt+race+cross-arch |
 | `scripts/tune-blocksize.sh` | `make tune`: block-size sweep driver for `cmd/tuneblock` |
+| `scripts/cross_check_toeplitz.py` | Re-derives `qkd/testdata/toeplitz_vectors.json` independently with NumPy |
 
-### 8.3 `cmd/`
+### 8.4 `cmd/`
 
 | Path | Purpose | Key exported/entry identifiers |
 |---|---|---|
@@ -848,7 +847,7 @@ the key-generation chain and its output does not feed `cmd/importtt`.
 | `cmd/kms-server/relay.go` | Relay HTTP handlers, registered when `-node-id` is set | `relayHandler`, `handleRelay`, `handleOriginate`, `newRelayHandler` |
 | `cmd/kms-server/relay_test.go` | Three-node relay over HTTP and over mutual TLS | — |
 
-### 8.4 `acquisition/`
+### 8.5 `acquisition/`
 
 | Path | Purpose |
 |---|---|
@@ -861,7 +860,7 @@ the key-generation chain and its output does not feed `cmd/importtt`.
 | `README.md` | Full acquisition workflow documentation |
 | `example/` | Sample recording for exercising `cmd/importtt` without live hardware |
 
-### 8.5 `ui/`
+### 8.6 `ui/`
 
 | Path | Purpose |
 |---|---|
@@ -874,12 +873,12 @@ the key-generation chain and its output does not feed `cmd/importtt`.
 | `static/`, `templates/` | Dashboard front-end assets and HTML |
 | `config/`, `keys/`, `recordings/` | Bind-mounted runtime directories (config, keystore, recordings) |
 
-### 8.6 `docs/` and `doc/`
+### 8.7 `doc/`
 
 | Path | Purpose |
 |---|---|
 | `doc/finite_key_procedure.md` | Formal finite-key and KMS-delivery procedure this codebase implements |
 | `doc/coincidence_filtering.md`, `doc/timing_aware_reconciliation.md` | Formal procedures for coincidence filtering and timing-aware reconciliation |
 | `doc/security_proof.md` | Formal security analysis of the KMS and relay |
-| `docs/bbm92_post_processing_open_questions_v3.pdf` | Vendor/review PDF that `doc/finite_key_procedure.md` responds to |
-| `bbm92_details_post_processing.pdf`, `qoj_patent_post_processing.pdf` | Vendor reference PDFs |
+| `doc/references/bbm92_post_processing_open_questions_v3.pdf` | Vendor/review PDF that `doc/finite_key_procedure.md` responds to |
+| `doc/references/bbm92_details_post_processing.pdf`, `doc/references/qoj_patent_post_processing.pdf`, `doc/references/qoj_patent_post_processing_en.md` | Vendor reference documents |

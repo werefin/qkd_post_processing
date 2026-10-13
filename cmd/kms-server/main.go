@@ -16,11 +16,11 @@ import (
 	"strconv"
 	"time"
 
-	qkd "qkd_post_processing"
+	"qkd_post_processing/kms"
 )
 
 type server struct {
-	kms          *qkd.KMS
+	kms          *kms.KMS
 	sourceKMEID  string
 	targetKMEID  string
 	masterSAEID  string
@@ -185,7 +185,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	kms, err := qkd.NewKMS(*dir, masterKey)
+	kms, err := kms.NewKMS(*dir, masterKey)
 	if err != nil {
 		log.Fatal(err)
 	}

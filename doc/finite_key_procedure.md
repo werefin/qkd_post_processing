@@ -1,7 +1,7 @@
 # Finite-key post-processing and key management procedure
 
 **Status:** formal specification of the procedure this codebase implements,
-responding to the recommendations in `docs/bbm92_post_processing_open_questions_v3.pdf`
+responding to the recommendations in `doc/references/bbm92_post_processing_open_questions_v3.pdf`
 ("BBM92 network post-processing review"), Section 8. That review found the
 deployed pipeline reported an asymptotic key rate with an undocumented,
 link-specific margin rather than a composable finite-key guarantee. This

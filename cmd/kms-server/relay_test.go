@@ -19,15 +19,16 @@ import (
 	"testing"
 	"time"
 
-	qkd "qkd_post_processing"
+	"qkd_post_processing/kms"
+	"qkd_post_processing/relay"
 )
 
 // newKMS opens a fresh store with a random master key
-func newKMS(t *testing.T) *qkd.KMS {
+func newKMS(t *testing.T) *kms.KMS {
 	t.Helper()
 	master := make([]byte, 32)
 	rand.Read(master)
-	k, err := qkd.NewKMS(t.TempDir(), master)
+	k, err := kms.NewKMS(t.TempDir(), master)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +36,7 @@ func newKMS(t *testing.T) *qkd.KMS {
 }
 
 // seedLink mirrors 20 identical 32-byte keys into both ends of one link, as QKD would
-func seedLink(t *testing.T) (a, b *qkd.KMS) {
+func seedLink(t *testing.T) (a, b *kms.KMS) {
 	t.Helper()
 	a, b = newKMS(t), newKMS(t)
 	for range 20 {
@@ -53,7 +54,7 @@ func seedLink(t *testing.T) (a, b *qkd.KMS) {
 }
 
 // chain starts A -> B -> C as three HTTP servers built by newServer, wired with client
-func chain(t *testing.T, newServer func(http.Handler) *httptest.Server, client *http.Client) (originate string, localC *qkd.KMS) {
+func chain(t *testing.T, newServer func(http.Handler) *httptest.Server, client *http.Client) (originate string, localC *kms.KMS) {
 	t.Helper()
 	abA, abB := seedLink(t)
 	bcB, bcC := seedLink(t)
@@ -65,11 +66,11 @@ func chain(t *testing.T, newServer func(http.Handler) *httptest.Server, client *
 		m.HandleFunc("POST /api/v1/relay/originate/{dest_node_id}", h.handleOriginate)
 		return m
 	}
-	hC := &relayHandler{node: qkd.NewRelayNode("C", localC, map[string]*qkd.KMS{"B": bcC}, nil), client: client}
+	hC := &relayHandler{node: relay.NewRelayNode("C", localC, map[string]*kms.KMS{"B": bcC}, nil), client: client}
 	sC := newServer(mux(hC))
-	hB := &relayHandler{node: qkd.NewRelayNode("B", newKMS(t), map[string]*qkd.KMS{"A": abB, "C": bcB}, map[string]string{"C": "C"}), peerURLs: map[string]string{"C": sC.URL}, client: client}
+	hB := &relayHandler{node: relay.NewRelayNode("B", newKMS(t), map[string]*kms.KMS{"A": abB, "C": bcB}, map[string]string{"C": "C"}), peerURLs: map[string]string{"C": sC.URL}, client: client}
 	sB := newServer(mux(hB))
-	hA := &relayHandler{node: qkd.NewRelayNode("A", newKMS(t), map[string]*qkd.KMS{"B": abA}, map[string]string{"C": "B"}), peerURLs: map[string]string{"B": sB.URL}, client: client}
+	hA := &relayHandler{node: relay.NewRelayNode("A", newKMS(t), map[string]*kms.KMS{"B": abA}, map[string]string{"C": "B"}), peerURLs: map[string]string{"B": sB.URL}, client: client}
 	sA := newServer(mux(hA))
 	t.Cleanup(func() { sA.Close(); sB.Close(); sC.Close() })
 	return sA.URL + "/api/v1/relay/originate/C", localC
@@ -77,7 +78,7 @@ func chain(t *testing.T, newServer func(http.Handler) *httptest.Server, client *
 
 // originateAndCheck sends a key from A to C and confirms C stored exactly it under the
 // key_ID that came back to A
-func originateAndCheck(t *testing.T, url string, client *http.Client, localC *qkd.KMS) {
+func originateAndCheck(t *testing.T, url string, client *http.Client, localC *kms.KMS) {
 	t.Helper()
 	key := []byte("0123456789abcdef0123456789abcdef")
 	body, _ := json.Marshal(map[string]string{"key_bytes": base64.StdEncoding.EncodeToString(key)})

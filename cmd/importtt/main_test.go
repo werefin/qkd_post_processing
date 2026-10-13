@@ -5,7 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	qkd "qkd_post_processing"
+	"qkd_post_processing/kms"
+	"qkd_post_processing/qkd"
 )
 
 func writeFakeKeys(t *testing.T, dir string, n int) {
@@ -29,7 +30,7 @@ func countKeystoreFiles(t *testing.T, dir string) int {
 
 func TestSaveToKeystoreUncapped(t *testing.T) {
 	dir := t.TempDir()
-	keyBytes := make([]byte, qkd.ETSI014KeySizeBytes*3) // 3 whole keys
+	keyBytes := make([]byte, kms.ETSI014KeySizeBytes*3) // 3 whole keys
 	saved := saveToKeystore(dir, keyBytes, 0, true)
 	if saved != 3 {
 		t.Fatalf("saved = %d, want 3", saved)
@@ -42,7 +43,7 @@ func TestSaveToKeystoreUncapped(t *testing.T) {
 func TestSaveToKeystoreCapLeavesRoom(t *testing.T) {
 	dir := t.TempDir()
 	writeFakeKeys(t, dir, 5) // pre-existing "real" keys, never touched
-	keyBytes := make([]byte, qkd.ETSI014KeySizeBytes*4)
+	keyBytes := make([]byte, kms.ETSI014KeySizeBytes*4)
 	saved := saveToKeystore(dir, keyBytes, 8, true) // room for 3 more
 	if saved != 3 {
 		t.Fatalf("saved = %d, want 3 (cap=8, 5 already there)", saved)
@@ -55,7 +56,7 @@ func TestSaveToKeystoreCapLeavesRoom(t *testing.T) {
 func TestSaveToKeystoreAtCapSavesNothing(t *testing.T) {
 	dir := t.TempDir()
 	writeFakeKeys(t, dir, 8)
-	keyBytes := make([]byte, qkd.ETSI014KeySizeBytes*4)
+	keyBytes := make([]byte, kms.ETSI014KeySizeBytes*4)
 	saved := saveToKeystore(dir, keyBytes, 8, true)
 	if saved != 0 {
 		t.Fatalf("saved = %d, want 0 (already at cap)", saved)
@@ -68,7 +69,7 @@ func TestSaveToKeystoreAtCapSavesNothing(t *testing.T) {
 func TestSaveToKeystoreCapExactFit(t *testing.T) {
 	dir := t.TempDir()
 	writeFakeKeys(t, dir, 6)
-	keyBytes := make([]byte, qkd.ETSI014KeySizeBytes*2) // exactly fills remaining room
+	keyBytes := make([]byte, kms.ETSI014KeySizeBytes*2) // exactly fills remaining room
 	saved := saveToKeystore(dir, keyBytes, 8, true)
 	if saved != 2 {
 		t.Fatalf("saved = %d, want 2", saved)

@@ -14,43 +14,45 @@ import (
 	"strings"
 	"time"
 
-	qkd "qkd_post_processing"
+	"qkd_post_processing/kms"
+	"qkd_post_processing/qkd"
 )
 
 // jsonReport is -json's machine-readable stand-in for the human-readable
 // report, one object printed to stdout, for driving e.g. a dashboard
 type jsonReport struct {
-	Method            string  `json:"method"` // discard, winnow, ldpc, or polar
-	RawAttempts       int     `json:"raw_attempts"`
-	ErrRate           float64 `json:"err_rate"`
-	MatrixLabel       string  `json:"matrix_label,omitempty"`
-	SearchFitness     float64 `json:"search_fitness,omitempty"`
-	SiftedBits        int     `json:"sifted_bits"`
-	BlocksTotal       int     `json:"blocks_total,omitempty"`
-	BlocksKept        int     `json:"blocks_kept,omitempty"`
-	BlocksDropped     int     `json:"blocks_dropped,omitempty"`
-	BitsLeakedParity  int     `json:"bits_leaked_parity,omitempty"`
-	WinnowCorrections int     `json:"winnow_corrections,omitempty"`
-	WinnowLeakedBits  int     `json:"winnow_leaked_bits,omitempty"`
-	LDPCBlocks        int     `json:"ldpc_blocks,omitempty"`
-	LDPCConverged     int     `json:"ldpc_converged,omitempty"`
-	LDPCLeakedBits    int     `json:"ldpc_leaked_bits,omitempty"`
-	PolarBlocks       int     `json:"polar_blocks,omitempty"`
-	PolarCorrected    int     `json:"polar_bits_corrected,omitempty"`
-	PolarLeakedBits   int     `json:"polar_leaked_bits,omitempty"`
-	TimingFlatBound   float64 `json:"timing_flat_bound,omitempty"`
-	TimingSoftBound   float64 `json:"timing_soft_bound,omitempty"`
-	ChunksTotal       int     `json:"chunks_total"`
-	ChunksKept        int     `json:"chunks_kept"`
-	ChunksDropped     int     `json:"chunks_dropped"`
-	BitsLeakedCRC     int     `json:"bits_leaked_crc"`
-	QBER              float64 `json:"qber"`
-	LeakedBitsTotal   int     `json:"leaked_bits_total"`
-	FinalKeyBits      int     `json:"final_key_bits"`
-	CompressionRate   float64 `json:"compression_rate"`
-	KeysSaved         int     `json:"keys_saved"`
-	ElapsedMS         int64   `json:"elapsed_ms"`
-	Error             string  `json:"error,omitempty"`
+	Method            string         `json:"method"` // discard, winnow, ldpc, or polar
+	RawAttempts       int            `json:"raw_attempts"`
+	ErrRate           float64        `json:"err_rate"`
+	MatrixLabel       string         `json:"matrix_label,omitempty"`
+	SearchFitness     float64        `json:"search_fitness,omitempty"`
+	SiftedBits        int            `json:"sifted_bits"`
+	BlocksTotal       int            `json:"blocks_total,omitempty"`
+	BlocksKept        int            `json:"blocks_kept,omitempty"`
+	BlocksDropped     int            `json:"blocks_dropped,omitempty"`
+	BitsLeakedParity  int            `json:"bits_leaked_parity,omitempty"`
+	WinnowCorrections int            `json:"winnow_corrections,omitempty"`
+	WinnowLeakedBits  int            `json:"winnow_leaked_bits,omitempty"`
+	LDPCBlocks        int            `json:"ldpc_blocks,omitempty"`
+	LDPCConverged     int            `json:"ldpc_converged,omitempty"`
+	LDPCLeakedBits    int            `json:"ldpc_leaked_bits,omitempty"`
+	PolarBlocks       int            `json:"polar_blocks,omitempty"`
+	PolarCorrected    int            `json:"polar_bits_corrected,omitempty"`
+	PolarLeakedBits   int            `json:"polar_leaked_bits,omitempty"`
+	TimingFlatBound   float64        `json:"timing_flat_bound,omitempty"`
+	TimingSoftBound   float64        `json:"timing_soft_bound,omitempty"`
+	FiniteKey         *finiteKeyJSON `json:"finite_key,omitempty"` // nil in asymptotic mode and for block discard
+	ChunksTotal       int            `json:"chunks_total"`
+	ChunksKept        int            `json:"chunks_kept"`
+	ChunksDropped     int            `json:"chunks_dropped"`
+	BitsLeakedCRC     int            `json:"bits_leaked_crc"`
+	QBER              float64        `json:"qber"`
+	LeakedBitsTotal   int            `json:"leaked_bits_total"`
+	FinalKeyBits      int            `json:"final_key_bits"`
+	CompressionRate   float64        `json:"compression_rate"`
+	KeysSaved         int            `json:"keys_saved"`
+	ElapsedMS         int64          `json:"elapsed_ms"`
+	Error             string         `json:"error,omitempty"`
 }
 
 // generatorMatrices maps -matrix flag values to the fixed step 2
@@ -158,13 +160,13 @@ func saveToKeystore(keystoreDir string, finalKeyBytes []byte, jsonOut bool) int 
 	if keystoreDir == "" {
 		return 0
 	}
-	if len(finalKeyBytes) < qkd.ETSI014KeySizeBytes {
+	if len(finalKeyBytes) < kms.ETSI014KeySizeBytes {
 		if !jsonOut {
 			field("Keystore", "skipped "+tag(colorWarn, "WARN")+" not enough key material for one ETSI 014 256-bit key")
 		}
 		return 0
 	}
-	stored, discardedBits, err := qkd.SaveKeys256(keystoreDir, finalKeyBytes)
+	stored, discardedBits, err := kms.SaveKeys256(keystoreDir, finalKeyBytes)
 	if !jsonOut {
 		if err != nil {
 			field("Keystore", "%s "+tag(colorErr, "ERROR"), err)
@@ -339,7 +341,7 @@ func runDiscardPipeline(aliceEv, bobEv []qkd.DetectionEvent, windowPS int64, g q
 		ChunkSize:           chunkSize,
 	}
 	if keystoreDir != "" {
-		cfg.KeyAlignBits = qkd.ETSI014KeySizeBits
+		cfg.KeyAlignBits = kms.ETSI014KeySizeBits
 	}
 
 	t0 := time.Now()
@@ -413,7 +415,7 @@ func runWinnowPipeline(aliceEv, bobEv []qkd.DetectionEvent, windowPS int64, bloc
 		ExpectedQBER:        keyOpts.expectedQBER,
 	}
 	if keystoreDir != "" {
-		cfg.KeyAlignBits = qkd.ETSI014KeySizeBits
+		cfg.KeyAlignBits = kms.ETSI014KeySizeBits
 	}
 
 	t0 := time.Now()
@@ -451,6 +453,7 @@ func runWinnowPipeline(aliceEv, bobEv []qkd.DetectionEvent, windowPS int64, bloc
 		SiftedBits:        res.SiftedBits,
 		WinnowCorrections: res.WinnowCorrections,
 		WinnowLeakedBits:  res.WinnowLeakedBits,
+		FiniteKey:         toFiniteKeyJSON(res.FiniteKey),
 		ChunksTotal:       cv.ChunksTotal,
 		ChunksKept:        cv.ChunksKept,
 		ChunksDropped:     cv.ChunksDropped,
@@ -482,7 +485,7 @@ func runLDPCPipeline(aliceEv, bobEv []qkd.DetectionEvent, windowPS int64, blockL
 		ExpectedQBER:        keyOpts.expectedQBER,
 	}
 	if keystoreDir != "" {
-		cfg.KeyAlignBits = qkd.ETSI014KeySizeBits
+		cfg.KeyAlignBits = kms.ETSI014KeySizeBits
 	}
 
 	t0 := time.Now()
@@ -529,6 +532,7 @@ func runLDPCPipeline(aliceEv, bobEv []qkd.DetectionEvent, windowPS int64, blockL
 		LDPCLeakedBits:  res.LDPCLeakedBits,
 		TimingFlatBound: timingFlat(res.Timing),
 		TimingSoftBound: timingSoft(res.Timing),
+		FiniteKey:       toFiniteKeyJSON(res.FiniteKey),
 		ChunksTotal:     cv.ChunksTotal,
 		ChunksKept:      cv.ChunksKept,
 		ChunksDropped:   cv.ChunksDropped,
@@ -559,7 +563,7 @@ func runPolarPipeline(aliceEv, bobEv []qkd.DetectionEvent, windowPS int64, block
 		ExpectedQBER:        keyOpts.expectedQBER,
 	}
 	if keystoreDir != "" {
-		cfg.KeyAlignBits = qkd.ETSI014KeySizeBits
+		cfg.KeyAlignBits = kms.ETSI014KeySizeBits
 	}
 
 	t0 := time.Now()
@@ -602,6 +606,7 @@ func runPolarPipeline(aliceEv, bobEv []qkd.DetectionEvent, windowPS int64, block
 		PolarLeakedBits: res.PolarLeakedBits,
 		TimingFlatBound: timingFlat(res.Timing),
 		TimingSoftBound: timingSoft(res.Timing),
+		FiniteKey:       toFiniteKeyJSON(res.FiniteKey),
 		ChunksTotal:     cv.ChunksTotal,
 		ChunksKept:      cv.ChunksKept,
 		ChunksDropped:   cv.ChunksDropped,
@@ -712,4 +717,21 @@ func printFiniteKey(r *qkd.FiniteKeyReport) {
 		field("Correctness check", "universal hash, %d-bit tag: MISMATCH, no key produced", r.TagBits)
 	}
 	field("Bits charged to key length", "%d (all disclosure, incl. the %d-bit tag)", r.LeakedBits, r.TagBits)
+}
+
+// finiteKeyJSON is the -json view of a finite-key report; nil (asymptotic mode) stays nil
+type finiteKeyJSON struct {
+	PhaseErrorPoint float64 `json:"phase_error_point"`
+	PhaseErrorBound float64 `json:"phase_error_bound"`
+	TagBits         int     `json:"tag_bits"`
+	Verified        bool    `json:"verified"`
+	SurvivingBits   int     `json:"surviving_bits"`
+	ChargedBits     int     `json:"charged_bits"`
+}
+
+func toFiniteKeyJSON(r *qkd.FiniteKeyReport) *finiteKeyJSON {
+	if r == nil {
+		return nil
+	}
+	return &finiteKeyJSON{PhaseErrorPoint: r.PhiPoint, PhaseErrorBound: r.Phi, TagBits: r.TagBits, Verified: r.Verified, SurvivingBits: r.Bits, ChargedBits: r.LeakedBits}
 }

@@ -81,7 +81,7 @@
       <div class="grid grid--2">
         <a class="card nav-card nav-card--blue" data-section="run" href="#">
           <div class="card-head"><span class="card-title">Run and metrics</span></div>
-          <p class="hint">Run the simulated pipeline (block discard, Winnow, or LDPC) and watch QBER, key rate, compression, and leaked bits build up as sparkline plots.</p>
+          <p class="hint">Run the simulated pipeline (polar, LDPC, Winnow, or block discard) and watch QBER, finite-key length, compression, and leaked bits build up as sparkline plots.</p>
         </a>
         <a class="card nav-card nav-card--purple" data-section="align" href="#">
           <div class="card-head"><span class="card-title">Alignment</span></div>
@@ -127,10 +127,24 @@
               <div class="field">
                 <label class="field-label">Error correction (step 2/3)</label>
                 <select class="input" id="f-method">
-                  <option value="discard" selected>Block discard</option>
-                  <option value="winnow">Winnow</option>
+                  <option value="polar" selected>Polar codes, rate-adaptive (recommended)</option>
                   <option value="ldpc">LDPC belief propagation</option>
+                  <option value="winnow">Winnow</option>
+                  <option value="discard">Block discard (baseline)</option>
                 </select>
+              </div>
+
+              <div id="method-polar">
+                <div class="field-row">
+                  <div class="field">
+                    <label class="field-label">Starting rate margin</label>
+                    <input class="input" id="f-polar-margin" type="number" value="0.02" min="0" max="0.3" step="0.01">
+                  </div>
+                  <div class="field">
+                    <label class="field-label">SCL list size</label>
+                    <input class="input" id="f-polar-list" type="number" value="8" min="1" max="32" step="1">
+                  </div>
+                </div>
               </div>
 
               <div id="method-discard">
@@ -142,15 +156,9 @@
               </div>
 
               <div id="method-winnow" style="display:none">
-                <div class="field-row">
-                  <div class="field">
-                    <label class="field-label">Hamming block sizes per pass</label>
-                    <input class="input" id="f-winnow-blocks" type="text" value="25,50,100">
-                  </div>
-                  <div class="field">
-                    <label class="field-label">QBER sample fraction</label>
-                    <input class="input" id="f-winnow-sample" type="number" value="0.05" min="0.01" max="0.5" step="0.01">
-                  </div>
+                <div class="field">
+                  <label class="field-label">Hamming block sizes per pass</label>
+                  <input class="input" id="f-winnow-blocks" type="text" value="25,50,100">
                 </div>
               </div>
 
@@ -165,10 +173,11 @@
                     <input class="input" id="f-ldpc-wr" type="number" value="10" min="3">
                   </div>
                 </div>
-                <div class="field">
-                  <label class="field-label">QBER sample fraction</label>
-                  <input class="input" id="f-ldpc-sample" type="number" value="0.05" min="0.01" max="0.5" step="0.01">
-                </div>
+              </div>
+
+              <div class="checkbox-row">
+                <input type="checkbox" id="f-asymptotic">
+                <label for="f-asymptotic">Asymptotic key length (comparison only, no finite-size guarantee)</label>
               </div>
 
               <button class="btn" id="run-btn" type="submit">Run pipeline</button>
@@ -247,14 +256,27 @@
           <span class="badge badge-muted" id="align-run-badge">Idle</span>
         </div>
         <div class="card-body">
-          <p class="hint" style="padding:0 0 .8rem">Once a peak is detected above, run the real chain (sifting, error correction, privacy amplification) on these two recordings and save the distilled key to the keystore.</p>
+          <p class="hint" style="padding:0 0 .8rem">Once a peak is detected above, run the real chain on these two recordings (coincidence filtering, sifting, error correction, verification, finite-key privacy amplification) and save the distilled key to the keystore.</p>
           <div class="field">
-            <label class="field-label">Error correction (step 2/3)</label>
+            <label class="field-label">Error correction</label>
             <select class="input" id="align-run-method">
-              <option value="discard" selected>Block discard</option>
-              <option value="winnow">Winnow</option>
+              <option value="polar" selected>Polar codes, rate-adaptive (recommended)</option>
               <option value="ldpc">LDPC belief propagation</option>
+              <option value="winnow">Winnow</option>
+              <option value="discard">Block discard (baseline)</option>
             </select>
+          </div>
+          <div class="checkbox-row">
+            <input type="checkbox" id="align-run-filter" checked>
+            <label for="align-run-filter">Coincidence filtering: remove clock drift, window = HWHM of the Gaussian peak fit</label>
+          </div>
+          <div class="checkbox-row">
+            <input type="checkbox" id="align-run-soft">
+            <label for="align-run-soft">Timing-aware decoding (polar/LDPC: per-bit reliability from public timing)</label>
+          </div>
+          <div class="checkbox-row">
+            <input type="checkbox" id="align-run-asymptotic">
+            <label for="align-run-asymptotic">Asymptotic key length (comparison only, no finite-size guarantee)</label>
           </div>
           <div class="btn-row">
             <button class="btn" id="align-run-btn" type="button" disabled>Run on recording</button>

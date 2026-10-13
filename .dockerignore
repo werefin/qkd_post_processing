@@ -3,7 +3,7 @@
 venv
 **/__pycache__
 **/*.pyc
-docs
+doc/references
 *.test
 /keys
 /ui/keys

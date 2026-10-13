@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"math/rand"
 
-	qkd "qkd_post_processing"
+	"qkd_post_processing/qkd"
 )
 
 // simulate is the same generator cmd/qkd_post_processing uses, duplicated here so

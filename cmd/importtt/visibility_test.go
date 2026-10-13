@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	qkd "qkd_post_processing"
+	"qkd_post_processing/qkd"
 )
 
 func writeFile(t *testing.T, path, content string) {
