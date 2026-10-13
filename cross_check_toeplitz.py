@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
-"""Independent NumPy re-derivation of Go's Toeplitz hash (toeplitz.go) over
-testdata/toeplitz_vectors.json (see toeplitz_vectors_test.go), cross-language
-validation for the one step with the actual security claim: privacy
-amplification"""
+"""Independent NumPy re-derivation of Go's Toeplitz hash (toeplitz.go), cross-language
+validation for the one step with the actual security claim: privacy amplification"""
 
 import base64
 import json
@@ -19,9 +17,8 @@ def _b64_bits(s: str) -> list[int]:
 
 
 def toeplitz_hash(data_bits: list[int], seed_bits: list[int], l: int) -> list[int]:
-    """out[i] = XOR over j of data[j] AND seed[i - j + n - 1], independently
-    derived straight from the mathematical definition of a Toeplitz matrix,
-    not translated from Go's implementation"""
+    """out[i] = XOR over j of data[j] AND seed[i-j+n-1], derived from the mathematical
+    definition of a Toeplitz matrix, not translated from Go's implementation"""
     data = np.asarray(data_bits, dtype=np.uint8)
     seed = np.asarray(seed_bits, dtype=np.uint8)
     n = len(data)

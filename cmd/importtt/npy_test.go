@@ -7,9 +7,8 @@ import (
 	"testing"
 )
 
-// writeNpyV1 builds a real .npy v1.0 file byte-for-byte per numpy's documented
-// format: magic, version, 2-byte header length, header dict padded to a
-// 16-byte boundary with spaces and a trailing newline, then raw data
+// writeNpyV1 builds a real .npy v1.0 file byte-for-byte per numpy's documented format:
+// magic, version, 2-byte header length, padded header dict, then raw data
 func writeNpyV1(t *testing.T, path, descr string, shape []int, data []byte) {
 	t.Helper()
 	shapeStr := ""
@@ -100,9 +99,8 @@ func itoa(n int) string {
 	return string(digits)
 }
 
-// TestLoadNpyInt64RoundTrip checks a hand-built real v1.0 int64 file decodes
-// to exactly the values encoded, including negative numbers and large
-// magnitudes at the actual recorded-timestamp scale
+// TestLoadNpyInt64RoundTrip checks a hand-built real v1.0 int64 file decodes to exactly
+// the values encoded, including negatives and large recorded-timestamp-scale magnitudes
 func TestLoadNpyInt64RoundTrip(t *testing.T) {
 	want := []int64{0, 1, -1, 4607167884484608000, -4607167884484608000, 9223372036854775807, -9223372036854775808}
 	data := make([]byte, len(want)*8)
@@ -126,9 +124,8 @@ func TestLoadNpyInt64RoundTrip(t *testing.T) {
 	}
 }
 
-// TestLoadNpyInt64CrossesChunkBoundary: real recordings are tens of millions
-// of elements, far past npyReadChunkElems (64K) --> this checks values on
-// both sides of a chunk boundary decode correctly, not just small arrays
+// TestLoadNpyInt64CrossesChunkBoundary: real recordings are far past npyReadChunkElems
+// (64K), so this checks values on both sides of a chunk boundary decode correctly
 func TestLoadNpyInt64CrossesChunkBoundary(t *testing.T) {
 	n := npyReadChunkElems*2 + 137 // deliberately not a multiple of the chunk size
 	want := make([]int64, n)
@@ -156,8 +153,8 @@ func TestLoadNpyInt64CrossesChunkBoundary(t *testing.T) {
 	}
 }
 
-// TestLoadNpyInt8CrossesChunkBoundary: same crossing check as int64, since
-// loadNpyInt8 reuses a separately-sized scratch buffer of its own
+// TestLoadNpyInt8CrossesChunkBoundary: same crossing check as int64, since loadNpyInt8
+// reuses a separately-sized scratch buffer
 func TestLoadNpyInt8CrossesChunkBoundary(t *testing.T) {
 	n := npyReadChunkElems*2 + 137
 	want := make([]int8, n)
@@ -184,9 +181,8 @@ func TestLoadNpyInt8CrossesChunkBoundary(t *testing.T) {
 	}
 }
 
-// TestLoadNpyInt8RoundTrip checks the full int8 range, including values
-// that are negative when interpreted as signed but would be large as
-// unsigned bytes, since channel bytes are read raw off disk
+// TestLoadNpyInt8RoundTrip checks the full int8 range, including values that are negative
+// signed but large unsigned, since channel bytes are read raw off disk
 func TestLoadNpyInt8RoundTrip(t *testing.T) {
 	want := []int8{0, 1, 2, 3, 4, -1, 127, -128}
 	data := make([]byte, len(want))
@@ -210,9 +206,8 @@ func TestLoadNpyInt8RoundTrip(t *testing.T) {
 	}
 }
 
-// TestLoadNpyInt8AcceptsAllDocumentedByteOrderVariants: a single signed
-// byte has no endianness, numpy writes it as '|i1', '<i1', or '>i1'
-// depending on platform/version --> all three must be accepted identically
+// TestLoadNpyInt8AcceptsAllDocumentedByteOrderVariants: a signed byte has no endianness,
+// so numpy's '|i1', '<i1', and '>i1' variants must all be accepted identically
 func TestLoadNpyInt8AcceptsAllDocumentedByteOrderVariants(t *testing.T) {
 	for _, descr := range []string{"|i1", "<i1", ">i1"} {
 		path := filepath.Join(t.TempDir(), "ch.npy")
@@ -227,9 +222,8 @@ func TestLoadNpyInt8AcceptsAllDocumentedByteOrderVariants(t *testing.T) {
 	}
 }
 
-// TestLoadNpyRejectsWrongDtype checks a timestamp array mistakenly written
-// as int32 (or any dtype other than exactly '<i8') is rejected rather than
-// silently misread with the wrong element width
+// TestLoadNpyRejectsWrongDtype checks a timestamp array written as any dtype other
+// than exactly '<i8' is rejected rather than silently misread with the wrong width
 func TestLoadNpyRejectsWrongDtype(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ts.npy")
 	writeNpyV1(t, path, "<i4", []int{2}, []byte{1, 0, 0, 0, 2, 0, 0, 0})
@@ -238,9 +232,8 @@ func TestLoadNpyRejectsWrongDtype(t *testing.T) {
 	}
 }
 
-// TestLoadNpyRejectsFortranOrder checks a fortran-ordered array (which this
-// reader explicitly doesn't support) is rejected, not silently misread as
-// if it were row-major
+// TestLoadNpyRejectsFortranOrder checks a fortran-ordered array (unsupported by this
+// reader) is rejected, not silently misread as row-major
 func TestLoadNpyRejectsFortranOrder(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ts.npy")
 	header := "{'descr': '<i8', 'fortran_order': True, 'shape': (1,), }"
@@ -288,9 +281,8 @@ func TestLoadNpyRejectsBadMagic(t *testing.T) {
 	}
 }
 
-// TestLoadNpyInt64AcceptsVersion2Header exercises the 4-byte header-length
-// branch of readNpyHeader, used for .npy files with headers too long for
-// the v1.0 2-byte length field (large shape/dtype metadata)
+// TestLoadNpyInt64AcceptsVersion2Header exercises the 4-byte header-length branch of
+// readNpyHeader, used when headers are too long for the v1.0 2-byte length field
 func TestLoadNpyInt64AcceptsVersion2Header(t *testing.T) {
 	want := []int64{10, 20, 30}
 	data := make([]byte, len(want)*8)

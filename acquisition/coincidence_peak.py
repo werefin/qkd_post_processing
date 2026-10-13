@@ -249,10 +249,8 @@ def slice_to_wall_overlap(
     path_b: Path,
     margin_s: float = 2.0,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
-    """Restrict both streams to their wall-clock overlap (from *_meta.json)
-    Returns the sliced arrays plus an info dict; raises AnalysisError
-    when the overlap is empty or a slice would be left with fewer than two timestamps
-    """
+    """Restrict both streams to their wall-clock overlap (from *_meta.json); raises
+    AnalysisError if the overlap is empty or leaves fewer than two timestamps"""
     meta_a = _meta_for(path_a)
     meta_b = _meta_for(path_b)
     if meta_a is None or meta_b is None:
@@ -306,10 +304,8 @@ def slice_to_wall_overlap(
 def _upper_limits(
     a: np.ndarray, b: np.ndarray, lag_ps: int
 ) -> list[dict[str, Any]]:
-    """Poisson detection floor per coincidence window width
-    Accidentals assume uniform singles rates over the lag overlap:
-    bg = R_A * R_B * W * T; min_excess is the excess needed for a local score of MIN_PEAK_SCORE
-    """
+    """Poisson detection floor per window width. Accidentals assume uniform singles rates
+    (bg = R_A * R_B * W * T); min_excess is what's needed for score >= MIN_PEAK_SCORE"""
     duration_a = int(a[-1]) - int(a[0])
     duration_b = int(b[-1]) - int(b[0])
     overlap = min(duration_a, duration_b - lag_ps) - max(0, -lag_ps)
@@ -449,9 +445,8 @@ def _best_window(
     centers = -radius_ps + (np.arange(len(counts)) + 0.5) * bin_ps
     sideband = np.abs(centers) >= max(radius_ps // 2, center_limit_ps * 2)
     side_counts = counts[sideband] if np.any(sideband) else counts
-    # MEAN, not median: with fine bins, counts/bin are small integers and the median quantizes (e.g., 4 vs a true rate of 4.65)
-    # that error, scaled by a wide window, fabricates huge fake excesses
-    # real peak is localized at the center, so it can't bias the far sidebands either way
+    # MEAN, not median: with fine bins the median quantizes (e.g. 4 vs true 4.65), and that
+    # error, scaled by a wide window, fabricates huge fake excesses
     background_per_bin = float(np.mean(side_counts))
 
     best: WindowResult | None = None
@@ -505,10 +500,8 @@ def calibrate_channel_delays(
     ts_a: np.ndarray, ch_a: np.ndarray, ts_b: np.ndarray, ch_b: np.ndarray,
     shift_b_to_a, radius_ps: int = 3000, fine_bin_ps: int = 20, center_limit_ps: int = 500,
 ) -> dict[str, Any]:
-    '''Per-channel residual delay on top of the already-fitted lag+skew; our
-    best-effort match to the vendor's delay_ch0_ps..delay_ch3_ps, not confirmed-identical
-    Each channel is matched only against its own same-numbered channel on
-    the other side --> pooling in the other 3 just adds background, no signal'''
+    '''Per-channel residual delay on top of the fitted lag+skew; best-effort match to the
+    vendor's delay_ch0..3_ps. Matched only against the same-numbered channel on the other side'''
     ts_b_aligned = shift_b_to_a(ts_b)
     results: dict[str, Any] = {}
     for label, ts_side, ch_side, other_ts, other_ch in (
@@ -612,9 +605,8 @@ def _fit_clock_skew(
         if not start_ps <= pair_elapsed_ps < end_ps:
             return None
         return int(round(pair_elapsed_ps)), float(local_lag_ps), window.score
-    # Same independence + GIL-releasing-numba reasoning as the candidate
-    # refinement above: each segment's fit only touches its own slice of a
-    # (plus the full, read-only b), so segments run concurrently in threads
+    # Same independence + GIL-releasing-numba reasoning as above: each segment only
+    # touches its own slice of a, so segments run concurrently in threads
     with ThreadPoolExecutor(max_workers=min(32, os.cpu_count() or 4)) as pool:
         segment_results = list(pool.map(
             lambda bounds: _fit_one_segment(*bounds),
@@ -752,13 +744,8 @@ def analyze_arrays(
     fit_skew: bool = True,
     strict: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Core coincidence-peak search over two already-loaded timestamp arrays
-    analyze_files wraps this with file loading/validation; a live monitor
-    running alongside acquisition can call this directly on an in-memory
-    snapshot of the recording buffered so far
-    fit_skew=False skips the segment fit and its O(N) grid-search fallback,
-    for a live check that must stay fast even with no peak found yet
-    """
+    """Core search; analyze_files wraps this with file loading, but a live monitor can call
+    it directly on an in-memory snapshot. fit_skew=False skips the slow segment fit"""
     if fine_bin_ps > refine_radius_ps:
         raise AnalysisError(
             "fine bin width must not exceed the refinement radius"
@@ -955,10 +942,8 @@ def analyze_files(
     overlap_margin_s: float = 2.0,
     **kwargs: Any,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Loads and validates two timestamp NPY files, then runs analyze_arrays
-    over them, adding the file/overlap-specific report fields it doesn't know
-    about (input_a/input_b, overlap, use_meta, overlap_margin_s)
-    """
+    """Loads/validates the two NPY files, runs analyze_arrays, then adds the file/overlap
+    report fields it doesn't know about (input_a/input_b, overlap, use_meta)"""
     raw_a = _validate_timestamps(path_a)
     raw_b = _validate_timestamps(path_b)
     log('INFO', f"A: {path_a} ({len(raw_a)} timestamps)")
@@ -1026,10 +1011,8 @@ def _format_span(ps: float) -> str:
 def _peak_xlim_ns(
     center_ps: float, width_ps: float, bin_ps: int, radius_ps: int
 ) -> tuple[float, float]:
-    """X limits (ns) for a peak panel, scaled to the detected window
-    The shaded window occupies about 25% of the panel width (half-span is four half-widths)
-    with a floor of 5 ns / 50 bins so sub-ns windows still show surrounding background, clipped to histogram radius
-    """
+    """X limits (ns) for a peak panel: shaded window is ~25% of panel width, floored at
+    5 ns / 50 bins so sub-ns windows still show surrounding background"""
     half_width_ps = width_ps / 2
     half_span_ps = max(4 * half_width_ps, 5 * PS_PER_NS, 50 * bin_ps)
     half_span_ps = min(half_span_ps, radius_ps)
@@ -1108,9 +1091,7 @@ def save_plot(report: dict[str, Any], diagnostics: dict[str, Any], path: Path) -
 
 
 def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
-    '''CLI for analyze_files: one recording directory or two timestamp NPY
-    files, plus the search tuning options. Each tuning option defaults to
-    None here so --config's values (if given) can supply the real default
+    '''Tuning options default to None so --config's values can supply the real default
     before this module's own hardcoded fallback applies; see main()'''
     parser = argparse.ArgumentParser(description="Analyze one recording directory or two timestamp sequence NPY files")
     parser.add_argument("inputs", nargs="*", type=Path)

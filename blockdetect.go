@@ -1,4 +1,4 @@
-package qoj_post_processing
+package qkd_post_processing
 
 import (
 	"fmt"
@@ -132,9 +132,8 @@ func buildParityTable(g GeneratorMatrix) (t parityTable, ok bool) {
 	return parityTable{entries: entries, m: m}, true
 }
 
-// patchBit applies one matrix entry G[row][col]'s flip to an already-built
-// table in place: toggling that entry flips parity bit row for exactly the
-// half of all block values whose bit col is set, everything else is unaffected
+// patchBit toggles G[row][col] in an already-built table: this flips parity
+// bit row for exactly the half of block values that have bit col set
 func (t *parityTable) patchBit(row, col int) {
 	rowBit := uint8(1) << uint(row)
 	colBit := 1 << uint(col)
@@ -167,11 +166,8 @@ func ComputeBlockParity(bits []byte, g GeneratorMatrix) [][]byte {
 	return computeBlockParity(bits, blockSize, g.ParityBits(), table, useTable, masks)
 }
 
-// computeBlockParity is ComputeBlockParity's body over an already-built
-// table/masks, so a caller needing both sides of the same matrix
-// (BlockErrorDetect) builds it once and reuses it, instead of paying for a
-// fresh 2^m-entry table on every call --> matters most in a hot loop like
-// SearchGeneratorMatrix's, which reevaluates a changed matrix every iteration
+// computeBlockParity is ComputeBlockParity's body over a prebuilt table/masks,
+// letting callers reuse it (e.g. both sides in BlockErrorDetect) instead of rebuilding a 2^m-entry table every call
 func computeBlockParity(bits []byte, blockSize, p int, table parityTable, useTable bool, masks parityMasks) [][]byte {
 	n := len(bits)
 	numBlocks := (n + blockSize - 1) / blockSize

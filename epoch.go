@@ -1,4 +1,4 @@
-package qoj_post_processing
+package qkd_post_processing
 
 import "sort"
 
@@ -15,10 +15,8 @@ type EpochedResult struct {
 	FinalKeyBytes []byte
 }
 
-// RunEpoched repeats Run() independently once per fixed-width time epoch,
-// instead of pooling an entire recording into a single QBER estimate
-// same way a continuously-operating QKD link already runs many short
-// acquisition cycles rather than one long one
+// RunEpoched repeats Run() independently once per fixed-width time epoch, instead of
+// pooling an entire recording into one QBER estimate, mirroring real short acquisition cycles
 func RunEpoched(aliceEvents, bobEvents []DetectionEvent, cfg Config, epochPS int64) (EpochedResult, error) {
 	var out EpochedResult
 

@@ -1,4 +1,4 @@
-package qoj_post_processing
+package qkd_post_processing
 
 import (
 	"encoding/json"

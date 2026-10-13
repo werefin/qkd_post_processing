@@ -1,13 +1,12 @@
-package qoj_post_processing
+package qkd_post_processing
 
 import (
 	"bytes"
 	"testing"
 )
 
-// toBits turns arbitrary fuzzer bytes into a 0/1-per-byte bit slice, since
-// the fuzzer only generates native types ([]byte, string, int, ...), never
-// our own "0/1 per byte" convention directly
+// toBits turns arbitrary fuzzer bytes into a 0/1-per-byte bit slice, since the fuzzer
+// only generates native types, never our own "0/1 per byte" convention directly
 func toBits(raw []byte) []byte {
 	bits := make([]byte, len(raw))
 	for i, b := range raw {
@@ -16,10 +15,8 @@ func toBits(raw []byte) []byte {
 	return bits
 }
 
-// FuzzToeplitzHashMatchesNaive is the fuzz target for the step with the
-// actual security claim: the optimized (CLMUL/popcount) Toeplitz hash must
-// match the textbook GF(2) matrix-vector product for every input, not just
-// the fixed cases in TestToeplitzImplsMatchNaive
+// FuzzToeplitzHashMatchesNaive is the fuzz target for the actual security claim: the
+// optimized (CLMUL/popcount) Toeplitz hash must match the textbook GF(2) product for every input
 func FuzzToeplitzHashMatchesNaive(f *testing.F) {
 	f.Add([]byte{1, 0, 1, 1, 0, 0, 1, 0}, []byte{1, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1}, 4)
 	f.Add([]byte{0, 0, 0, 0}, []byte{1, 0, 1, 0, 1, 0, 1}, 3)
@@ -48,9 +45,8 @@ func FuzzToeplitzHashMatchesNaive(f *testing.F) {
 	})
 }
 
-// FuzzComputeBlockParityMatchesReference checks the optimized (parity-table,
-// parallel-for-large-input) block parity computation against the
-// unoptimized mask-based reference, across random data and both test matrices
+// FuzzComputeBlockParityMatchesReference checks the optimized (parity-table, parallel)
+// block parity computation against the unoptimized mask-based reference
 func FuzzComputeBlockParityMatchesReference(f *testing.F) {
 	f.Add([]byte{1, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 1, 0})
 	f.Add([]byte{})
@@ -81,10 +77,8 @@ func FuzzComputeBlockParityMatchesReference(f *testing.F) {
 	})
 }
 
-// FuzzCRC16Deterministic checks the CRC-16 checksum is a pure function of
-// its input (same bytes in, same checksum out, every time, no shared state
-// leaking between calls --> the table-driven implementation makes this a
-// real, not purely theoretical, risk)
+// FuzzCRC16Deterministic checks the CRC-16 checksum is a pure function with no shared
+// state leaking between calls -- a real risk given the table-driven implementation
 func FuzzCRC16Deterministic(f *testing.F) {
 	f.Add([]byte("123456789"))
 	f.Add([]byte{})

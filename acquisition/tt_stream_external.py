@@ -5,11 +5,8 @@
 @Company: Quantum Optics Jena GmbH
 @Email:   r.heilmann@qo-jena.com
 @License: copyrighted
-Small test module for the TimeTagger interface
-It will try to connect to TT server held up by "tt_main" and takes the first TimeTagger available to query a permanent read-out of the given four channels
-1. setup the "tt_stream_connection_parameters" and "tt_settings" dict in the example
-2. run this file
-3. Stop with "CTRL C"
+Test module: connects to the TT server via "tt_main" and reads the first TimeTagger's four
+channels permanently. Set up "tt_stream_connection_parameters"/"tt_settings", run, Ctrl+C to stop
 '''
 
 # custom multiprocessing.connection auth (see get_custom_multiprocess_communication_module)
@@ -65,12 +62,8 @@ class TimeTaggerStream():
         logging.basicConfig(format='[%(levelname)s] %(message)s', level=logging.DEBUG)
 
     def get_custom_multiprocess_communication_module(self) -> object:
-        '''
-        Ensures the same authentication challenge across Python versions on the listener and client side, allows higher socket timeouts, and
-        makes the HMAC hash function configurable (multiprocessing.connection hardcodes md5), by redefining "deliver_challenge" and "answer_challenge";
-        the hashlib in "self.hmac_hashlib" is used for both; from Python 3.12 on this is already implemented in the original module, but this
-        override still works fine there too; ref: https://github.com/python/cpython/blob/3.10/Lib/multiprocessing/connection.py
-        '''
+        '''Redefines "deliver_challenge"/"answer_challenge" for cross-version auth, higher
+        timeouts, and a configurable HMAC hash (stdlib hardcodes md5); harmless on 3.12+ too'''
         MESSAGE_LENGTH = 20
         CHALLENGE = b'#CHALLENGE#'
         WELCOME = b'#WELCOME#'
@@ -282,23 +275,8 @@ class TimeTaggerStream():
         return self.stream_connected
 
     def read_stream(self):
-        '''
-        Reads the data stream. Returns None on failure, otherwise a dict:
-            valid                 bool        whether the result was gathered properly
-            error_code             int        potential error code during read-out
-            channel_ids_used      list[int]   physical channels in use for this stream
-            channel_sequence      list[int]   sequence of channel IDs clicked
-            timestamp_sequence    list[int]   timestamps in picoseconds, same length as channel_sequence
-            frame_start_ps         int        measurement start time (TimeTagger clock)
-            frame_end_ps           int        measurement stop time (TimeTagger clock)
-            countrates_cps        list[float] count rate per channel in use, in counts/s
-            unixtime_readout      float       host unixtime at read-out
-            exec_time_readout_ms  float       read-out execution time
-            stream_uptime_s       float       stream uptime in seconds
-            delays_ps             list[int]   delay per channel in use, in ps
-            deadtimes_ps          list[int]   deadtime per channel in use, in ps
-            triggers_volt         list[float] trigger level per channel in use, in V
-        '''
+        '''Reads the data stream; returns None on failure, else a dict with valid/error_code,
+        channel_ids_used/sequence, timestamp_sequence (ps), frame_start/end_ps, rates, delays, etc'''
         stream_data = None
 
         if not self.stream_connected:

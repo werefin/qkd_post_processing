@@ -1,4 +1,4 @@
-package qoj_post_processing
+package qkd_post_processing
 
 import (
 	"bytes"
@@ -9,9 +9,8 @@ import (
 	"sync"
 )
 
-// step 2/3 alternative: one LDPC syndrome reveal per block, decoded by
-// min-sum belief propagation, instead of Winnow's multi-pass re-reveal
-// or block discard's throw-away-on-mismatch
+// step 2/3 alternative: one LDPC syndrome reveal per block, decoded by min-sum belief
+// propagation, instead of Winnow's multi-pass re-reveal or block discard's throw-away
 
 // LDPCMatrix is a sparse regular-column-weight parity-check matrix H,
 // stored as adjacency lists so encode/decode cost is O(edges), not O(n*m)
@@ -112,10 +111,8 @@ func BuildRegularLDPC(n, wc, wr int, seed int64) (*LDPCMatrix, error) {
 	m := wc * rowsPerBlock
 	checkVars := make([][]int32, m)
 
-	// 4-cycle avoidance costs O(m*wr^2) map traffic; past
-	// ldpcCycleAvoidanceMaxPairs that swamps construction time for no real
-	// gain, since a large random bipartite graph is locally tree-like with
-	// high probability anyway, so skip straight to a single random draw
+	// 4-cycle avoidance costs O(m*wr^2) map traffic; past ldpcCycleAvoidanceMaxPairs that
+	// swamps construction time for no real gain, so skip straight to a single random draw
 	estimatedPairs := m * wr * (wr - 1) / 2
 	tries := ldpcConstructionTries
 	avoidCycles := estimatedPairs <= ldpcCycleAvoidanceMaxPairs
@@ -230,9 +227,8 @@ func pegPickFromBucket(bucket []int32, rng *rand.Rand) int32 {
 	return bucket[rng.Intn(len(bucket))]
 }
 
-// pegPickUnvisitedMinDegree scans degree buckets upward for the lowest
-// degree check this BFS never reached, PEG's rule when the search ran out
-// of new checks before any depth or touched-node cap was hit
+// pegPickUnvisitedMinDegree scans degree buckets upward for the lowest-degree check this
+// BFS never reached, PEG's rule when the search ran out of new checks before any cap
 func pegPickUnvisitedMinDegree(b *pegDegreeBuckets, checkGen []int32, gen int32, rng *rand.Rand) int32 {
 	for d := b.minDeg; d < len(b.buckets); d++ {
 		var candidates []int32
@@ -245,8 +241,8 @@ func pegPickUnvisitedMinDegree(b *pegDegreeBuckets, checkGen []int32, gen int32,
 			return candidates[rng.Intn(len(candidates))]
 		}
 	}
-	// every check was reached (a small, already-dense graph): fall back to
-	// the plain global minimum, same as the k==0 rule
+	// Every check was reached (small, already-dense graph): fall back to the plain
+	// global minimum, same as the k==0 rule
 	return pegPickFromBucket(b.buckets[b.minDeg], rng)
 }
 
@@ -267,18 +263,13 @@ func pegPickMinDegreeAmong(candidates []int32, b *pegDegreeBuckets, rng *rand.Ra
 	return ties[rng.Intn(len(ties))]
 }
 
-// pegMaxBFSDepth/pegMaxBFSTouched bound each edge's BFS cost so
-// construction stays tractable; PEG's classic operating range is small to
-// moderate block lengths, BuildRegularLDPC is the fast option past that
+// pegMaxBFSDepth/pegMaxBFSTouched bound each edge's BFS cost so construction stays
+// tractable; PEG suits small/moderate block lengths, BuildRegularLDPC is faster past that
 const pegMaxBFSDepth = 20
 const pegMaxBFSTouched = 4000
 
-// BuildPEGLDPC constructs a column-regular LDPC parity-check matrix via
-// Progressive Edge Growth (Hu, Eleftheriou, Arnold, 2001): each edge picks
-// whichever check is currently farthest from its variable in the Tanner
-// graph, directly maximizing local girth instead of leaving it to random
-// chance. Same (n, m, wc) as BuildRegularLDPC for the same wr, so any
-// difference in decoding is purely from better edge placement, not rate
+// BuildPEGLDPC constructs a column-regular LDPC matrix via Progressive Edge Growth (Hu,
+// Eleftheriou, Arnold, 2001), maximizing local girth; same (n,m,wc) as BuildRegularLDPC
 func BuildPEGLDPC(n, wc, wr int, seed int64) (*LDPCMatrix, error) {
 	if n <= 0 || wc <= 0 || wr <= 0 {
 		return nil, fmt.Errorf("ldpc: n, wc, wr must be positive")
@@ -312,11 +303,8 @@ func BuildPEGLDPC(n, wc, wr int, seed int64) (*LDPCMatrix, error) {
 				varGen[v] = gen
 				frontierVar = append(frontierVar[:0], int32(v))
 				touched := 1
-				// cappedByBudget is true only when depth/touched forced the
-				// loop to stop while it was still actively discovering new
-				// checks; any other exit (no new checks, or no further
-				// variables to expand through) means unreached checks exist
-				// elsewhere, cheaper and better found via the degree buckets
+				// cappedByBudget is true only when depth/touched forced a stop mid-discovery;
+				// any other exit means unreached checks exist elsewhere, cheaper via degree buckets
 				cappedByBudget := false
 				depth := 0
 				for ; depth < pegMaxBFSDepth && touched < pegMaxBFSTouched; depth++ {
@@ -427,9 +415,8 @@ type LDPCDecodeConfig struct {
 const defaultLDPCMaxIterations = 50
 const infMag float32 = 1e30
 
-// ldpcNormFactor scales check-to-variable magnitudes, plain min-sum is
-// known to overstate confidence and diverge, normalized min-sum near this
-// value tracks true sum-product decoding closely at a fraction of the cost
+// ldpcNormFactor scales check-to-variable magnitudes; plain min-sum overstates confidence
+// and diverges, normalized min-sum near this value tracks sum-product decoding more cheaply
 const ldpcNormFactor float32 = 0.75
 
 // clampProb keeps a QBER estimate away from 0 or 0.5, where the LLR blows
@@ -445,11 +432,8 @@ func clampProb(p float64) float64 {
 	return p
 }
 
-// ldpcDecodeScratch holds every buffer LDPCDecode's belief propagation loop
-// needs, sized once for a given LDPCMatrix. LDPCReconcile builds one and
-// reuses it across every block it decodes, instead of paying fresh
-// allocations per block; LDPCDecode itself still allocates its own for
-// each standalone call, keeping that entry point simple
+// ldpcDecodeScratch holds every buffer LDPCDecode's belief propagation loop needs;
+// LDPCReconcile builds one and reuses it per block, LDPCDecode allocates its own each call
 type ldpcDecodeScratch struct {
 	intrinsic []float32
 	msgC2V    []float32
@@ -474,13 +458,12 @@ func newLDPCDecodeScratch(h *LDPCMatrix) *ldpcDecodeScratch {
 // LDPCDecode runs min-sum belief propagation, estimating the bits that
 // satisfy syndrome under h and are closest to receivedBits over a BSC(qber)
 func LDPCDecode(h *LDPCMatrix, receivedBits, syndrome []byte, qber float64, cfg LDPCDecodeConfig) (corrected []byte, converged bool, iterations int) {
-	return h.decodeWith(newLDPCDecodeScratch(h), receivedBits, syndrome, qber, cfg)
+	return h.decodeWith(newLDPCDecodeScratch(h), receivedBits, syndrome, nil, qber, cfg)
 }
 
-// decodeWith is LDPCDecode's body, over caller-supplied scratch buffers so a
-// multi-block caller like LDPCReconcile can reuse them instead of
-// reallocating on every block
-func (h *LDPCMatrix) decodeWith(st *ldpcDecodeScratch, receivedBits, syndrome []byte, qber float64, cfg LDPCDecodeConfig) (corrected []byte, converged bool, iterations int) {
+// decodeWith is LDPCDecode's body over reusable scratch; a non-nil llr gives each bit
+// its own channel LLR (timing-aware), nil means one flat BSC(qber) LLR for all
+func (h *LDPCMatrix) decodeWith(st *ldpcDecodeScratch, receivedBits, syndrome []byte, llr []float64, qber float64, cfg LDPCDecodeConfig) (corrected []byte, converged bool, iterations int) {
 	n, m := h.N, h.M
 	maxIter := cfg.MaxIterations
 	if maxIter <= 0 {
@@ -491,9 +474,12 @@ func (h *LDPCMatrix) decodeWith(st *ldpcDecodeScratch, receivedBits, syndrome []
 	llr0 := float32(math.Log((1 - p) / p))
 	intrinsic := st.intrinsic
 	for v := range intrinsic {
-		if receivedBits[v] == 0 {
+		switch {
+		case llr != nil:
+			intrinsic[v] = float32(llr[v])
+		case receivedBits[v] == 0:
 			intrinsic[v] = llr0
-		} else {
+		default:
 			intrinsic[v] = -llr0
 		}
 	}
@@ -519,9 +505,8 @@ func (h *LDPCMatrix) decodeWith(st *ldpcDecodeScratch, receivedBits, syndrome []
 	scratch := st.syndBuf
 
 	for iter := range maxIter {
-		// check-to-variable pass (min-sum): each check's outgoing message
-		// is the product of the other edges' signs times the smaller of
-		// the min/second-min magnitude, excluding the edge it targets
+		// Check-to-variable pass (min-sum): each outgoing message is the product of the
+		// other edges' signs times the smaller min/second-min magnitude, excluding its own edge
 		parallelRange(m, func(cs, ce int) {
 			for c := cs; c < ce; c++ {
 				start, end := h.edgeOffset[c], h.edgeOffset[c+1]
@@ -608,12 +593,8 @@ func LDPCPass(h *LDPCMatrix, alice, bob []byte, qber float64, cfg LDPCDecodeConf
 	}
 }
 
-// LDPCReconcile reconciles every h.N-bit block of alice/bob the same way
-// LDPCPass does (Alice's syndrome crosses the channel, Bob decodes toward
-// it), zero-padding a short final block identically on both sides
-// Unlike calling LDPCPass per block, it decodes through one shared
-// ldpcDecodeScratch and syndrome buffer, so a many-block key reconciles
-// without a fresh set of decoder allocations on every block
+// LDPCReconcile reconciles every h.N-bit block of alice/bob like LDPCPass, but through
+// one shared ldpcDecodeScratch/syndrome buffer, so a many-block key avoids per-block allocs
 func LDPCReconcile(h *LDPCMatrix, alice, bob []byte, qber float64, cfg LDPCDecodeConfig) (correctedBob []byte, convergedBlocks, totalBlocks, leakedBits int) {
 	n := h.N
 	total := len(alice)
@@ -638,7 +619,7 @@ func LDPCReconcile(h *LDPCMatrix, alice, bob []byte, qber float64, cfg LDPCDecod
 			bobBlock[k] = 0
 		}
 		h.syndromeInto(aliceBlock, aliceSynd)
-		corrected, converged, _ := h.decodeWith(st, bobBlock, aliceSynd, qber, cfg)
+		corrected, converged, _ := h.decodeWith(st, bobBlock, aliceSynd, nil, qber, cfg)
 		copy(correctedBob[bs:be], corrected[:blen])
 		leakedBits += h.M
 		if converged {

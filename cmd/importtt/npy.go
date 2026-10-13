@@ -10,9 +10,8 @@ import (
 	"strings"
 )
 
-// npyHeader is the subset of a .npy header this reader needs: the dtype
-// descriptor, array shape, and memory layout. Sufficient for the flat
-// int8/int64 arrays tt_record_dual.py writes, not a general npy reader
+// npyHeader is the subset of a .npy header this reader needs (dtype, shape, layout);
+// sufficient for the flat int8/int64 arrays tt_record_dual.py writes, not a general npy reader
 type npyHeader struct {
 	descr        string
 	shape        []int
@@ -95,9 +94,8 @@ func readNpyHeader(f *os.File) (npyHeader, error) {
 	}, nil
 }
 
-// npyReadChunkElems bounds the scratch buffer loadNpyInt64/loadNpyInt8 read
-// into, so decoding a large recording costs one small reused buffer instead
-// of a second full-size copy of the file sitting alongside the output slice
+// npyReadChunkElems bounds the scratch buffer loadNpyInt64/loadNpyInt8 read into, so
+// decoding a large recording reuses one small buffer instead of copying the whole file
 const npyReadChunkElems = 1 << 16
 
 // loadNpyInt64 loads a 1-D little-endian int64 array (numpy dtype '<i8'),

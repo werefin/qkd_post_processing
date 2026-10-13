@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	qkd "qoj_post_processing"
+	qkd "qkd_post_processing"
 )
 
 func writeFile(t *testing.T, path, content string) {
@@ -44,10 +44,8 @@ func TestFindRecordingAssignsByReportNotSortOrder(t *testing.T) {
 	}
 }
 
-// TestFindRecordingFallsBackToSortOrderWhenReportNamesDontMatch: if the
-// report's recorded filenames don't match any file actually present (moved,
-// renamed, or the report analyzed two explicit files), fall back to sorted
-// order rather than silently producing an empty path
+// TestFindRecordingFallsBackToSortOrderWhenReportNamesDontMatch: if the report's recorded
+// filenames match no file present, fall back to sorted order instead of an empty path
 func TestFindRecordingFallsBackToSortOrderWhenReportNamesDontMatch(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "a_site_timestamp_sequence.npy"), "x")
@@ -67,9 +65,8 @@ func TestFindRecordingFallsBackToSortOrderWhenReportNamesDontMatch(t *testing.T)
 	}
 }
 
-// TestFindRecordingRejectsUndetectedReport: a report whose own coincidence
-// search failed must refuse to proceed, not silently hand back an
-// untrustworthy alignment
+// TestFindRecordingRejectsUndetectedReport: a report whose own coincidence search
+// failed must refuse to proceed, not hand back an untrustworthy alignment
 func TestFindRecordingRejectsUndetectedReport(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "a_site_timestamp_sequence.npy"), "x")
@@ -221,10 +218,8 @@ func TestDetectMultiPhotonAgainstBruteForce(t *testing.T) {
 	}
 }
 
-// bruteForceVisibility independently recomputes visibilityMetrics from
-// MatchCoincidences' own output (already fuzz-verified elsewhere), using a
-// plain loop and the formulas spelled out by hand rather than reusing
-// computeVisibilityMetrics' switch statement or arithmetic in any way
+// bruteForceVisibility independently recomputes visibilityMetrics from MatchCoincidences'
+// output, spelling out the formulas by hand rather than reusing computeVisibilityMetrics
 func bruteForceVisibility(aliceEv, bobEv []qkd.DetectionEvent, windowPS int64) visibilityMetrics {
 	pairs := qkd.MatchCoincidences(qkd.StripBit(aliceEv), qkd.StripBit(bobEv), windowPS)
 	counts := map[[2]byte]int{}
@@ -286,10 +281,8 @@ func bruteForceBuildEvents(timestamps []int64, channels []int8, multiPhoton []bo
 	return events, dropped, flaggedMP
 }
 
-// TestBuildEventsAgainstBruteForce fuzzes buildEvents (the function that
-// actually turns raw recorded arrays into DetectionEvents used by the rest
-// of the pipeline) against an independent reference, including invalid
-// channels interspersed and a non-trivial, non-identity shift function
+// TestBuildEventsAgainstBruteForce fuzzes buildEvents (turns raw recorded arrays into
+// DetectionEvents) against an independent reference, including invalid channels and a shift
 func TestBuildEventsAgainstBruteForce(t *testing.T) {
 	for seed := int64(0); seed < 200; seed++ {
 		r := rand.New(rand.NewSource(20000 + seed))
@@ -332,9 +325,8 @@ func TestBuildEventsAgainstBruteForce(t *testing.T) {
 	}
 }
 
-// TestComputeVisibilityMetricsAgainstBruteForce fuzzes computeVisibilityMetrics
-// against an independently-written reference across randomized streams
-// covering both basis-correlated and uncorrelated (noise-like) regimes
+// TestComputeVisibilityMetricsAgainstBruteForce fuzzes computeVisibilityMetrics against an
+// independent reference across both basis-correlated and uncorrelated (noise-like) regimes
 func TestComputeVisibilityMetricsAgainstBruteForce(t *testing.T) {
 	for seed := int64(0); seed < 300; seed++ {
 		r := rand.New(rand.NewSource(9000 + seed))

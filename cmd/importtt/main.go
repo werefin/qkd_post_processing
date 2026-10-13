@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	qkd "qoj_post_processing"
+	qkd "qkd_post_processing"
 )
 
 // simulateOffline is a click-stream generator used only to design a
@@ -50,12 +50,12 @@ func simulateOffline(n int, errRate, multiPhotonRate float64, jitterPS, seed int
 }
 
 // generatorMatrices maps -matrix flag values to the fixed step 2
-// generator matrices, same set cmd/qoj_post_processing exposes
+// generator matrices, same set cmd/qkd_post_processing exposes
 var generatorMatrices = map[string]qkd.GeneratorMatrix{
 	"bch": qkd.GeneratorMatrixBCHt2,
 }
 
-// ANSI color codes for status tags, duplicated from cmd/qoj_post_processing so this
+// ANSI color codes for status tags, duplicated from cmd/qkd_post_processing so this
 // tool has no dependency beyond the library itself
 const (
 	colorReset = "\033[0m"
@@ -78,9 +78,8 @@ func tag(color, label string) string {
 	return fmt.Sprintf("%s[%s]%s", color, label, colorReset)
 }
 
-// note prints a leading-tagged, self-explanatory follow-up line under a
-// field that needs one, same "[LEVEL] explain why" convention the acquisition
-// scripts use, instead of a bare status tag with no explanation
+// note prints a tagged follow-up line under a field, matching the acquisition
+// scripts' "[LEVEL] explain why" convention instead of a bare status tag
 func note(color, level, msg string) {
 	fmt.Printf("  %s %s\n", tag(color, level), msg)
 }
@@ -95,8 +94,7 @@ func fail(jsonOut bool, format string, args ...any) {
 	os.Exit(2)
 }
 
-// saveToKeystore mirrors cmd/qoj_post_processing's helper of the same name:
-// prints the outcome (unless jsonOut) and returns how many keys were saved
+// saveToKeystore mirrors cmd/qkd_post_processing's helper of the same name;
 // maxKeys (0 = unlimited) caps the keystore's total key count
 func saveToKeystore(keystoreDir string, finalKeyBytes []byte, maxKeys int, jsonOut bool) int {
 	if keystoreDir == "" {
@@ -142,51 +140,57 @@ func saveToKeystore(keystoreDir string, finalKeyBytes []byte, maxKeys int, jsonO
 	return len(stored)
 }
 
-// jsonReport is -json's machine-readable stand-in for the human-readable
-// report, one object printed to stdout, for driving e.g., a dashboard
-// same shape as cmd/qoj_post_processing's jsonReport plus this tool's own
-// recording-specific fields
+// jsonReport is -json's machine-readable stand-in for the human-readable report;
+// same shape as cmd/qkd_post_processing's jsonReport plus this tool's recording fields
 type jsonReport struct {
-	Method            string             `json:"method"` // discard, discard-epoched, winnow, or ldpc
-	RecordingDir      string             `json:"recording_dir"`
-	ARecording        string             `json:"a_recording"`
-	BRecording        string             `json:"b_recording"`
-	ADroppedClicks    int                `json:"a_dropped_clicks"`
-	BDroppedClicks    int                `json:"b_dropped_clicks"`
-	AMultiPhotonCount int                `json:"a_multiphoton_count"`
-	BMultiPhotonCount int                `json:"b_multiphoton_count"`
-	VisibilityHV      float64            `json:"visibility_hv"`
-	VisibilityDA      float64            `json:"visibility_da"`
-	FidelityVis       float64            `json:"fidelity_vis"`
-	QBERVis           float64            `json:"qber_vis"`
-	QBERBasisHV       float64            `json:"qber_bs_hv"`
-	QBERBasisDA       float64            `json:"qber_bs_da"`
-	SkewPPB           float64            `json:"skew_ppb"`
-	WindowPS          int64              `json:"window_ps"`
-	MatrixLabel       string             `json:"matrix_label,omitempty"`
-	SearchFitness     float64            `json:"search_fitness,omitempty"`
-	SiftedBits        int                `json:"sifted_bits"`
-	BlocksTotal       int                `json:"blocks_total,omitempty"`
-	BlocksKept        int                `json:"blocks_kept,omitempty"`
-	BlocksDropped     int                `json:"blocks_dropped,omitempty"`
-	BitsLeakedParity  int                `json:"bits_leaked_parity,omitempty"`
-	WinnowCorrections int                `json:"winnow_corrections,omitempty"`
-	WinnowLeakedBits  int                `json:"winnow_leaked_bits,omitempty"`
-	LDPCBlocks        int                `json:"ldpc_blocks,omitempty"`
-	LDPCConverged     int                `json:"ldpc_converged,omitempty"`
-	LDPCLeakedBits    int                `json:"ldpc_leaked_bits,omitempty"`
-	ChunksTotal       int                `json:"chunks_total"`
-	ChunksKept        int                `json:"chunks_kept"`
-	ChunksDropped     int                `json:"chunks_dropped"`
-	BitsLeakedCRC     int                `json:"bits_leaked_crc"`
-	QBER              float64            `json:"qber"`
-	LeakedBitsTotal   int                `json:"leaked_bits_total"`
-	FinalKeyBits      int                `json:"final_key_bits"`
-	CompressionRate   float64            `json:"compression_rate"`
-	KeysSaved         int                `json:"keys_saved"`
-	ElapsedMS         int64              `json:"elapsed_ms"`
-	WindowReport      []windowBucketJSON `json:"window_report,omitempty"`
-	Error             string             `json:"error,omitempty"`
+	Method             string             `json:"method"` // discard, discard-epoched, winnow, ldpc, or polar
+	RecordingDir       string             `json:"recording_dir"`
+	ARecording         string             `json:"a_recording"`
+	BRecording         string             `json:"b_recording"`
+	ADroppedClicks     int                `json:"a_dropped_clicks"`
+	BDroppedClicks     int                `json:"b_dropped_clicks"`
+	AMultiPhotonCount  int                `json:"a_multiphoton_count"`
+	BMultiPhotonCount  int                `json:"b_multiphoton_count"`
+	VisibilityHV       float64            `json:"visibility_hv"`
+	VisibilityDA       float64            `json:"visibility_da"`
+	FidelityVis        float64            `json:"fidelity_vis"`
+	QBERVis            float64            `json:"qber_vis"`
+	QBERBasisHV        float64            `json:"qber_bs_hv"`
+	QBERBasisDA        float64            `json:"qber_bs_da"`
+	SkewPPB            float64            `json:"skew_ppb"`
+	WindowPS           int64              `json:"window_ps"`
+	MatrixLabel        string             `json:"matrix_label,omitempty"`
+	SearchFitness      float64            `json:"search_fitness,omitempty"`
+	SiftedBits         int                `json:"sifted_bits"`
+	BlocksTotal        int                `json:"blocks_total,omitempty"`
+	BlocksKept         int                `json:"blocks_kept,omitempty"`
+	BlocksDropped      int                `json:"blocks_dropped,omitempty"`
+	BitsLeakedParity   int                `json:"bits_leaked_parity,omitempty"`
+	WinnowCorrections  int                `json:"winnow_corrections,omitempty"`
+	WinnowLeakedBits   int                `json:"winnow_leaked_bits,omitempty"`
+	LDPCBlocks         int                `json:"ldpc_blocks,omitempty"`
+	LDPCConverged      int                `json:"ldpc_converged,omitempty"`
+	LDPCLeakedBits     int                `json:"ldpc_leaked_bits,omitempty"`
+	PolarBlocks        int                `json:"polar_blocks,omitempty"`
+	PolarBitsCorrected int                `json:"polar_bits_corrected,omitempty"`
+	PolarLeakedBits    int                `json:"polar_leaked_bits,omitempty"`
+	FilterWindowPS     int64              `json:"filter_window_ps,omitempty"`
+	FilterAccidental   float64            `json:"filter_predicted_accidental_fraction,omitempty"`
+	FilterDriftSlices  int                `json:"filter_drift_slices_trusted,omitempty"`
+	TimingFlatBound    float64            `json:"timing_flat_bound,omitempty"`
+	TimingSoftBound    float64            `json:"timing_soft_bound,omitempty"`
+	ChunksTotal        int                `json:"chunks_total"`
+	ChunksKept         int                `json:"chunks_kept"`
+	ChunksDropped      int                `json:"chunks_dropped"`
+	BitsLeakedCRC      int                `json:"bits_leaked_crc"`
+	QBER               float64            `json:"qber"`
+	LeakedBitsTotal    int                `json:"leaked_bits_total"`
+	FinalKeyBits       int                `json:"final_key_bits"`
+	CompressionRate    float64            `json:"compression_rate"`
+	KeysSaved          int                `json:"keys_saved"`
+	ElapsedMS          int64              `json:"elapsed_ms"`
+	WindowReport       []windowBucketJSON `json:"window_report,omitempty"`
+	Error              string             `json:"error,omitempty"`
 }
 
 // windowBucketJSON is one -window-report bucket's diagnostic QBER, for -json
@@ -210,9 +214,8 @@ func failJSON(format string, args ...any) {
 	os.Exit(2)
 }
 
-// coincidenceReport is the subset of coincidence_peak.py's *_coincidence.json
-// this tool needs: which recording was "A"/"B", and the affine clock model
-// (lag + skew) that maps a B timestamp onto A's clock
+// coincidenceReport is the subset of coincidence_peak.py's *_coincidence.json this tool
+// needs: which recording was "A"/"B", and the affine clock model mapping B onto A's clock
 type coincidenceReport struct {
 	InputA    string `json:"input_a"`
 	InputB    string `json:"input_b"`
@@ -268,10 +271,8 @@ func findRecording(dir string) (tsA, tsB string, report coincidenceReport, err e
 			"the clock alignment in this report is not trustworthy", coincidenceFiles[0])
 	}
 
-	// Match by basename against the report's recorded inputs; directory-mode
-	// analysis always assigns A/B by sorted filename, so an exact match
-	// failure (files moved, or the report analyzed two explicit files) still
-	// falls back to that same sorted order
+	// Match by basename against the report's recorded inputs; if that fails
+	// (files moved, or two explicit files were analyzed), fall back to sorted order
 	aBase, bBase := filepath.Base(report.InputA), filepath.Base(report.InputB)
 	for _, p := range tsFiles {
 		switch filepath.Base(p) {
@@ -293,10 +294,8 @@ func channelPath(timestampPath string) string {
 	return strings.TrimSuffix(timestampPath, "_timestamp_sequence.npy") + "_channel_sequence.npy"
 }
 
-// channelToBasisBit maps a physical TimeTagger channel to a BBM92 (basis,
-// bit) pair: channels 1-2 are one polarization basis, 3-4 are the other
-// Any other channel (a negative falling-edge tag, an unused monitor line)
-// is not a measurement click and is dropped
+// channelToBasisBit maps a physical TimeTagger channel to a BBM92 (basis, bit) pair:
+// channels 1-2 are one polarization basis, 3-4 the other; any other channel is dropped
 func channelToBasisBit(ch int8) (basis qkd.Basis, bit byte, ok bool) {
 	switch ch {
 	case 1:
@@ -488,9 +487,14 @@ func printChannelDelays(delays map[string]map[string]struct {
 }
 
 func main() {
-	dir := flag.String("dir", "", "recording directory (from tt_record_dual.py + coincidence_peak.py)")
+	dir := flag.String("dir", "", "recording directory (from tt_record_dual.py + coincidence_peak.py); a comma-separated list pools several recordings into one privacy-amplification block, all of them included")
 	windowPS := flag.Int64("window", 0, "coincidence window in picoseconds (0 = use the report's corrected window)")
 	multiPhotonWindowPS := flag.Int64("multiphoton-window", 2000, "reject a click as an ambiguous multi-photon event if another click lands on its basis partner channel within this many picoseconds of it (own side only, before cross-side matching); 0 disables this check")
+	filter := flag.Bool("filter", true, "coincidence filtering from public timing only: track and remove the coincidence peak's drift over the recording, then set the window half-width to the HWHM of a Gaussian fit to the peak (coincfilter.go, doc/coincidence_filtering.md); an explicit -window still overrides the chosen width")
+	filterE0 := flag.Float64("filter-e0", 0.03, "declared intrinsic QBER prior used to predict QBER from the fitted peak (and to size the sample under -sample-auto); a public constant, never measured from the key bits")
+	filterSliceMS := flag.Int64("filter-slice-ms", 250, "time slice per drift estimate for -filter, in milliseconds")
+	calibrateDelays := flag.String("calibrate-delays", "", "measure per-detector delays on these recordings, write them to this JSON file and exit without producing key: it reads detector identities (bit values), so use a dedicated calibration recording, never one used for key")
+	detectorDelays := flag.String("detector-delays", "", "JSON file from -calibrate-delays: each party shifts its own clicks by its own detector delay before sifting, so announced timing no longer depends on the bit")
 	windowReport := flag.Bool("window-report", false, "print each time-bucket's own measured QBER as a diagnostic; does not select bits for the key (see windowreport.go for why not)")
 	windowReportBucketS := flag.Float64("window-report-bucket-s", 0.5, "time-bucket width for -window-report, in seconds")
 	windowReportMinPairs := flag.Int("window-report-min-pairs", 10, "buckets with fewer sifted pairs than this report as insufficient data rather than a QBER")
@@ -508,6 +512,13 @@ func main() {
 	ldpcWr := flag.Int("ldpc-wr", 10, "LDPC row weight (check node degree); tune rate=1-wc/wr comfortably below 1-h2(QBER), not just barely under it; a regular code's real decoding threshold runs below the Shannon bound, see ldpc_test.go")
 	ldpcIterations := flag.Int("ldpc-iterations", 0, "belief propagation iteration cap per block, 0 = default 50")
 	ldpcSample := flag.Float64("ldpc-sample", 0.05, "fraction of sifted bits sacrificed to measure QBER directly before LDPC correction")
+	polar := flag.Bool("polar", false, "correct errors with polar codes (successive cancellation list decoding) instead of discarding blocks (see polar.go/pipeline_polar.go)")
+	polarN := flag.Int("polar-n", 0, "polar codeword length in bits, must be a power of two; 0 = largest power of two covering the whole remaining sifted key")
+	polarMargin := flag.Float64("polar-margin", 0.02, "starting rate margin below the per-block capacity; on a failed block hash the margin rises by 0.02 and only the extra frozen values are revealed (rate-adaptive)")
+	polarSample := flag.Float64("polar-sample", 0.05, "fraction of sifted bits sacrificed to measure QBER directly before polar correction")
+	polarList := flag.Int("polar-list", 8, "SCL decoder list size (path count L); 1 = plain successive cancellation, larger L trades decode time for a lower block failure rate")
+	polarSeed := flag.Int64("polar-seed", 1, "PRNG seed for polar's QBER sample selection; must be agreed publicly")
+	softBins := flag.Int("soft-bins", 0, "with -ldpc or -polar: timing-aware soft reconciliation, per-bit error rates from this many public time-offset bins (doc/timing_aware_reconciliation.md); 0 = one flat QBER")
 	searchMatrix := flag.Bool("search-matrix", false, "design a step 2 matrix by searching on simulated data at -search-offline-err, then apply it here, instead of -matrix (see matrixsearch.go)")
 	searchM := flag.Int("search-m", 16, "block size for the searched matrix")
 	searchP := flag.Int("search-p", 4, "parity bits for the searched matrix")
@@ -517,8 +528,14 @@ func main() {
 	searchOfflineN := flag.Int("search-offline-n", 100000, "raw attempts in the simulated proxy dataset used to design the matrix")
 	searchOfflineMP := flag.Float64("search-offline-multiphoton", 0.01, "multi-photon rate for the simulated proxy data; match your detector's real rate so the search sees realistic sifting losses")
 	searchOfflineJitter := flag.Int64("search-offline-jitter", 300, "detector timing jitter in picoseconds for the simulated proxy data; match your setup so the search sees realistic coincidence-window losses")
+	asymptotic := flag.Bool("asymptotic", false, "with -winnow/-ldpc/-polar: size the key by the asymptotic n(1-h2(QBER)) instead of the default finite-key bound (doc/security_proof.md section 2)")
+	epsSec := flag.Float64("eps-sec", 1e-10, "finite-key secrecy failure probability per block")
+	sampleAuto := flag.Bool("sample-auto", true, "finite-key mode: size the QBER sample to maximize the finite key, from the sifted count and -expected-qber only; overrides -ldpc-sample/-polar-sample/-winnow-sample")
+	expectedQBER := flag.Float64("expected-qber", 0, "declared QBER prior for -sample-auto; 0 = the coincidence filter's timing-based prediction, or 0.05 without the filter")
+	epsCor := flag.Float64("eps-cor", 1e-15, "finite-key correctness failure probability per block, sets the universal-hash tag length")
 	jsonOut := flag.Bool("json", false, "print one JSON metrics object to stdout instead of the human-readable report")
 	flag.Parse()
+	keyOpts = keyOptions{asymptotic: *asymptotic, finite: qkd.FiniteKeyConfig{EpsSec: *epsSec, EpsCor: *epsCor}}
 
 	if *dir == "" {
 		if *jsonOut {
@@ -528,11 +545,15 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
-	if (*winnow && *ldpc) || (*winnow && *searchMatrix) || (*ldpc && *searchMatrix) {
-		fail(*jsonOut, "-winnow, -ldpc, and -search-matrix are mutually exclusive")
+	if (*winnow && *ldpc) || (*winnow && *searchMatrix) || (*ldpc && *searchMatrix) ||
+		(*polar && *winnow) || (*polar && *ldpc) || (*polar && *searchMatrix) {
+		fail(*jsonOut, "-winnow, -ldpc, -polar, and -search-matrix are mutually exclusive")
 	}
-	if *epochS > 0 && (*winnow || *ldpc || *searchMatrix) {
-		fail(*jsonOut, "-epoch-s only applies to the default block-discard method, not -winnow/-ldpc/-search-matrix")
+	if *epochS > 0 && (*winnow || *ldpc || *polar || *searchMatrix) {
+		fail(*jsonOut, "-epoch-s only applies to the default block-discard method, not -winnow/-ldpc/-polar/-search-matrix")
+	}
+	if *softBins < 0 || (*softBins > 0 && !*ldpc && !*polar) {
+		fail(*jsonOut, "-soft-bins must be >= 0 and only applies to -ldpc or -polar")
 	}
 
 	g, ok := generatorMatrices[*matrixName]
@@ -540,57 +561,73 @@ func main() {
 		fail(*jsonOut, "unknown -matrix %q, expected bch", *matrixName)
 	}
 
-	tsPathA, tsPathB, report, err := findRecording(*dir)
-	if err != nil {
-		fail(*jsonOut, "%v", err)
+	driftCfg := qkd.DriftConfig{SliceDurationPS: *filterSliceMS * 1_000_000_000}
+	winCfg := qkd.WindowConfig{IntrinsicQBER: *filterE0}
+	var delays *qkd.DetectorDelays
+	if *detectorDelays != "" {
+		delays = new(qkd.DetectorDelays)
+		raw, err := os.ReadFile(*detectorDelays)
+		if err == nil {
+			err = json.Unmarshal(raw, delays)
+		}
+		if err != nil {
+			fail(*jsonOut, "-detector-delays: %v", err)
+		}
+	}
+	var recs []loadedRecording
+	for _, d := range strings.Split(*dir, ",") {
+		r, err := loadRecording(strings.TrimSpace(d), *multiPhotonWindowPS, *windowPS, *filter, driftCfg, winCfg, delays)
+		if err != nil {
+			fail(*jsonOut, "%v", err)
+		}
+		recs = append(recs, r)
+	}
+	aliceEv, bobEv := poolRecordings(recs)
+
+	// one window for the pooled block, chosen on the drift-corrected union, same procedure
+	var filterResult *qkd.CoincidenceFilter
+	if *filter {
+		if len(recs) == 1 {
+			filterResult = recs[0].filter
+		} else {
+			corrected, fr, ferr := qkd.FilterCoincidences(aliceEv, bobEv, driftCfg, winCfg)
+			if ferr != nil {
+				fail(*jsonOut, "coincidence filter on the pooled recordings: %v", ferr)
+			}
+			bobEv, filterResult = corrected, &fr
+		}
 	}
 
-	tsA, err := loadNpyInt64(tsPathA)
-	if err != nil {
-		fail(*jsonOut, "%v", err)
-	}
-	chA, err := loadNpyInt8(channelPath(tsPathA))
-	if err != nil {
-		fail(*jsonOut, "%v", err)
-	}
-	tsB, err := loadNpyInt64(tsPathB)
-	if err != nil {
-		fail(*jsonOut, "%v", err)
-	}
-	chB, err := loadNpyInt8(channelPath(tsPathB))
-	if err != nil {
-		fail(*jsonOut, "%v", err)
-	}
-	if len(tsA) != len(chA) {
-		fail(*jsonOut, "%s: %d timestamps but %d channels", tsPathA, len(tsA), len(chA))
-	}
-	if len(tsB) != len(chB) {
-		fail(*jsonOut, "%s: %d timestamps but %d channels", tsPathB, len(tsB), len(chB))
-	}
-	if len(tsA) == 0 || len(tsB) == 0 {
-		fail(*jsonOut, "empty recording")
+	if *sampleAuto && !keyOpts.asymptotic {
+		keyOpts.expectedQBER = *expectedQBER
+		if keyOpts.expectedQBER <= 0 && filterResult != nil {
+			keyOpts.expectedQBER = filterResult.PredictedQBER
+		}
+		if keyOpts.expectedQBER <= 0 {
+			keyOpts.expectedQBER = 0.05
+		}
 	}
 
-	// Alignment formula from coincidence_peak.py's report (delay is B - A):
-	//   A_est = A0 + tref + ((B - B0) - (tref + lag_ref)) / (1 + skew_fraction)
-	// maps a B timestamp onto A's clock, correcting both the constant lag
-	// and the fitted linear clock skew between the two TimeTaggers
-	a0, b0 := tsA[0], tsB[0]
+	if *calibrateDelays != "" {
+		runDelayCalibration(aliceEv, bobEv, *calibrateDelays, *jsonOut)
+		return
+	}
+
+	first := recs[0]
+	tsPathA, tsPathB, report := first.tsPathA, first.tsPathB, first.report
 	skew := report.ClockSkew
-	toAliceClock := func(tsB int64) int64 {
-		bRel := float64(tsB - b0)
-		aRel := skew.ReferenceElapsedPS + (bRel-(skew.ReferenceElapsedPS+skew.LagAtReferencePS))/(1+skew.SkewFraction)
-		return a0 + int64(math.Round(aRel))
+	var droppedA, droppedB, flaggedMPA, flaggedMPB int
+	for _, r := range recs {
+		droppedA += r.droppedA
+		droppedB += r.droppedB
+		flaggedMPA += r.flaggedMPA
+		flaggedMPB += r.flaggedMPB
 	}
-
-	// own-side timing check, run before any cross-side alignment or shifting
-	mpA := detectMultiPhoton(tsA, chA, *multiPhotonWindowPS)
-	mpB := detectMultiPhoton(tsB, chB, *multiPhotonWindowPS)
-
-	aliceEv, droppedA, flaggedMPA := buildEvents(tsA, chA, mpA, func(ts int64) int64 { return ts })
-	bobEv, droppedB, flaggedMPB := buildEvents(tsB, chB, mpB, toAliceClock)
 
 	window := *windowPS
+	if window == 0 && filterResult != nil {
+		window = filterResult.WindowPS
+	}
 	if window == 0 {
 		window = skew.CorrectedWindow.WidthPS
 		if window == 0 {
@@ -603,11 +640,19 @@ func main() {
 
 	if !*jsonOut {
 		section("importtt run configuration:")
-		field("Recording directory", "%s", *dir)
-		field("A recording", "%s (%d clicks, %d dropped)", filepath.Base(tsPathA), len(aliceEv), droppedA)
-		field("B recording", "%s (%d clicks, %d dropped)", filepath.Base(tsPathB), len(bobEv), droppedB)
-		field("Clock skew (B vs A)", "%.3f ppb", skew.SkewPPB)
-		field("Coincidence window", "%d ps", window)
+		if len(recs) == 1 {
+			field("Recording directory", "%s", *dir)
+			field("A recording", "%s (%d clicks, %d dropped)", filepath.Base(tsPathA), len(aliceEv), droppedA)
+			field("B recording", "%s (%d clicks, %d dropped, %d within coincidence range kept)", filepath.Base(tsPathB), first.rawBob, droppedB, len(bobEv))
+			field("Clock skew (B vs A)", "%.3f ppb", skew.SkewPPB)
+		} else {
+			field("Pooled recordings", "%d, one privacy-amplification block, all included", len(recs))
+			for _, r := range recs {
+				field("  "+filepath.Base(r.dir), "A %d clicks, B %d clicks (%d in range), skew %.3f ppb, %s", len(r.alice), r.rawBob, len(r.bob), r.report.ClockSkew.SkewPPB, recordingFilterLabel(r.filter))
+			}
+		}
+		field("Coincidence window", "+-%d ps", window)
+		printCoincidenceFilter(filterResult)
 		field("Multi-photon clicks", "A: %d / %d, B: %d / %d (window=%d ps)", flaggedMPA, len(aliceEv), flaggedMPB, len(bobEv), *multiPhotonWindowPS)
 		field("GOMAXPROCS", "%d", runtime.GOMAXPROCS(0))
 	}
@@ -623,7 +668,9 @@ func main() {
 		field("QBER (from visibility)", "%.4f", vis.QBERVis)
 		field("QBER (HV basis only)", "%.4f", vis.QBERBasisHV)
 		field("QBER (DA basis only)", "%.4f", vis.QBERBasisDA)
-		printChannelDelays(report.ChannelDelays)
+		if len(recs) == 1 {
+			printChannelDelays(report.ChannelDelays)
+		}
 	}
 
 	var windowBuckets []qkd.WindowBucketReport
@@ -661,12 +708,18 @@ func main() {
 			field("Method (step 2/3)", "LDPC correction (block=%s, wc=%d, wr=%d, sample=%.2f, chunk=%d)",
 				ldpcBlockLabel(*ldpcBlock), *ldpcWc, *ldpcWr, *ldpcSample, *chunkSize)
 		}
-		finalKeyBytes, rep = runLDPCPipeline(aliceEv, bobEv, window, *ldpcBlock, *ldpcWc, *ldpcWr, *ldpcIterations, *ldpcSample, *chunkSize, alignBits, *jsonOut)
+		finalKeyBytes, rep = runLDPCPipeline(aliceEv, bobEv, window, *ldpcBlock, *ldpcWc, *ldpcWr, *ldpcIterations, *ldpcSample, *chunkSize, alignBits, *softBins, *jsonOut)
 		rep.Method = "ldpc"
+	} else if *polar {
+		if !*jsonOut {
+			field("Method (step 2/3)", "polar correction (n=%s, margin=%.2f, list=%d, sample=%.2f, chunk=%d)",
+				ldpcBlockLabel(*polarN), *polarMargin, *polarList, *polarSample, *chunkSize)
+		}
+		finalKeyBytes, rep = runPolarPipeline(aliceEv, bobEv, window, *polarN, *polarMargin, *polarList, *polarSeed, *polarSample, *chunkSize, alignBits, *softBins, *jsonOut)
+		rep.Method = "polar"
 	} else if *searchMatrix {
-		// designed on simulated proxy data only, never the real events
-		// above, or the matrix choice itself would leak information about
-		// this session's actual secret bits outside the leaked-bits budget
+		// Designed on simulated proxy data only, never the real events above, or
+		// the matrix choice itself would leak secret-bit info outside the leaked-bits budget
 		proxyAlice, proxyBob := simulateOffline(*searchOfflineN, *searchOfflineErr, *searchOfflineMP, *searchOfflineJitter, *searchSeed)
 		searched, fitness := qkd.SearchGeneratorMatrix(*searchM, *searchP, proxyAlice, proxyBob, window, *chunkSize, *searchIterations, *searchSeed)
 		matrixLabel := fmt.Sprintf("search(%d,%d)", *searchM, *searchP)
@@ -711,6 +764,11 @@ func main() {
 		rep.QBERBasisDA = vis.QBERBasisDA
 		rep.SkewPPB = skew.SkewPPB
 		rep.WindowPS = window
+		if filterResult != nil {
+			rep.FilterWindowPS = filterResult.WindowPS
+			rep.FilterAccidental = filterResult.AccidentalFraction
+			rep.FilterDriftSlices = filterResult.DriftTrusted
+		}
 		rep.ElapsedMS = elapsed.Milliseconds()
 		if windowBuckets != nil {
 			rep.WindowReport = make([]windowBucketJSON, len(windowBuckets))
@@ -746,9 +804,8 @@ func parseIntList(s string) ([]int, error) {
 	return out, nil
 }
 
-// runDiscardPipeline runs qkd.Run (step 2/3: block discard) and prints the
-// same report cmd/qoj_post_processing does; returns the final key bytes, if
-// any, plus the structured report -json wants
+// runDiscardPipeline runs qkd.Run (step 2/3: block discard) and prints the same
+// report cmd/qkd_post_processing does; returns final key bytes plus the -json report
 func runDiscardPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, g qkd.GeneratorMatrix, matrixName string, chunkSize, alignBits int, jsonOut bool) ([]byte, jsonReport) {
 	cfg := qkd.Config{
 		CoincidenceWindowPS: window,
@@ -800,6 +857,7 @@ func runDiscardPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, g qkd
 		field("Error bits in faulty blocks", "%d", res.QBER.ErrorBits)
 		field("QBER estimate", "%.4f", res.QBER.QBER)
 
+		field("Key length bound", "asymptotic n(1-h2(QBER)) - leaked; block discard has no random sample to bound the phase error")
 		printSanityAndKey(cv.SurvivingAlice, cv.SurvivingBob, res.LeakedBits, res.FinalKeyBits, res.FinalKeyBytes)
 	}
 
@@ -821,10 +879,8 @@ func runDiscardPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, g qkd
 	}
 }
 
-// runEpochedPipeline runs qkd.RunEpoched (step 1-5 repeated once per fixed
-// time epoch, see epoch.go) instead of pooling the whole recording into one
-// QBER estimate, and prints each epoch's own outcome plus the concatenated
-// result
+// runEpochedPipeline runs qkd.RunEpoched (step 1-5 repeated once per fixed time
+// epoch, see epoch.go) instead of pooling the whole recording into one QBER estimate
 func runEpochedPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, g qkd.GeneratorMatrix, matrixName string, chunkSize, alignBits int, epochPS int64, jsonOut bool) ([]byte, jsonReport) {
 	cfg := qkd.Config{
 		CoincidenceWindowPS: window,
@@ -893,9 +949,8 @@ func runEpochedPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, g qkd
 	}
 }
 
-// printWindowReport prints each time-bucket's own measured QBER: a
-// diagnostic for spotting when/where a link's quality drifts, never a
-// basis for selecting which bits become key (see windowreport.go for why)
+// printWindowReport prints each time-bucket's measured QBER: a diagnostic for spotting
+// drift, never a basis for selecting which bits become key (see windowreport.go for why)
 func printWindowReport(buckets []qkd.WindowBucketReport, bucketS float64) {
 	section(fmt.Sprintf("(0): time-window QBER report (bucket=%gs, diagnostic only, not used for the key)", bucketS))
 	for _, b := range buckets {
@@ -908,9 +963,8 @@ func printWindowReport(buckets []qkd.WindowBucketReport, bucketS float64) {
 	}
 }
 
-// runWinnowPipeline runs qkd.RunWinnow (step 2/3: Winnow correction) and
-// prints an analogous report, returning the final key bytes, if any, plus
-// the structured report -json wants
+// runWinnowPipeline runs qkd.RunWinnow (step 2/3: Winnow correction) and prints
+// an analogous report, returning the final key bytes plus the -json report
 func runWinnowPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, blockSizes []int, sampleFraction float64, chunkSize, alignBits int, jsonOut bool) ([]byte, jsonReport) {
 	cfg := qkd.WinnowRunConfig{
 		CoincidenceWindowPS: window,
@@ -919,6 +973,9 @@ func runWinnowPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, blockS
 		Seed:                1,
 		ChunkSize:           chunkSize,
 		KeyAlignBits:        alignBits,
+		Asymptotic:          keyOpts.asymptotic,
+		FiniteKey:           keyOpts.finite,
+		ExpectedQBER:        keyOpts.expectedQBER,
 	}
 	res, err := qkd.RunWinnow(aliceEv, bobEv, cfg)
 	if err != nil {
@@ -938,7 +995,7 @@ func runWinnowPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, blockS
 		field("Sifted bits", "%d", res.SiftedBits)
 
 		section("(4 before 2/3): QBER from a sacrificed public sample")
-		field("Sample bits", "%d (%.1f%% of sifted)", res.QBER.SampleBits, sampleFraction*100)
+		field("Sample bits", "%d (%.1f%% of sifted)", res.QBER.SampleBits, 100*float64(res.QBER.SampleBits)/float64(max(1, res.SiftedBits)))
 		field("Error bits in sample", "%d", res.QBER.ErrorBits)
 		field("QBER estimate", "%.4f", res.QBER.QBER)
 
@@ -953,6 +1010,7 @@ func runWinnowPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, blockS
 		field("Bits surviving", "%d", len(cv.SurvivingAlice))
 		field("Bits leaked (CRCs)", "%d", cv.LeakedBits)
 
+		printFiniteKey(res.FiniteKey)
 		printSanityAndKey(cv.SurvivingAlice, cv.SurvivingBob, res.LeakedBits, res.FinalKeyBits, res.FinalKeyBytes)
 	}
 
@@ -979,10 +1037,9 @@ func ldpcBlockLabel(blockLength int) string {
 	return strconv.Itoa(blockLength)
 }
 
-// runLDPCPipeline runs qkd.RunLDPC (step 2/3: LDPC belief propagation) and
-// prints an analogous report. Returns the final key bytes, if any, plus the
-// structured report -json wants
-func runLDPCPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, blockLength, wc, wr, maxIterations int, sampleFraction float64, chunkSize, alignBits int, jsonOut bool) ([]byte, jsonReport) {
+// runLDPCPipeline runs qkd.RunLDPC (step 2/3: LDPC belief propagation) and prints
+// an analogous report. Returns the final key bytes plus the -json report
+func runLDPCPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, blockLength, wc, wr, maxIterations int, sampleFraction float64, chunkSize, alignBits, timingBins int, jsonOut bool) ([]byte, jsonReport) {
 	cfg := qkd.LDPCRunConfig{
 		CoincidenceWindowPS: window,
 		SampleFraction:      sampleFraction,
@@ -993,6 +1050,10 @@ func runLDPCPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, blockLen
 		Seed:                1,
 		ChunkSize:           chunkSize,
 		KeyAlignBits:        alignBits,
+		TimingBins:          timingBins,
+		Asymptotic:          keyOpts.asymptotic,
+		FiniteKey:           keyOpts.finite,
+		ExpectedQBER:        keyOpts.expectedQBER,
 	}
 	res, err := qkd.RunLDPC(aliceEv, bobEv, cfg)
 	if err != nil {
@@ -1012,7 +1073,7 @@ func runLDPCPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, blockLen
 		field("Sifted bits", "%d", res.SiftedBits)
 
 		section("(4 before 2/3): QBER from a sacrificed public sample")
-		field("Sample bits", "%d (%.1f%% of sifted)", res.QBER.SampleBits, sampleFraction*100)
+		field("Sample bits", "%d (%.1f%% of sifted)", res.QBER.SampleBits, 100*float64(res.QBER.SampleBits)/float64(max(1, res.SiftedBits)))
 		field("Error bits in sample", "%d", res.QBER.ErrorBits)
 		field("QBER estimate", "%.4f", res.QBER.QBER)
 
@@ -1023,6 +1084,7 @@ func runLDPCPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, blockLen
 			note(colorWarn, "WARN", fmt.Sprintf("%d block(s) did not converge within the iteration cap; their bits are likely still wrong and will show up as residual QBER below", res.LDPCBlocks-res.LDPCConverged))
 		}
 		field("Bits leaked (syndromes)", "%d", res.LDPCLeakedBits)
+		printTimingReport(res.Timing)
 
 		section(fmt.Sprintf("(3): error verification (chunk=%d bits, CRC-16)", chunkSize))
 		field("Chunks total", "%d", cv.ChunksTotal)
@@ -1031,6 +1093,7 @@ func runLDPCPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, blockLen
 		field("Bits surviving", "%d", len(cv.SurvivingAlice))
 		field("Bits leaked (CRCs)", "%d", cv.LeakedBits)
 
+		printFiniteKey(res.FiniteKey)
 		printSanityAndKey(cv.SurvivingAlice, cv.SurvivingBob, res.LeakedBits, res.FinalKeyBits, res.FinalKeyBytes)
 	}
 
@@ -1039,6 +1102,8 @@ func runLDPCPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, blockLen
 		LDPCBlocks:      res.LDPCBlocks,
 		LDPCConverged:   res.LDPCConverged,
 		LDPCLeakedBits:  res.LDPCLeakedBits,
+		TimingFlatBound: timingFlat(res.Timing),
+		TimingSoftBound: timingSoft(res.Timing),
 		ChunksTotal:     cv.ChunksTotal,
 		ChunksKept:      cv.ChunksKept,
 		ChunksDropped:   cv.ChunksDropped,
@@ -1047,6 +1112,80 @@ func runLDPCPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, blockLen
 		LeakedBitsTotal: res.LeakedBits,
 		FinalKeyBits:    len(res.FinalKeyBits),
 		CompressionRate: rate,
+	}
+}
+
+// runPolarPipeline runs qkd.RunPolar (step 2/3: polar SC/SCL decoding) and prints
+// an analogous report. Returns the final key bytes plus the -json report
+func runPolarPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, blockLength int, margin float64, listSize int, seed int64, sampleFraction float64, chunkSize, alignBits, timingBins int, jsonOut bool) ([]byte, jsonReport) {
+	cfg := qkd.PolarRunConfig{
+		CoincidenceWindowPS: window,
+		SampleFraction:      sampleFraction,
+		BlockLength:         blockLength,
+		RateMargin:          margin,
+		ListSize:            listSize,
+		Seed:                seed,
+		ChunkSize:           chunkSize,
+		KeyAlignBits:        alignBits,
+		TimingBins:          timingBins,
+		Asymptotic:          keyOpts.asymptotic,
+		FiniteKey:           keyOpts.finite,
+		ExpectedQBER:        keyOpts.expectedQBER,
+	}
+	res, err := qkd.RunPolar(aliceEv, bobEv, cfg)
+	if err != nil {
+		fail(jsonOut, "pipeline error: %v", err)
+	}
+
+	cv := res.CRCVerify
+	rate := 0.0
+	if len(cv.SurvivingAlice) > 0 {
+		rate = float64(len(res.FinalKeyBits)) / float64(len(cv.SurvivingAlice))
+	}
+
+	if !jsonOut {
+		section("(1): sifting")
+		field("Alice raw clicks", "%d", len(aliceEv))
+		field("Bob raw clicks", "%d", len(bobEv))
+		field("Sifted bits", "%d", res.SiftedBits)
+
+		section("(4 before 2/3): QBER from a sacrificed public sample")
+		field("Sample bits", "%d (%.1f%% of sifted)", res.QBER.SampleBits, 100*float64(res.QBER.SampleBits)/float64(max(1, res.SiftedBits)))
+		field("Error bits in sample", "%d", res.QBER.ErrorBits)
+		field("QBER estimate", "%.4f", res.QBER.QBER)
+
+		section(fmt.Sprintf("(2): polar correction (list=%d)", listSize))
+		field("Blocks total", "%d", res.PolarBlocks)
+		field("Bits corrected toward Alice", "%d", res.PolarBitsCorrected)
+		field("Bits leaked (frozen reveals)", "%d", res.PolarLeakedBits)
+		printTimingReport(res.Timing)
+
+		section(fmt.Sprintf("(3): error verification (chunk=%d bits, CRC-16)", chunkSize))
+		field("Chunks total", "%d", cv.ChunksTotal)
+		field("Chunks kept", "%d", cv.ChunksKept)
+		field("Chunks dropped", "%d", cv.ChunksDropped)
+		field("Bits surviving", "%d", len(cv.SurvivingAlice))
+		field("Bits leaked (CRCs)", "%d", cv.LeakedBits)
+
+		printFiniteKey(res.FiniteKey)
+		printSanityAndKey(cv.SurvivingAlice, cv.SurvivingBob, res.LeakedBits, res.FinalKeyBits, res.FinalKeyBytes)
+	}
+
+	return res.FinalKeyBytes, jsonReport{
+		SiftedBits:         res.SiftedBits,
+		PolarBlocks:        res.PolarBlocks,
+		PolarBitsCorrected: res.PolarBitsCorrected,
+		PolarLeakedBits:    res.PolarLeakedBits,
+		TimingFlatBound:    timingFlat(res.Timing),
+		TimingSoftBound:    timingSoft(res.Timing),
+		ChunksTotal:        cv.ChunksTotal,
+		ChunksKept:         cv.ChunksKept,
+		ChunksDropped:      cv.ChunksDropped,
+		BitsLeakedCRC:      cv.LeakedBits,
+		QBER:               res.QBER.QBER,
+		LeakedBitsTotal:    res.LeakedBits,
+		FinalKeyBits:       len(res.FinalKeyBits),
+		CompressionRate:    rate,
 	}
 }
 
@@ -1082,4 +1221,243 @@ func printSanityAndKey(survivingAlice, survivingBob []byte, leakedBits int, fina
 		field("Secret key", "(empty)")
 		note(colorWarn, "WARN", "QBER and/or classical-channel leakage were too high to distil any key at this length; nothing usable was produced from this recording")
 	}
+}
+
+// printTimingReport shows the timing model's disclosure bounds when soft reconciliation ran
+func printTimingReport(t *qkd.TimingReport) {
+	if t == nil {
+		return
+	}
+	field("Timing model", "%d bins over +-%d ps (from the QBER sample)", len(t.Model.ErrorRate), t.Model.WindowPS)
+	saving := 0.0
+	if t.FlatBound > 0 {
+		saving = 100 * (t.FlatBound - t.SoftBound) / t.FlatBound
+	}
+	field("Disclosure bound", "flat %.4f, timing-aware %.4f bits/bit (%.1f%% less)", t.FlatBound, t.SoftBound, saving)
+}
+
+// timingFlat and timingSoft read a possibly-nil TimingReport for the -json output
+func timingFlat(t *qkd.TimingReport) float64 {
+	if t == nil {
+		return 0
+	}
+	return t.FlatBound
+}
+
+func timingSoft(t *qkd.TimingReport) float64 {
+	if t == nil {
+		return 0
+	}
+	return t.SoftBound
+}
+
+// printCoincidenceFilter reports the drift tracking and window choice, all from public timing
+func printCoincidenceFilter(f *qkd.CoincidenceFilter) {
+	if f == nil {
+		field("Coincidence filter", "off")
+		return
+	}
+	d := f.Drift
+	span := 0.0
+	if n := len(d.OffsetsPS); n > 0 {
+		lo, hi := d.OffsetsPS[0], d.OffsetsPS[0]
+		for _, o := range d.OffsetsPS {
+			lo, hi = min(lo, o), max(hi, o)
+		}
+		span = hi - lo
+	}
+	field("Drift tracking", "peak moved over %.0f ps, removed in %d pass(es), %d/%d slices trusted", span, f.DriftPasses, f.DriftTrusted, d.Slices)
+	field("Gaussian fit (after drift)", "sigma %.1f ps, centre %+.1f ps, peak %.0f over floor %.1f per %d ps bin", f.Fit.SigmaPS, f.Fit.CentrePS, f.Fit.Amplitude, f.Fit.Background, f.Fit.BinPS)
+	field("Window (fit HWHM)", "+-%d ps, predicted accidentals %.1f%%", f.WindowPS, 100*f.AccidentalFraction)
+}
+
+// keyOptions is step 5's accounting, set once from flags: finite-key unless -asymptotic
+type keyOptions struct {
+	asymptotic   bool
+	finite       qkd.FiniteKeyConfig
+	expectedQBER float64 // >0: size the QBER sample automatically from this prior
+}
+
+var keyOpts keyOptions
+
+// printFiniteKey shows how the finite-key length was derived, or notes asymptotic mode
+func printFiniteKey(r *qkd.FiniteKeyReport) {
+	if r == nil {
+		field("Key length bound", "asymptotic n(1-h2(QBER)) - leaked (-asymptotic, no finite-size margin)")
+		return
+	}
+	fk := keyOpts.finite
+	field("Key length bound", "finite-key, eps_sec=%.0e eps_cor=%.0e", fk.EpsSec, fk.EpsCor)
+	field("Phase error", "point %.4f, bound %.4f (cross-basis, fluctuation and post-selection included)", r.PhiPoint, r.Phi)
+	switch {
+	case r.Bits == 0:
+		field("Correctness check", "nothing survived error correction, nothing to verify")
+	case r.Verified:
+		field("Correctness check", "universal hash, %d-bit tag: match", r.TagBits)
+	default:
+		field("Correctness check", "universal hash, %d-bit tag: MISMATCH, no key produced", r.TagBits)
+	}
+	field("Bits charged to key length", "%d (all disclosure, incl. the %d-bit tag)", r.LeakedBits, r.TagBits)
+}
+
+// loadedRecording is one recording's events on Alice's clock, drift-filtered if asked
+type loadedRecording struct {
+	dir                    string
+	tsPathA, tsPathB       string
+	report                 coincidenceReport
+	alice, bob             []qkd.DetectionEvent
+	rawBob                 int // Bob clicks before PruneToCoincidenceRange
+	droppedA, droppedB     int
+	flaggedMPA, flaggedMPB int
+	filter                 *qkd.CoincidenceFilter
+}
+
+// loadRecording finds, loads and clock-aligns one recording, flags multi-photon clicks,
+// and applies the coincidence filter on its own, since each recording has its own drift
+func loadRecording(dir string, mpWindowPS, windowPS int64, filter bool, driftCfg qkd.DriftConfig, winCfg qkd.WindowConfig, delays *qkd.DetectorDelays) (loadedRecording, error) {
+	r := loadedRecording{dir: dir}
+	var err error
+	r.tsPathA, r.tsPathB, r.report, err = findRecording(dir)
+	if err != nil {
+		return r, err
+	}
+	tsA, err := loadNpyInt64(r.tsPathA)
+	if err != nil {
+		return r, err
+	}
+	chA, err := loadNpyInt8(channelPath(r.tsPathA))
+	if err != nil {
+		return r, err
+	}
+	tsB, err := loadNpyInt64(r.tsPathB)
+	if err != nil {
+		return r, err
+	}
+	chB, err := loadNpyInt8(channelPath(r.tsPathB))
+	if err != nil {
+		return r, err
+	}
+	if len(tsA) != len(chA) || len(tsB) != len(chB) {
+		return r, fmt.Errorf("%s: timestamp and channel counts differ (A %d/%d, B %d/%d)", dir, len(tsA), len(chA), len(tsB), len(chB))
+	}
+	if len(tsA) == 0 || len(tsB) == 0 {
+		return r, fmt.Errorf("%s: empty recording", dir)
+	}
+
+	// Alignment from coincidence_peak.py's report (delay is B - A): maps a B timestamp onto
+	// A's clock, correcting the constant lag and the fitted clock skew
+	a0, b0 := tsA[0], tsB[0]
+	skew := r.report.ClockSkew
+	toAliceClock := func(ts int64) int64 {
+		bRel := float64(ts - b0)
+		aRel := skew.ReferenceElapsedPS + (bRel-(skew.ReferenceElapsedPS+skew.LagAtReferencePS))/(1+skew.SkewFraction)
+		return a0 + int64(math.Round(aRel))
+	}
+	// own-side timing check, run before any cross-side alignment or shifting
+	mpA := detectMultiPhoton(tsA, chA, mpWindowPS)
+	mpB := detectMultiPhoton(tsB, chB, mpWindowPS)
+	r.alice, r.droppedA, r.flaggedMPA = buildEvents(tsA, chA, mpA, func(ts int64) int64 { return ts })
+	r.bob, r.droppedB, r.flaggedMPB = buildEvents(tsB, chB, mpB, toAliceClock)
+	r.rawBob = len(r.bob)
+	if delays != nil {
+		r.alice = qkd.ApplyDetectorDelays(r.alice, delays.Alice)
+		r.bob = qkd.ApplyDetectorDelays(r.bob, delays.Bob)
+	}
+	// Bob records ~50x Alice's clicks, nearly all unpaired: keep only those that could coincide
+	r.bob = qkd.PruneToCoincidenceRange(r.alice, r.bob, pruneRadiusPS(windowPS, r.report))
+
+	if filter {
+		corrected, fr, ferr := qkd.FilterCoincidences(r.alice, r.bob, driftCfg, winCfg)
+		if ferr != nil {
+			return r, fmt.Errorf("%s: coincidence filter: %v (rerun with -filter=false to skip it)", dir, ferr)
+		}
+		r.bob, r.filter = corrected, &fr
+	}
+	return r, nil
+}
+
+// poolRecordingGapPS separates consecutive recordings on the pooled timeline, far beyond any window
+const poolRecordingGapPS = 1_000_000_000_000
+
+// poolRecordings lays recordings end to end on one timeline, so they sift and privacy-amplify as
+// one block; every recording given is included, none is chosen by its error rate
+func poolRecordings(recs []loadedRecording) (alice, bob []qkd.DetectionEvent) {
+	if len(recs) == 1 {
+		return recs[0].alice, recs[0].bob
+	}
+	var cursor int64
+	for _, r := range recs {
+		lo, hi := int64(math.MaxInt64), int64(math.MinInt64)
+		for _, evs := range [][]qkd.DetectionEvent{r.alice, r.bob} {
+			for _, e := range evs {
+				lo, hi = min(lo, e.TimestampPS), max(hi, e.TimestampPS)
+			}
+		}
+		shift := cursor - lo
+		for _, e := range r.alice {
+			e.TimestampPS += shift
+			alice = append(alice, e)
+		}
+		for _, e := range r.bob {
+			e.TimestampPS += shift
+			bob = append(bob, e)
+		}
+		cursor = hi + shift + poolRecordingGapPS
+	}
+	return alice, bob
+}
+
+// recordingFilterLabel summarizes one recording's drift filter for the pooled header
+func recordingFilterLabel(f *qkd.CoincidenceFilter) string {
+	if f == nil {
+		return "filter off"
+	}
+	return fmt.Sprintf("drift %d/%d slices in %d pass(es), fit sigma %.0f ps, HWHM +-%d ps", f.DriftTrusted, f.Drift.Slices, f.DriftPasses, f.Fit.SigmaPS, f.WindowPS)
+}
+
+// pruneRadiusPS is how far from any Alice click a Bob click is kept: 20 ns, or twice the
+// widest window this run could use, so pruning never removes a possible coincidence
+func pruneRadiusPS(windowFlagPS int64, report coincidenceReport) int64 {
+	return max(20_000, 2*windowFlagPS, 2*report.ClockSkew.CorrectedWindow.WidthPS)
+}
+
+// calibrationRadiusPS bounds each detector class's peak, several sigma of a ~30 ps peak
+const calibrationRadiusPS = 150
+
+// runDelayCalibration measures per-detector delays on drift-corrected events, writes them,
+// and reports the timing leak before and after applying them
+func runDelayCalibration(alice, bob []qkd.DetectionEvent, outPath string, jsonOut bool) {
+	delays, before, err := qkd.CalibrateDetectorDelays(alice, bob, calibrationRadiusPS)
+	if err != nil {
+		fail(jsonOut, "%v", err)
+	}
+	after, afterPeaks, err := qkd.CalibrateDetectorDelays(qkd.ApplyDetectorDelays(alice, delays.Alice), qkd.ApplyDetectorDelays(bob, delays.Bob), calibrationRadiusPS)
+	if err != nil {
+		fail(jsonOut, "%v", err)
+	}
+	raw, _ := json.MarshalIndent(delays, "", "  ")
+	if err := os.WriteFile(outPath, raw, 0o644); err != nil {
+		fail(jsonOut, "write %s: %v", outPath, err)
+	}
+	if jsonOut {
+		fmt.Println(string(raw))
+		return
+	}
+	section("detector delay calibration (reads bit values: never use these recordings for key)")
+	for i, p := range before {
+		field(fmt.Sprintf("basis %d, Alice bit %d, Bob bit %d", p.Basis, p.AliceBit, p.BobBit),
+			"%5d pairs, centre %+6.1f ps -> %+6.1f ps after correction", p.Count, p.CentrePS, afterPeaks[i].CentrePS)
+	}
+	field("Timing leak I(bit; dt)", "%.4f bits per sifted bit before, %.4f after", qkd.TimingLeakBits(before), qkd.TimingLeakBits(afterPeaks))
+	field("Residual delays after one pass", "Alice %v, Bob %v ps", roundDelays(after.Alice), roundDelays(after.Bob))
+	field("Written", "%s (apply with -detector-delays, or set as per-channel delays in the TimeTaggers)", outPath)
+}
+
+func roundDelays(d [2][2]float64) [2][2]float64 {
+	for i := range 2 {
+		for j := range 2 {
+			d[i][j] = math.Round(d[i][j]*10) / 10
+		}
+	}
+	return d
 }

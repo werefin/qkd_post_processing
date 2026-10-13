@@ -1,4 +1,4 @@
-package qoj_post_processing
+package qkd_post_processing
 
 import (
 	"math/rand"
@@ -30,6 +30,7 @@ func simulateClicks(n int, errRate float64, seed int64) (alice, bob []DetectionE
 func TestRunWinnowEndToEnd(t *testing.T) {
 	alice, bob := simulateClicks(50000, 0.02, 55)
 	cfg := WinnowRunConfig{
+		Asymptotic:          true, // mechanics test, finite-key needs far larger blocks (finitekey_test.go)
 		CoincidenceWindowPS: 500,
 		SampleFraction:      0.05,
 		WinnowBlockSizes:    []int{25, 50, 100},
@@ -61,6 +62,7 @@ func TestRunWinnowEndToEnd(t *testing.T) {
 func TestRunWinnowZeroSampleFraction(t *testing.T) {
 	alice, bob := simulateClicks(5000, 0.02, 9)
 	cfg := WinnowRunConfig{
+		Asymptotic:          true, // mechanics test, finite-key needs far larger blocks (finitekey_test.go)
 		CoincidenceWindowPS: 500,
 		SampleFraction:      0,
 		WinnowBlockSizes:    []int{8, 16},
@@ -88,6 +90,7 @@ func TestRunWinnowVsBlockDiscard(t *testing.T) {
 		t.Fatalf("Run returned error: %v", err)
 	}
 	winnowRes, err := RunWinnow(alice, bob, WinnowRunConfig{
+		Asymptotic:          true, // mechanics test, finite-key needs far larger blocks (finitekey_test.go)
 		CoincidenceWindowPS: 500,
 		SampleFraction:      0.05,
 		WinnowBlockSizes:    []int{25, 50, 100},

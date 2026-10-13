@@ -1,4 +1,4 @@
-// qoj_post_processing dashboard
+// qkd_post_processing dashboard
 
 function setEl(id, val) {
   const el = document.getElementById(id);

@@ -1,6 +1,6 @@
 ### acquisition
 
-Gets real detector clicks from a pair of Swabian TimeTaggers into `qoj_post_processing.Run`, the real-data counterpart to the simulated click streams `cmd/qoj_post_processing` generates.
+Gets real detector clicks from a pair of Swabian TimeTaggers into `qkd_post_processing.Run`, the real-data counterpart to the simulated click streams `cmd/qkd_post_processing` generates.
 
 ### Idea
 
@@ -135,9 +135,9 @@ go run ./cmd/importtt -dir acquisition/example/20260909
 
 - maps each channel to a basis/bit: channels 1-2 are one polarization basis (bits 0/1), channels 3-4 are the other --> adjust `channelToBasisBit` in `cmd/importtt/main.go` if your detector wiring differs
 - shifts the second recording's timestamps onto the first's clock using the report's fitted lag *and* clock skew (not just the constant offset), so drift over a long recording doesn't smear the coincidence window
-- calls `qoj_post_processing.Run` with the aligned, labeled clicks and prints the same per-stage report as `cmd/qoj_post_processing`
+- calls `qkd_post_processing.Run` with the aligned, labeled clicks and prints the same per-stage report as `cmd/qkd_post_processing`
 
-`-window` overrides the coincidence window (defaults to the report's clock-skew-corrected window); `-matrix` and `-chunk` are the same step 2/3 knobs `cmd/qoj_post_processing` takes. Requires `coincidence_peak.py`'s default `--strict` (peak actually detected) --> report with `"detected": false` is refused, since its clock alignment isn't trustworthy.
+`-window` overrides the coincidence window (defaults to the report's clock-skew-corrected window); `-matrix` and `-chunk` are the same step 2/3 knobs `cmd/qkd_post_processing` takes. Requires `coincidence_peak.py`'s default `--strict` (peak actually detected) --> report with `"detected": false` is refused, since its clock alignment isn't trustworthy.
 
 ### Optional: CHSH self-testing diagnostic
 

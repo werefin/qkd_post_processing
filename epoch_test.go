@@ -1,4 +1,4 @@
-package qoj_post_processing
+package qkd_post_processing
 
 import (
 	"math/rand"
@@ -32,9 +32,8 @@ func buildEpochStream(r *rand.Rand, epochPS int64, numEpochs int) (alice, bob []
 	return alice, bob
 }
 
-// TestRunEpochedRecoversKeyFromMixedQualityLink checks that epoching a
-// pooled-zero-key recording into short, independently-run sessions recovers
-// a non-zero key from its genuinely-good epochs
+// TestRunEpochedRecoversKeyFromMixedQualityLink checks that epoching a pooled-zero-key
+// recording into short sessions recovers a non-zero key from its genuinely-good epochs
 func TestRunEpochedRecoversKeyFromMixedQualityLink(t *testing.T) {
 	r := rand.New(rand.NewSource(42))
 	const epochPS = 5_000_000
@@ -77,9 +76,8 @@ func TestRunEpochedRecoversKeyFromMixedQualityLink(t *testing.T) {
 	}
 }
 
-// TestRunEpochedUniformlyBadLinkYieldsNoKey checks epoching a link that's
-// bad everywhere still correctly yields nothing: epoching recovers key
-// material from genuinely good moments, it doesn't manufacture any
+// TestRunEpochedUniformlyBadLinkYieldsNoKey checks a uniformly bad link still yields
+// nothing: epoching recovers key material from good moments, it doesn't manufacture any
 func TestRunEpochedUniformlyBadLinkYieldsNoKey(t *testing.T) {
 	r := rand.New(rand.NewSource(7))
 	const epochPS = 5_000_000
@@ -107,9 +105,8 @@ func TestRunEpochedUniformlyBadLinkYieldsNoKey(t *testing.T) {
 	}
 }
 
-// TestRunEpochedKeyAlignAppliesOnceToTheConcatenation checks that
-// KeyAlignBits rounds the total across epochs, not each epoch individually
-// (which would zero out any epoch shorter than the alignment)
+// TestRunEpochedKeyAlignAppliesOnceToTheConcatenation checks KeyAlignBits rounds the
+// total across epochs, not each individually (which would zero out short epochs)
 func TestRunEpochedKeyAlignAppliesOnceToTheConcatenation(t *testing.T) {
 	r := rand.New(rand.NewSource(3))
 	const epochPS = 5_000_000

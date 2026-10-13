@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"math/rand"
 
-	qkd "qoj_post_processing"
+	qkd "qkd_post_processing"
 )
 
-// simulate is the same generator cmd/qoj_post_processing uses, duplicated here so
+// simulate is the same generator cmd/qkd_post_processing uses, duplicated here so
 // this tool has no dependency beyond the library itself
 func simulate(n int, errRate, multiPhotonRate float64, jitterPS int64, seed int64) ([]qkd.DetectionEvent, []qkd.DetectionEvent) {
 	r := rand.New(rand.NewSource(seed))

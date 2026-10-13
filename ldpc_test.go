@@ -1,4 +1,4 @@
-package qoj_post_processing
+package qkd_post_processing
 
 import (
 	"bytes"
@@ -6,9 +6,8 @@ import (
 	"testing"
 )
 
-// TestBuildRegularLDPCColumnWeight checks every variable gets exactly wc
-// edges, and every check gets at most wr (nominal, one short row per
-// submatrix is expected)
+// TestBuildRegularLDPCColumnWeight checks every variable gets exactly wc edges, and every
+// check gets at most wr (nominal, one short row per submatrix is expected)
 func TestBuildRegularLDPCColumnWeight(t *testing.T) {
 	h, err := BuildRegularLDPC(2000, 3, 10, 1)
 	if err != nil {
@@ -26,9 +25,8 @@ func TestBuildRegularLDPCColumnWeight(t *testing.T) {
 	}
 }
 
-// TestBuildPEGLDPCColumnWeight checks PEG produces the same regular
-// column/row weight guarantee as BuildRegularLDPC, and every check
-// appears at most once per row (no duplicate edges from the BFS placement)
+// TestBuildPEGLDPCColumnWeight checks PEG matches BuildRegularLDPC's column/row weight
+// guarantee, and every check appears at most once per row (no duplicate BFS edges)
 func TestBuildPEGLDPCColumnWeight(t *testing.T) {
 	h, err := BuildPEGLDPC(2000, 3, 10, 1)
 	if err != nil {
@@ -72,9 +70,8 @@ func TestBuildPEGLDPCDeterministic(t *testing.T) {
 	}
 }
 
-// TestBuildPEGLDPCLowersShortCycles checks PEG's core claim: for the same
-// (n, wc, wr), it produces no more 4-cycles than BuildRegularLDPC, usually
-// far fewer, since it places edges to directly maximize local girth
+// TestBuildPEGLDPCLowersShortCycles checks PEG's core claim: for the same (n, wc, wr), it
+// produces no more 4-cycles than BuildRegularLDPC, usually far fewer
 func TestBuildPEGLDPCLowersShortCycles(t *testing.T) {
 	countPairs := func(h *LDPCMatrix) int {
 		pairCount := make(map[uint64]int)
@@ -237,12 +234,12 @@ func TestLDPCReconcileHandlesShortFinalBlock(t *testing.T) {
 	}
 }
 
-// TestRunLDPCEndToEnd checks the same invariants as TestRunEndToEnd and
-// TestRunWinnowEndToEnd: the error-free stream really is error-free, and
-// the key never exceeds the input length
+// TestRunLDPCEndToEnd checks the same invariants as TestRunEndToEnd and TestRunWinnowEndToEnd:
+// the error-free stream really is error-free, and the key never exceeds the input length
 func TestRunLDPCEndToEnd(t *testing.T) {
 	alice, bob := simulateClicks(50000, 0.02, 55)
 	cfg := LDPCRunConfig{
+		Asymptotic:          true, // mechanics test, finite-key needs far larger blocks (finitekey_test.go)
 		CoincidenceWindowPS: 500,
 		SampleFraction:      0.05,
 		BlockLength:         40000,
@@ -274,13 +271,8 @@ func TestRunLDPCEndToEnd(t *testing.T) {
 		res.SiftedBits, res.LDPCBlocks, res.LDPCConverged, res.LeakedBits, len(res.FinalKeyBits))
 }
 
-// TestRunLDPCVsWinnowVsBlockDiscard is informational, not a race, same
-// spirit as TestRunWinnowVsBlockDiscard: it logs all three step 2/3
-// methods' final key length on identical data. LDPC's edge is structural,
-// one syndrome reveal per block regardless of QBER, versus Winnow's
-// multi-pass whole-array re-reveal or discard's per-block parity reveal,
-// so it should leak the least of the three at a QBER a single well-tuned
-// rate can cover, and land the largest final key
+// TestRunLDPCVsWinnowVsBlockDiscard is informational: it logs all three step 2/3 methods'
+// final key length on identical data; LDPC's one-reveal-per-block structure should leak least
 func TestRunLDPCVsWinnowVsBlockDiscard(t *testing.T) {
 	alice, bob := simulateClicks(50000, 0.02, 55)
 
@@ -293,6 +285,7 @@ func TestRunLDPCVsWinnowVsBlockDiscard(t *testing.T) {
 		t.Fatalf("Run returned error: %v", err)
 	}
 	winnowRes, err := RunWinnow(alice, bob, WinnowRunConfig{
+		Asymptotic:          true, // mechanics test, finite-key needs far larger blocks (finitekey_test.go)
 		CoincidenceWindowPS: 500,
 		SampleFraction:      0.05,
 		WinnowBlockSizes:    []int{25, 50, 100},
@@ -303,6 +296,7 @@ func TestRunLDPCVsWinnowVsBlockDiscard(t *testing.T) {
 		t.Fatalf("RunWinnow returned error: %v", err)
 	}
 	ldpcRes, err := RunLDPC(alice, bob, LDPCRunConfig{
+		Asymptotic:          true, // mechanics test, finite-key needs far larger blocks (finitekey_test.go)
 		CoincidenceWindowPS: 500,
 		SampleFraction:      0.05,
 		ColWeight:           3,

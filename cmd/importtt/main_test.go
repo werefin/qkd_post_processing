@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	qkd "qoj_post_processing"
+	qkd "qkd_post_processing"
 )
 
 func writeFakeKeys(t *testing.T, dir string, n int) {
@@ -75,5 +75,31 @@ func TestSaveToKeystoreCapExactFit(t *testing.T) {
 	}
 	if got := countKeystoreFiles(t, dir); got != 8 {
 		t.Fatalf("keystore has %d files, want 8", got)
+	}
+}
+
+// TestPoolRecordingsKeepsEveryEventAndSeparatesRecordings: pooling must keep all events of
+// all recordings, keep each recording's internal timing, and leave a gap no window can bridge
+func TestPoolRecordingsKeepsEveryEventAndSeparatesRecordings(t *testing.T) {
+	mk := func(ts ...int64) []qkd.DetectionEvent {
+		out := make([]qkd.DetectionEvent, len(ts))
+		for i, v := range ts {
+			out[i] = qkd.DetectionEvent{TimestampPS: v}
+		}
+		return out
+	}
+	recs := []loadedRecording{
+		{alice: mk(100, 500), bob: mk(110, 490)},
+		{alice: mk(9_000_000, 9_000_300), bob: mk(9_000_010)},
+	}
+	alice, bob := poolRecordings(recs)
+	if len(alice) != 4 || len(bob) != 3 {
+		t.Fatalf("pooled %d alice / %d bob events, want 4 / 3", len(alice), len(bob))
+	}
+	if bob[0].TimestampPS-alice[0].TimestampPS != 10 || bob[2].TimestampPS-alice[2].TimestampPS != 10 {
+		t.Fatal("pooling changed a recording's internal alice-bob offsets")
+	}
+	if gap := alice[2].TimestampPS - alice[1].TimestampPS; gap < poolRecordingGapPS {
+		t.Fatalf("recordings only %d ps apart, want >= %d", gap, poolRecordingGapPS)
 	}
 }

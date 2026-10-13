@@ -1,5 +1,5 @@
-# qoj_post_processing dashboard: same deployment shape as skQCI (Flask + gunicorn behind Caddy, run as a non-root user matching the host
-# owner of the bind-mounted keys/recordings/config dirs), plus the Go toolchain needed to build the qoj_post_processing CLI this app shells out to
+# qkd_post_processing dashboard: same deployment shape as skQCI (Flask + gunicorn behind Caddy, run as a non-root user matching the host
+# owner of the bind-mounted keys/recordings/config dirs), plus the Go toolchain needed to build the qkd_post_processing CLI this app shells out to
 
 FROM python:3.12-slim
 
@@ -27,7 +27,7 @@ RUN pip install --no-cache-dir -r /tmp/ui-requirements.txt
 # Whole repo: the Go module (to build the CLI) and acquisition/ (imported by app.py)
 COPY . /app
 
-RUN go build -o /usr/local/bin/qoj_post_processing ./cmd/qoj_post_processing \
+RUN go build -o /usr/local/bin/qkd_post_processing ./cmd/qkd_post_processing \
  && go build -o /usr/local/bin/importtt ./cmd/importtt
 
 RUN groupadd -g ${GID} app 2>/dev/null || true \
@@ -35,7 +35,7 @@ RUN groupadd -g ${GID} app 2>/dev/null || true \
  && mkdir -p /app/keys /app/recordings /app/config \
  && chown -R ${UID}:${GID} /app
 
-ENV QOJ_BIN=/usr/local/bin/qoj_post_processing
+ENV QKD_BIN=/usr/local/bin/qkd_post_processing
 ENV IMPORTTT_BIN=/usr/local/bin/importtt
 ENV KEYSTORE_DIR=/app/keys
 ENV RECORDINGS_DIR=/app/recordings

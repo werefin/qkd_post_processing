@@ -1,4 +1,4 @@
-package qoj_post_processing
+package qkd_post_processing
 
 import "math/rand"
 
@@ -9,43 +9,16 @@ type QBERResult struct {
 	QBER       float64
 }
 
-// siftAndSampleQBER sifts, then sacrifices a random public sample to
-// measure QBER directly, shared by RunWinnow and RunLDPC since neither
-// discards blocks up front the way Run() does
+// siftAndSampleQBER sifts, then sacrifices a random sample to measure QBER directly;
+// shared by RunWinnow and RunLDPC since neither discards blocks up front like Run()
 func siftAndSampleQBER(aliceEvents, bobEvents []DetectionEvent, windowPS int64, sampleFraction float64, seed int64) (siftedBits int, aliceRem, bobRem []byte, qber QBERResult) {
-	sifted := Sift(aliceEvents, bobEvents, windowPS)
-	siftedBits = len(sifted)
+	siftedBits, _, rem, qber := siftSampleWithTiming(aliceEvents, bobEvents, windowPS, sampleFraction, seed)
+	return siftedBits, rem.Alice, rem.Bob, qber
+}
 
-	aliceBits := make([]byte, siftedBits)
-	bobBits := make([]byte, siftedBits)
-	for i, s := range sifted {
-		aliceBits[i] = s.AliceBit
-		bobBits[i] = s.BobBit
-	}
-
-	order := rand.New(rand.NewSource(seed)).Perm(siftedBits)
-	sampleN := max(0, min(int(float64(siftedBits)*sampleFraction), siftedBits))
-
-	errBits := 0
-	for _, idx := range order[:sampleN] {
-		if aliceBits[idx] != bobBits[idx] {
-			errBits++
-		}
-	}
-	rate := 0.0
-	if sampleN > 0 {
-		rate = float64(errBits) / float64(sampleN)
-	}
-	qber = QBERResult{ErrorBits: errBits, SampleBits: sampleN, QBER: rate}
-
-	remaining := order[sampleN:]
-	aliceRem = make([]byte, len(remaining))
-	bobRem = make([]byte, len(remaining))
-	for i, idx := range remaining {
-		aliceRem[i] = aliceBits[idx]
-		bobRem[i] = bobBits[idx]
-	}
-	return siftedBits, aliceRem, bobRem, qber
+// siftSampleOrder is the public random permutation choosing which sifted bits are sacrificed
+func siftSampleOrder(n int, seed int64) []int {
+	return rand.New(rand.NewSource(seed)).Perm(n)
 }
 
 // CalculateQBER: bad bits in the discarded blocks over all bits of the

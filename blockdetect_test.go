@@ -1,4 +1,4 @@
-package qoj_post_processing
+package qkd_post_processing
 
 import (
 	"bytes"
@@ -6,9 +6,8 @@ import (
 	"testing"
 )
 
-// testMatrixA/B/C: small fixed matrices for exercising generic
-// GeneratorMatrix behavior across this test suite, independent of any
-// matrix the library exposes publicly (m=4/m=4/m=6, p=3 each)
+// testMatrixA/B/C: small fixed matrices (m=4/m=4/m=6, p=3 each) for exercising
+// generic GeneratorMatrix behavior, independent of any matrix the library exposes publicly
 var (
 	// testMatrixA: code rate 4/7, detects 100% of 1/2-bit and 75% of
 	// 3-bit errors, 100% of 4-bit errors
@@ -346,9 +345,8 @@ func TestSplitReconciliationMatchesCombined(t *testing.T) {
 	}
 }
 
-// TestParityTablePatchBitMatchesRebuild checks patchBit against an
-// independent full rebuild after a random sequence of bit flips, and
-// checks that patching the same (row, col) twice is a no-op
+// TestParityTablePatchBitMatchesRebuild checks patchBit against a full rebuild
+// after random bit flips, and that patching the same (row, col) twice is a no-op
 func TestParityTablePatchBitMatchesRebuild(t *testing.T) {
 	r := rand.New(rand.NewSource(7))
 	m, p := 10, 4

@@ -14,13 +14,13 @@ UID=$(id -u) GID=$(id -g) docker compose up -d --build
 sudo bash trust_caddy_ca.sh      # adds the hosts entry, trusts Caddy's CA
 ```
 
-Open `https://qoj.postproc:62444` (edit hostname/port in `docker-compose.yml` and `Caddyfile` to taste; same shape as skQCI's demo). Without the trust script your browser will warn on every visit, since Caddy's cert comes from its own local CA (`tls internal`), not a public one.
+Open `https://qkd.postproc:62444` (edit hostname/port in `docker-compose.yml` and `Caddyfile` to taste; same shape as skQCI's demo). Without the trust script your browser will warn on every visit, since Caddy's cert comes from its own local CA (`tls internal`), not a public one.
 
 **Other machines on the LAN**: copy `caddy-root-ca.crt` (written by `trust_caddy_ca.sh`) and `trust_ca_client.sh` to each one, then run `bash trust_ca_client.sh <deploy-host-lan-ip>`.
 
 ### What's running
 
-- `app`: gunicorn + this Flask app, plus the `qoj_post_processing` and `importtt` Go binaries it shells out to (both built into the image).
+- `app`: gunicorn + this Flask app, plus the `qkd_post_processing` and `importtt` Go binaries it shells out to (both built into the image).
 - `caddy`: TLS termination + reverse proxy, the only container with a published port.
 
 Both restart automatically (`unless-stopped`) on host reboot.
@@ -70,6 +70,6 @@ Rebuilds Go binaries and Python deps; bind-mounted data is untouched.
 
 ### Troubleshooting
 
-- `"qoj_post_processing"`/`"importtt" not found on PATH"` --> the image build didn't finish; check `docker compose logs app`
+- `"qkd_post_processing"`/`"importtt" not found on PATH"` --> the image build didn't finish; check `docker compose logs app`
 - Alignment stuck on "Waiting for data" --> need more than 2 uploaded recordings in `ui/recordings/`
 - Browser cert warning --> trust Caddy's local CA (see Quick start)

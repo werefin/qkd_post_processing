@@ -1,4 +1,4 @@
-package qoj_post_processing
+package qkd_post_processing
 
 import (
 	"math/rand"
@@ -126,3 +126,28 @@ func BenchmarkLDPCReconcile_1M(b *testing.B) {
 		LDPCReconcile(h, alice, bob, 0.03, LDPCDecodeConfig{})
 	}
 }
+
+// benchmarkPolarReconcile matches BenchmarkLDPCReconcile_1M: ~1M bits, QBER 3%, rate 0.7
+func benchmarkPolarReconcile(b *testing.B, listSize int) {
+	r := rand.New(rand.NewSource(2))
+	n := 1 << 20
+	alice := randomBits(r, n)
+	bob := append([]byte(nil), alice...)
+	for i := range bob {
+		if r.Float64() < 0.03 {
+			bob[i] ^= 1
+		}
+	}
+	code, err := BuildPolarCode(1<<16, 7*(1<<16)/10, 0.03)
+	if err != nil {
+		b.Fatal(err)
+	}
+	for b.Loop() {
+		if _, _, _, _, err := PolarReconcile(code, alice, bob, 0.03, PolarDecodeConfig{ListSize: listSize}); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkPolarReconcileSC_1M(b *testing.B)   { benchmarkPolarReconcile(b, 1) }
+func BenchmarkPolarReconcileSCL8_1M(b *testing.B) { benchmarkPolarReconcile(b, 8) }

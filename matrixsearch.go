@@ -1,11 +1,9 @@
-package qoj_post_processing
+package qkd_post_processing
 
 import "math/rand"
 
-// SearchGeneratorMatrix hill-climbs a p x m matrix to directly maximize
-// final key rate on a fixed dataset, unlike the example or BCH matrices
-// only call this with proxy data, never a real session's own secret bits,
-// or the matrix choice itself leaks what PrivacyAmplify never charges for
+// SearchGeneratorMatrix hill-climbs a p x m matrix to maximize final key rate on a fixed
+// dataset; only call with proxy data, never real secret bits, or the matrix choice leaks info
 func SearchGeneratorMatrix(m, p int, aliceEvents, bobEvents []DetectionEvent, windowPS int64, chunkSize, iterations int, seed int64) (best GeneratorMatrix, bestKeyRate float64) {
 	sifted := Sift(aliceEvents, bobEvents, windowPS)
 	aliceBits := make([]byte, len(sifted))
@@ -35,21 +33,16 @@ func SearchGeneratorMatrix(m, p int, aliceEvents, bobEvents []DetectionEvent, wi
 
 	current := randomMatrix()
 
-	// table (or masks, if m/p are too large for one) for current's matrix,
-	// maintained incrementally across iterations via patchBit instead of a
-	// fresh buildParityTable on every evaluate --> a flipped bit only
-	// touches the half of the table it actually affects, not all 2^m
-	// entries, which dominated this loop's cost before this change
+	// Table (or masks, if too large) for current's matrix, maintained incrementally via
+	// patchBit instead of a fresh buildParityTable per evaluate, since a flip touches only half
 	table, useTable := buildParityTable(current)
 	var masks parityMasks
 	if !useTable {
 		masks = buildParityMasks(current)
 	}
 
-	// evaluate mirrors BlockErrorDetect + the stages Run() calls after
-	// sifting, just against the one fixed sifted batch and the
-	// incrementally-maintained table/masks above instead of rebuilding
-	// them, and skipping BlockErrorDetect's own (now-redundant) build
+	// evaluate mirrors BlockErrorDetect plus Run()'s post-sifting stages, against the fixed
+	// sifted batch, reusing the incrementally-maintained table/masks instead of rebuilding
 	evaluate := func() float64 {
 		aliceParity := computeBlockParity(aliceBits, m, p, table, useTable, masks)
 		bobParity := computeBlockParity(bobBits, m, p, table, useTable, masks)
@@ -94,9 +87,8 @@ func SearchGeneratorMatrix(m, p int, aliceEvents, bobEvents []DetectionEvent, wi
 				best, bestFitness = cloneMatrix(current), candidateFitness
 			}
 		} else {
-			// revert: flipping the same bits again is a no-op on both the
-			// matrix and the table (see parityTable.patchBit), undoing
-			// exactly what the block above did
+			// Revert: flipping the same bits again is a no-op on both the matrix and the
+			// table (see parityTable.patchBit), undoing exactly what the block above did
 			for k := range flips {
 				r, c := flipRows[k], flipCols[k]
 				current[r][c] ^= 1

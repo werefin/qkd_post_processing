@@ -1,4 +1,4 @@
-package qoj_post_processing
+package qkd_post_processing
 
 import (
 	"bytes"
@@ -28,9 +28,8 @@ func simulateAt(n int, errRate float64, seed int64) (alice, bob []DetectionEvent
 	return alice, bob
 }
 
-// TestPropertySweep checks the two invariants that must hold everywhere in
-// the (QBER, generator matrix, chunk size) space, not just at the one fixed
-// point each individual unit test happens to use
+// TestPropertySweep checks the two invariants that must hold everywhere in the (QBER,
+// generator matrix, chunk size) space, not just at each unit test's one fixed point
 func TestPropertySweep(t *testing.T) {
 	errRates := []float64{0.0, 0.005, 0.01, 0.02, 0.05, 0.08, 0.11}
 	matrices := []GeneratorMatrix{testMatrixA, testMatrixC}
@@ -76,9 +75,8 @@ func TestPropertySweep(t *testing.T) {
 	if trials == 0 {
 		t.Fatal("swept zero parameter combinations")
 	}
-	// Low QBER should reliably produce a key somewhere in the grid; this
-	// isn't a strict per-point guarantee (small-n variance exists), just a
-	// sanity check that the sweep isn't silently producing nothing but empty keys
+	// Low QBER should reliably produce a key somewhere in the grid; not a strict per-point
+	// guarantee (small-n variance exists), just a check the sweep isn't all empty keys
 	if nonEmptyKeys == 0 {
 		t.Fatal("every single combination in the sweep produced an empty key --> suspicious")
 	}

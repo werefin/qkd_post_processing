@@ -1,4 +1,4 @@
-package qoj_post_processing
+package qkd_post_processing
 
 import (
 	"math/rand"
@@ -146,9 +146,8 @@ func TestSiftBasisMismatchDoesNotCauseAmbiguity(t *testing.T) {
 	}
 }
 
-// bruteForceMatch is a deliberately naive O(N*M) reference: for every Alice event, scan ALL Bob events,
-// collect same-basis non-multiphoton candidates within the window, keep only unambiguous (exactly 1) matches,
-// then drop any Bob event claimed by more than one Alice event
+// bruteForceMatch is a deliberately naive O(N*M) reference: collect same-basis non-multiphoton
+// candidates within the window, keep only unambiguous matches, drop any Bob event claimed twice
 func bruteForceMatch(alice, bob []PublicEvent, windowPS int64) []MatchedPair {
 	type cand struct{ aIdx, bIdx int }
 	var raw []cand
@@ -248,9 +247,8 @@ func TestMatchCoincidencesAgainstBruteForce(t *testing.T) {
 	}
 }
 
-// TestMatchCoincidencesAgainstBruteForceWithTiesAndLargeTimestamps stresses two things the first fuzz pass doesn't
-// many exactly-tied timestamps (sortedIndices' sort isn't guaranteed stable, so tie order is arbitrary this checks that doesn't change the result)
-// and absolute timestamp values at the real scale tt_record_dual.py actually produces
+// TestMatchCoincidencesAgainstBruteForceWithTiesAndLargeTimestamps stresses what the first fuzz
+// pass doesn't: many exact ties (sortedIndices' sort isn't stable) and real-scale timestamps
 func TestMatchCoincidencesAgainstBruteForceWithTiesAndLargeTimestamps(t *testing.T) {
 	const largeBase = int64(2_239_056_212_082_688_000) // real recorded scale
 	for seed := int64(0); seed < 100; seed++ {

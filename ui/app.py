@@ -1,5 +1,5 @@
 '''
-qoj_post_processing dashboard: run the simulated pipeline and watch its
+qkd_post_processing dashboard: run the simulated pipeline and watch its
 metrics, and check live coincidence-peak alignment on uploaded recordings
 '''
 
@@ -24,25 +24,24 @@ from werkzeug.utils import secure_filename
 BASE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BASE_DIR.parent
 
-# Reuse coincidence_peak.py directly (same process, no subprocess) for the
-# live alignment check --> it's the exact same code tt_record_dual.py's
-# live monitor and the acquisition CLI use, not a reimplementation
+# Reuse coincidence_peak.py directly (same process, no subprocess) for the live alignment
+# check -- the exact same code tt_record_dual.py's live monitor and the CLI use
 sys.path.insert(0, str(REPO_ROOT / 'acquisition'))
 import coincidence_peak  # noqa: E402
 import chsh_diagnostic  # noqa: E402
 
 # /app/... below is Docker's own layout --> default, used whenever an env var is missing, has to work for a plain app.py with no
 # env vars set at all, or every local run keeps needing them re-typed by hand after every restart, which is exactly what kept breaking here
-_default_qoj_bin = REPO_ROOT / 'qoj_post_processing'
-_qoj_bin_raw = os.environ.get('QOJ_BIN') or (
-    str(_default_qoj_bin) if _default_qoj_bin.is_file() else 'qoj_post_processing'
+_default_qkd_bin = REPO_ROOT / 'qkd_post_processing'
+_qkd_bin_raw = os.environ.get('QKD_BIN') or (
+    str(_default_qkd_bin) if _default_qkd_bin.is_file() else 'qkd_post_processing'
 )
-# bare name (no path separator) is a real PATH lookup, left alone; a
-# relative path is resolved for the same reason as the dirs below
-QOJ_BIN = str(Path(_qoj_bin_raw).resolve()) if os.sep in _qoj_bin_raw else _qoj_bin_raw
+# bare name (no path separator) is a real PATH lookup, left alone; a relative path is
+# resolved for the same reason as the dirs below
+QKD_BIN = str(Path(_qkd_bin_raw).resolve()) if os.sep in _qkd_bin_raw else _qkd_bin_raw
 
-# cmd/importtt: the real chain over an actual recording, used by
-# /api/align/run once a peak is confirmed --> see api_align_run()
+# cmd/importtt: the real chain over an actual recording, used by /api/align/run once a
+# peak is confirmed, see api_align_run()
 _default_importtt_bin = REPO_ROOT / 'importtt'
 _importtt_bin_raw = os.environ.get('IMPORTTT_BIN') or (
     str(_default_importtt_bin) if _default_importtt_bin.is_file() else 'importtt'
@@ -52,10 +51,8 @@ IMPORTTT_BIN = str(Path(_importtt_bin_raw).resolve()) if os.sep in _importtt_bin
 # Real keys (from /api/align/run) are never evicted to make room, so keystore needs a ceiling of its own
 KEYSTORE_MAX = int(os.environ.get('KEYSTORE_MAX', '30000'))
 
-# .resolve(): these get handed to tt_record_dual.py as a subprocess argument
-# (api_acquire_start) launched with a different cwd (acquisition/), so a
-# relative env var value here would resolve against the wrong directory
-# there even though it looked fine wherever this process itself started
+# .resolve(): these are handed to tt_record_dual.py as a subprocess argument launched with
+# a different cwd (acquisition/), so a relative env var value would resolve against the wrong dir
 KEYSTORE_DIR = Path(os.environ.get('KEYSTORE_DIR') or (BASE_DIR / 'keys')).resolve()
 RECORDINGS_DIR = Path(os.environ.get('RECORDINGS_DIR') or (BASE_DIR / 'recordings')).resolve()
 CONFIG_DIR = Path(os.environ.get('CONFIG_DIR') or (BASE_DIR / 'config')).resolve()
@@ -64,15 +61,12 @@ RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADED_CONFIG_PATH = CONFIG_DIR / 'config.json'
 
-# Recordings (e.g., from Trnava: slow link, huge files) can be very large --> generous cap by default, not Flask's default 16MB
-# set UPLOAD_MAX_MB=0 for no limit at all --> matched by gunicorn's --timeout in the Dockerfile CMD, so
-# a big upload over a slow link doesn't get killed mid-transfer before it ever hits this size check
+# Recordings can be very large: generous cap by default, not Flask's 16MB default. 0 = no
+# limit; matched by gunicorn's --timeout in the Dockerfile CMD so slow uploads aren't killed
 UPLOAD_MAX_MB = int(os.environ.get('UPLOAD_MAX_MB', '102400'))  # 100 GiB
 
-# Unlike the keystore, recordings are raw, irreplaceable TimeTagger captures
-# never auto-delete them by default. 0 = unlimited/disabled; set this to
-# opt into oldest-first pruning once RECORDINGS_DIR passes the cap, see
-# _enforce_recordings_cap()
+# Unlike the keystore, recordings are raw, irreplaceable captures: never auto-delete by
+# default. 0 = disabled; set to opt into oldest-first pruning, see _enforce_recordings_cap()
 RECORDINGS_MAX_GB = float(os.environ.get('RECORDINGS_MAX_GB', '0'))
 
 app = Flask(__name__)
@@ -113,10 +107,8 @@ def _keystore_snapshot():
     return set(KEYSTORE_DIR.glob('*.json'))
 
 
-# Tracks exactly which keystore files the last /api/run (the simulator)
-# produced, so the NEXT simulation can deplete just that batch before it
-# runs -- see api_run(). Real keys from /api/align/run are never added here
-# and so are never touched by this
+# Tracks which keystore files the last /api/run (simulator) produced, so the NEXT run can
+# deplete just that batch first, see api_run(). Real keys from /api/align/run are untouched
 _last_sim_keys = set()
 
 
@@ -162,10 +154,8 @@ def _delete_recording(base):
 
 
 def _enforce_recordings_cap():
-    '''Opt-in (RECORDINGS_MAX_GB > 0): deletes the OLDEST recordings, one at
-    a time, until RECORDINGS_DIR is back under the cap --> raw TimeTagger
-    captures are irreplaceable, so this never runs unless explicitly
-    configured, see RECORDINGS_MAX_GB'''
+    '''Opt-in (RECORDINGS_MAX_GB > 0): deletes OLDEST recordings one at a time until back
+    under the cap. Raw captures are irreplaceable, so this never runs unless configured'''
     if RECORDINGS_MAX_GB <= 0:
         return
     cap_bytes = RECORDINGS_MAX_GB * 1024 ** 3
@@ -191,7 +181,7 @@ def api_status():
     })
 
 
-# API: run the simulated pipeline (cmd/qoj_post_processing -json) and
+# API: run the simulated pipeline (cmd/qkd_post_processing -json) and
 # return its metrics --> the JS keeps a rolling history for the sparklines
 @app.route('/api/run', methods=['POST'])
 def api_run():
@@ -204,7 +194,7 @@ def api_run():
 
     method = body.get('method', 'discard')
 
-    args = [QOJ_BIN, '-json']
+    args = [QKD_BIN, '-json']
     add(args, '-n', 'n', int)
     add(args, '-err', 'err', float)
     add(args, '-multiphoton', 'multiphoton', float)
@@ -231,9 +221,8 @@ def api_run():
         else:
             add(args, '-matrix', 'matrix', str)
 
-    # Winnow/LDPC's own syndrome exchange needs a much finer CRC chunk than
-    # block-discard's default (see -chunk's help text): only default it down
-    # when the caller didn't pick one explicitly
+    # Winnow/LDPC's syndrome exchange needs a much finer CRC chunk than block-discard's
+    # default (see -chunk's help text); only default it down if the caller didn't pick one
     if 'chunk' in body and body['chunk'] not in (None, ''):
         add(args, '-chunk', 'chunk', int)
     elif method in ('winnow', 'ldpc'):
@@ -242,10 +231,8 @@ def api_run():
     save_keystore = body.get('save_keystore', True)
     if save_keystore:
         args += ['-keystore', str(KEYSTORE_DIR)]
-        # A fresh simulation replaces the last one's demo keys rather than
-        # piling up next to them: deplete the previous batch now, before
-        # this run adds its own -- see _last_sim_keys. Real keys from
-        # /api/align/run are never in that set, so they're never touched
+        # A fresh simulation replaces the last one's demo keys rather than piling up next
+        # to them: deplete the previous batch now, before this run adds its own
         _deplete_last_sim_keys()
 
     before = _keystore_snapshot()
@@ -254,7 +241,7 @@ def api_run():
     except subprocess.TimeoutExpired:
         return jsonify({'error': 'pipeline run timed out'}), 504
     except FileNotFoundError:
-        return jsonify({'error': f'{QOJ_BIN} not found on PATH'}), 500
+        return jsonify({'error': f'{QKD_BIN} not found on PATH'}), 500
 
     if proc.returncode != 0:
         return jsonify({'error': (proc.stderr or 'pipeline failed').strip()[:400]}), 500
@@ -265,10 +252,8 @@ def api_run():
     if metrics.get('error'):
         return jsonify({'error': metrics['error']}), 500
 
-    # This batch of demo keys stays in the keystore (and in the gauge/count)
-    # until the *next* simulation depletes it above -- unlike a one-off
-    # purge-immediately-after approach, this actually lets the UI show what
-    # a run produced instead of always reading back 0
+    # This batch of demo keys stays in the keystore until the *next* simulation depletes it,
+    # so the UI shows what a run produced instead of always reading back 0
     if save_keystore:
         global _last_sim_keys
         _last_sim_keys = _keystore_snapshot() - before
@@ -328,9 +313,8 @@ def api_delete_all_recordings():
 
 @app.route('/api/recordings/<base>', methods=['DELETE'])
 def api_delete_recording(base):
-    '''Manual cleanup: removes one recording's files regardless of
-    RECORDINGS_MAX_GB, so disk space can be managed deliberately once a
-    recording's key has been extracted and it's no longer needed'''
+    '''Manual cleanup: removes one recording's files regardless of RECORDINGS_MAX_GB, so
+    space can be freed deliberately once its key is extracted'''
     base = secure_filename(base)
     if not (RECORDINGS_DIR / f'{base}_timestamp_sequence.npy').is_file():
         return jsonify({'error': f'no such recording: {base}'}), 404
@@ -338,9 +322,8 @@ def api_delete_recording(base):
     return jsonify({'deleted': base, 'freed_bytes': freed, 'recordings': _list_recordings()})
 
 
-# API: load config.json (uploaded, or pasted as raw JSON) --> same shape
-# acquisition/config.json documents, validated the same way tt_record_dual.py's
-# load_config() does, so "start" below can hand it straight to that script
+# Validated the same way tt_record_dual.py's load_config() does, so "start" below can
+# hand it straight to that script
 def _validate_config(cfg):
     if not isinstance(cfg.get('sites'), dict) or not cfg['sites']:
         return 'missing or empty "sites"'
@@ -350,9 +333,8 @@ def _validate_config(cfg):
         for key in ('site_a', 'site_b'):
             if link.get(key) not in cfg['sites']:
                 return f'links.{name}.{key} not found in "sites"'
-    # tt_record_dual.py's main() indexes these directly (not just load_config()'s checks)
-    # so a config missing them crashes the acquisition subprocess with a
-    # raw traceback instead of a clean error --> catch it here first
+    # tt_record_dual.py's main() indexes these directly, so a config missing them would
+    # crash the acquisition subprocess with a raw traceback; catch it here first
     rec = cfg.get('record_dual')
     if not isinstance(rec, dict):
         return 'missing "record_dual"'
@@ -403,12 +385,8 @@ def api_config():
     return jsonify({'loaded': True, **_config_summary(cfg)})
 
 
-# API: start/stop/watch a real tt_record_dual.py acquisition run, driven by
-# the uploaded config, writing into the same RECORDINGS_DIR the upload and
-# alignment endpoints already use --> "load the config, then start everything"
-# Needs real network reachability to the configured TimeTaggers from
-# wherever this container runs; it won't do anything useful otherwise (see
-# the README note on trnava's link being too slow/too large to drive remotely)
+# Needs real network reachability to the configured TimeTaggers from wherever this
+# container runs (see the README note on trnava's link being too slow to drive remotely)
 _acquire_lock = threading.Lock()
 _acquire = {'proc': None, 'log': collections.deque(maxlen=1000), 'started_at': None}
 
@@ -417,9 +395,8 @@ def _read_acquire_output(proc):
     for line in proc.stdout:
         _acquire['log'].append(line.rstrip('\n'))
     proc.wait()
-    # tt_record_dual.py just wrote this recording's *.npy files (or decided
-    # not to, on a failed run) --> runs once per completed recording, not on
-    # every status poll, see RECORDINGS_MAX_GB
+    # Runs once per completed recording (not on every status poll), after tt_record_dual.py
+    # wrote the *.npy files or decided not to on a failed run; see RECORDINGS_MAX_GB
     _enforce_recordings_cap()
 
 
@@ -478,12 +455,8 @@ def api_acquire_status():
     })
 
 
-# API: coincidence-peak alignment check over the two most recently
-# uploaded/acquired recordings --> the real, full analyze_arrays() call,
-# clock-skew fit included, same as coincidence_peak.py's own CLI and the
-# final report cmd/importtt reads --> not the fast fit_skew=False variant
-# tt_record_dual.py's live monitor uses while still recording, since these
-# are complete, already-uploaded files: full result is what matters
+# Real, full analyze_arrays() call with clock-skew fit, not the fast fit_skew=False variant
+# the live monitor uses mid-recording -- these files are already complete
 _analysis_cache = {'key': None, 'report': None, 'diagnostics': None}
 _analysis_lock = threading.Lock()
 
@@ -497,10 +470,8 @@ def _load_timestamps(path):
 
 
 def _get_analysis(path_a, path_b):
-    '''Cached analyze_arrays(strict=False) over this exact pair of files
-    always non-strict so one computation serves every caller; a caller that
-    needs strict (refuse an unconfirmed peak) checks report["detected"]
-    itself, see _prepared_recording_dir()'''
+    '''Cached analyze_arrays(strict=False) over this file pair; always non-strict so one
+    computation serves every caller, who checks report["detected"] itself if strict is needed'''
     key = (path_a.name, path_a.stat().st_mtime_ns, path_b.name, path_b.stat().st_mtime_ns)
     if _analysis_cache['key'] == key:
         return _analysis_cache['report'], _analysis_cache['diagnostics']
@@ -520,10 +491,8 @@ _PLOT_MAX_POINTS = 500
 
 
 def _downsample_max(values, max_points):
-    '''Per-bucket max, not a stride: a real coincidence peak is a handful of
-    bins tall against a flat background, and naive striding can step right
-    over it. Returns (indices, values) so the caller can still compute each
-    kept point's real x position'''
+    '''Per-bucket max, not a stride: a real peak is a handful of bins tall against a flat
+    background, and naive striding can step right over it. Returns (indices, values)'''
     n = len(values)
     if n <= max_points:
         return list(range(n)), [float(v) for v in values]
@@ -538,19 +507,16 @@ def _downsample_max(values, max_points):
 
 
 def _histogram_series(hist):
-    '''hist: a coincidence_peak.HistogramResult (or corrected_counts + the
-    same fine bin/radius) --> (x_ns, y, window_center_ns, window_width_ns),
-    downsampled the same way the coarse search's own plot points already are'''
+    '''hist: a HistogramResult (or corrected_counts + same fine bin/radius) -> (x_ns, y,
+    window_center_ns, window_width_ns), downsampled like the coarse search's own plot points'''
     idx, counts = _downsample_max(hist.counts, _PLOT_MAX_POINTS)
     xs_ns = [(-hist.radius_ps + (i + 0.5) * hist.bin_ps) / 1000 for i in idx]
     return xs_ns, counts, hist.window.center_ps / 1000, hist.window.width_ps / 1000
 
 
 def _serialize_plots(report, diagnostics):
-    '''Same underlying data coincidence_peak.py's save_plot() draws with
-    matplotlib (coarse correlation, best constant-shift peak, clock-rate
-    drift, clock-corrected peak), reshaped for the dashboard's own canvas
-    charts instead --> see main.js's drawCoarsePlot/drawHistPlot/drawDriftPlot'''
+    '''Same underlying data save_plot() draws with matplotlib, reshaped for the dashboard's
+    canvas charts; see main.js's drawCoarsePlot/drawHistPlot/drawDriftPlot'''
     import numpy as np
 
     coarse_lags_ms = (np.asarray(diagnostics['coarse_lags_ps']) / 1e9).tolist()
@@ -620,10 +586,8 @@ def _run_alignment_check():
 
 @app.route('/api/align/live')
 def api_align_live():
-    # No time-based cache needed here any more: _get_analysis() already
-    # caches the expensive part by file identity, so a cache hit here is
-    # just cheap dict/array bookkeeping, and a genuinely new upload is
-    # reflected on the very next poll instead of waiting out a timer
+    # No time-based cache needed: _get_analysis() already caches by file identity, so a hit
+    # here is cheap bookkeeping, and a new upload is reflected on the very next poll
     data = _run_alignment_check()
     data['timestamp'] = int(time.time())
     return jsonify(data)
@@ -631,21 +595,15 @@ def api_align_live():
 
 @contextmanager
 def _prepared_recording_dir():
-    '''Both cmd/importtt and chsh_diagnostic.py's own find_recording() want
-    a directory holding exactly this pair's files plus one matching
-    *_coincidence.json report; RECORDINGS_DIR can hold many uploaded
-    recordings over time, so this builds a scoped scratch dir instead of
-    writing the report next to everything else in there. Yields
-    (run_dir, path_a, path_b); raises ValueError/whatever analyze_arrays
-    raises on any precondition failure -- see api_align_run()/api_chsh_run()'''
+    '''Builds a scoped scratch dir with just this pair's files plus one *_coincidence.json
+    (what find_recording() wants), instead of writing into RECORDINGS_DIR directly'''
     files = [RECORDINGS_DIR / n for n in _list_recordings()]
     if len(files) < 2:
         raise ValueError(f'need 2 recordings, have {len(files)}')
     path_a, path_b = files[-2], files[-1]
 
-    # Same cached analysis /api/align/live already (maybe) computed for this
-    # exact pair --> strict=True's only real job is refusing an unconfirmed
-    # peak, reproduced here instead of recomputing just to get that check
+    # Reuses /api/align/live's cached analysis for this pair; strict=True's only real job is
+    # refusing an unconfirmed peak, reproduced here instead of recomputing
     cached_report, _diagnostics = _get_analysis(path_a, path_b)
     if not cached_report['detected']:
         score = cached_report['constant_shift']['window']['local_score']
@@ -672,10 +630,8 @@ def _prepared_recording_dir():
         shutil.rmtree(run_dir, ignore_errors=True)
 
 
-# API: run the real chain (cmd/importtt -json) over the same two recordings
-# /api/align/live checks --> sift, error-correct with the chosen method,
-# privacy-amplify, save the distilled key. Unlike api_run() this is a real
-# recording's key, so it is never purged, see _last_sim_keys
+# Runs the real chain (cmd/importtt -json): sift, error-correct, privacy-amplify, save the
+# distilled key. Unlike api_run() this is a real recording's key, never purged
 @app.route('/api/align/run', methods=['POST'])
 def api_align_run():
     body = request.get_json(silent=True) or {}
@@ -736,9 +692,8 @@ def api_align_run():
     return jsonify(metrics)
 
 
-# CHSH/Bell diagnostic: reuses acquisition/chsh_diagnostic.py's build_blocks()
-# in-process (same pattern as coincidence_peak above) over the same two
-# recordings, and caches the full per-block table for /api/chsh/download
+# Reuses acquisition/chsh_diagnostic.py's build_blocks() in-process (same pattern as
+# coincidence_peak above); caches the full per-block table for /api/chsh/download
 _chsh_last = {'columns': None, 'rows': None, 'filename': None}
 
 
@@ -747,9 +702,8 @@ def num(body, key, cast):
     return None if v in (None, '') else cast(v)
 
 
-# chsh_diagnostic.py's own CLI treats --roi2-offset-ns as required, with no
-# safe default, because a PULSED source needs the offset to land exactly one
-# (or more) rep periods away
+# chsh_diagnostic.py's CLI treats --roi2-offset-ns as required, with no safe default,
+# since a PULSED source needs the offset to land exactly one (or more) rep periods away
 _ROI2_OFFSET_WINDOW_MULTIPLE = 200
 _ROI2_OFFSET_FLOOR_NS = 20.0
 
@@ -779,9 +733,8 @@ def api_chsh_run():
     except Exception as e:
         return jsonify({'error': str(e)[:300]}), 400
 
-    # Per-pair totals across all blocks --> roi1 is signal+accidental, roi2 is
-    # an equal-rate accidental-only baseline at the same width (scaled if
-    # not), see build_blocks' own metadata note on background subtraction
+    # Per-pair totals: roi1 is signal+accidental, roi2 is an accidental-only baseline at
+    # the same width (scaled if not); see build_blocks' metadata note on background subtraction
     roi1_w = metadata['roi1']['width_ps']
     roi2_w = metadata['roi2']['width_ps']
     bg_scale = roi1_w / roi2_w if roi2_w else 1.0

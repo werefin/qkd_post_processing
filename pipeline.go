@@ -1,4 +1,4 @@
-package qoj_post_processing
+package qkd_post_processing
 
 // Config holds the tunable parameters of the post-processing chain
 type Config struct {

@@ -193,18 +193,16 @@ def _snapshot_timestamps(ctx: TTContext) -> np.ndarray:
 
 
 def _trim_to_window(ts: np.ndarray, window_ps: int) -> np.ndarray:
-    '''Keeps only the trailing window_ps of an already-sorted timestamp
-    array, so a periodic live check costs about the same no matter how long
-    the recording has run so far'''
+    '''Keeps only the trailing window_ps of an already-sorted array, so a periodic live
+    check costs the same no matter how long the recording has run'''
     if window_ps <= 0 or ts.size == 0:
         return ts
     left = int(np.searchsorted(ts, int(ts[-1]) - window_ps, side='left'))
     return ts[left:]
 
 
-# Without this, ctx.channels/ctx.timestamps buffer the WHOLE recording in RAM
-# (every frame appended, never freed until the final write), which for a long
-# run or a high-count-rate detector fills memory in minutes, not hours.
+# Without this, ctx.channels/ctx.timestamps buffer the WHOLE recording in RAM (never
+# freed until the final write), filling memory in minutes on a high-count-rate detector
 _FLUSH_KEEP_EVENTS = 2_000_000
 
 
@@ -217,10 +215,8 @@ def _scratch_paths(ctx: 'TTContext', base: str, outdir: str) -> tuple:
 
 
 def _flush_overflow(ctx: 'TTContext', base: str, outdir: str) -> None:
-    '''Spills whole frames from the front of ctx.channels/timestamps (oldest
-    first) to a per-TT scratch file once more than _FLUSH_KEEP_EVENTS
-    detections are buffered, always leaving at least the newest frame in
-    RAM. Caller must hold ctx.lock; see reader_thread'''
+    '''Spills oldest frames to a per-TT scratch file once more than _FLUSH_KEEP_EVENTS
+    detections are buffered, always leaving the newest frame in RAM. Caller must hold ctx.lock'''
     total = sum(a.size for a in ctx.timestamps)
     if total <= _FLUSH_KEEP_EVENTS:
         return
@@ -242,9 +238,8 @@ def _flush_overflow(ctx: 'TTContext', base: str, outdir: str) -> None:
 
 
 def _coincidence_kwargs_from_config(cfg: dict) -> dict:
-    '''Maps config.json's "coincidence_peak" section (ms/ns-named CLI-style
-    keys) into analyze_arrays's ps-named kwargs, reused by the live monitor
-    so its numbers track the same algorithm settings as the final report'''
+    '''Maps config.json's ms/ns-named CLI-style keys into analyze_arrays's ps-named kwargs,
+    reused by the live monitor so it tracks the same algorithm settings as the final report'''
     cp = cfg.get('coincidence_peak', {})
     return {
         'max_lag_ps': int(round(cp.get('max_lag_ms', 1000.0) * 1_000_000_000)),
@@ -260,11 +255,8 @@ def _coincidence_kwargs_from_config(cfg: dict) -> dict:
 
 def live_coincidence_thread(ctx_a: TTContext, ctx_b: TTContext, stop_event: threading.Event,
                              interval_s: float, window_s: float, analyze_kwargs: dict) -> None:
-    '''Periodically reruns coincidence_peak's search over a trailing window
-    of whatever both TimeTaggers have captured so far, so lag/skew/window are
-    visible while acquisition is still running instead of only afterward
-    Deferred import: keeps numba/scipy off the critical path for anyone
-    running tt_record_dual.py with live monitoring disabled'''
+    '''Periodically reruns coincidence_peak's search over a trailing window so lag/skew are
+    visible mid-recording. Deferred import keeps numba/scipy off the path when disabled'''
     from coincidence_peak import analyze_arrays
 
     window_ps = int(window_s * _PS_PER_S)
@@ -300,12 +292,8 @@ def reader_thread(ctx: TTContext,
                    outdir: str,
                    target_detections: Optional[int] = None,
                    per_call_cap: int = 4_000_000) -> None:
-    '''Waits at the barrier so streams across TimeTaggers start in lockstep,
-    then loops read_stream() until stopped, disconnected, or target reached.
-    base/outdir: this recording's eventual output filename stem/directory,
-    needed here (not just at the final write) so a long run can spill old
-    frames to a scratch file instead of buffering everything in RAM, see
-    _flush_overflow'''
+    '''Waits at the barrier so streams across TimeTaggers start in lockstep, then loops
+    read_stream(); base/outdir let a long run spill old frames to scratch, see _flush_overflow'''
     try:
         start_barrier.wait(timeout=10.0)
     except threading.BrokenBarrierError:
@@ -362,9 +350,8 @@ def reader_thread(ctx: TTContext,
             f'read {meta["n_detections"]} detections this cycle (running total {total}), '
             f'device uptime {meta["stream_uptime_s"]:.2f}s')
         if meta['capped']:
-            # the server never returns more than per_call_cap detections in one read; if more
-            # than that arrived since our last read, the excess is simply never retrieved, and
-            # this read hitting the cap exactly is the only signal we get that this may have happened
+            # the server never returns more than per_call_cap in one read; excess beyond that is
+            # silently dropped, and hitting the cap exactly is the only signal we get of it
             log('WARN', ctx.tag,
                 f'this read came back at the server\'s maximum batch size ({per_call_cap} detections); '
                 f'detections may be arriving faster than single reads can drain them, so some from this '
@@ -387,11 +374,8 @@ def reader_thread(ctx: TTContext,
             log('INFO', ctx.tag, f'[OK] reached the requested target of {target_detections} detections, stopping')
             break
 
-    # the loop above checks stop_event BEFORE each read, so duration mode can
-    # exit with one frame's worth already buffered server-side since the last
-    # read; one more drain picks that up. NOT a loop: a high-rate TT (e.g.
-    # Trnava) streams continuously regardless of stop_event, so repeated
-    # draining never reaches an empty backlog; it just keeps recording
+    # stop_event is checked BEFORE each read, so one more frame can be buffered server-side;
+    # one drain picks it up. NOT a loop: a high-rate TT streams continuously, so it never ends
     if ctx.error is None and not reached_target and stop_event.is_set() and ctx.stream.is_connected():
         frame = ctx.stream.read_stream()
         if frame is not None:
@@ -426,9 +410,8 @@ def ctx_failure_reason(ctx: TTContext) -> Optional[str]:
 
 
 def _read_and_clear_scratch(path: Optional[str], dtype) -> np.ndarray:
-    '''Reads back everything _flush_overflow spilled to disk during
-    recording (empty array if nothing ever overflowed), then removes the
-    scratch file; its content now lives only in the final .npy'''
+    '''Reads back everything _flush_overflow spilled to disk, then removes the scratch
+    file; its content now lives only in the final .npy'''
     if path is None or not os.path.exists(path):
         return np.array([], dtype=dtype)
     arr = np.fromfile(path, dtype=dtype)
@@ -576,9 +559,8 @@ def main(argv: Optional[list] = None) -> int:
         live_thread.start()
         log('INFO', None, f'[CONF] live coincidence preview enabled: checking every {interval_s:.1f}s over the trailing {window_s:.1f}s of buffered data')
 
-    # main waits for the appropriate stop signal:
-    # duration mode: timeout on stop_event, then set it
-    # detection_count mode: just wait for threads to finish on their own (they stop themselves at the target); Ctrl+C still sets stop_event
+    # duration mode: timeout on stop_event, then set it. detection_count mode: wait for
+    # threads to finish on their own (they stop at the target); Ctrl+C still sets stop_event
     try:
         if stop_mode == 'duration':
             stopped_early = stop_event.wait(timeout=record_duration_s)
@@ -598,9 +580,8 @@ def main(argv: Optional[list] = None) -> int:
         t.join(timeout=30.0)
         if t.is_alive():
             log('WARN', t.name, 'did not finish within 30s of being asked to stop, forcing its connection closed')
-            # Best-effort unblock: closing the socket out from under a thread
-            # stuck in read_stream() usually makes that call raise/return
-            # immediately instead of waiting for it to time out
+            # Best-effort unblock: closing the socket out from under a thread stuck in
+            # read_stream() usually makes it raise/return instead of waiting to time out
             try:
                 ctx.stream.disconnect()
             except Exception:
@@ -631,11 +612,8 @@ def main(argv: Optional[list] = None) -> int:
             write_outputs(ctx, base, output_dir)
         rc = 0
 
-    # per-TT data-loss check: host wall-clock recording time vs. the TT's own last
-    # reported stream uptime. A meaningful gap (more than about one read's worth)
-    # means detections accumulated server-side faster than we could read them.
-    # Only meaningful in duration mode; in detection_count mode we deliberately
-    # stop once the target is hit, so a gap there is expected, not data loss.
+    # Gap between host wall-clock time and the TT's own stream uptime signals data loss
+    # (reads too slow). Only meaningful in duration mode; detection_count mode expects a gap
     safe_print('')
     log('INFO', None, '[CONF] ==== recording summary ====')
     for ctx in live:

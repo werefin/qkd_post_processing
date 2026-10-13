@@ -1,4 +1,4 @@
-package qoj_post_processing
+package qkd_post_processing
 
 import "math"
 
@@ -11,13 +11,13 @@ func binaryEntropy(p float64) float64 {
 	return -p*math.Log2(p) - (1-p)*math.Log2(1-p)
 }
 
-// SecureKeyLength: Devetak-Winter rate 1-2*h2(QBER) applied to n bits,
-// minus leakedBits already revealed on the classical channel
+// SecureKeyLength: asymptotic n*(1-h2(QBER)) minus the bits actually disclosed; 1-2*h2 would
+// charge error correction twice, once as h2 and again inside leakedBits
 func SecureKeyLength(n int, qber float64, leakedBits int) int {
-	if n <= 0 {
+	if n <= 0 || !(qber < 0.5) {
 		return 0
 	}
-	rate := 1 - 2*binaryEntropy(qber)
+	rate := 1 - binaryEntropy(qber)
 	l := rate*float64(n) - float64(leakedBits)
 	if l < 0 {
 		return 0
@@ -29,12 +29,8 @@ func SecureKeyLength(n int, qber float64, leakedBits int) int {
 	return li
 }
 
-// PrivacyAmplify runs step 5: distills the error-free stream into the final
-// secret key via Toeplitz hashing, returning the key and seed used
-//
-// alignBits rounds the Devetak-Winter length down to a multiple of itself
-// before hashing (0 skips this), so a caller chunking the key into fixed-size
-// records afterward, e.g. ETSI 014's 256-bit keys, never discards a remainder
+// PrivacyAmplify runs step 5: distills the error-free stream into the final secret key via
+// Toeplitz hashing. alignBits (0=skip) rounds the length so fixed-size records never lose a remainder
 func PrivacyAmplify(errorFreeBits []byte, qber float64, leakedBits, alignBits int) (key []byte, seed []byte, err error) {
 	n := len(errorFreeBits)
 	l := SecureKeyLength(n, qber, leakedBits)

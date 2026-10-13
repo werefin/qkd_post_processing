@@ -1,19 +1,22 @@
-## qoj_post_processing
+## qkd_post_processing
 
 BBM92-style classical post-processing chain: coincidence **sifting**, block **error detection/correction**, CRC **verification**, **QBER** estimation, **privacy amplification** (Devetak-Winter rate + Toeplitz hashing), and optional **AEAD encryption** with the distilled key.
 
-Library package (`import "qoj_post_processing"`); `cmd/qoj_post_processing` is a thin CLI driver that simulates click streams and calls `qoj_post_processing.Run(...)`. For real detector logs, build `[]qoj_post_processing.DetectionEvent` yourself and call `Run` directly.
+Library package (`import "qkd_post_processing"`); `cmd/qkd_post_processing` is a thin CLI driver that simulates click streams and calls `qkd_post_processing.Run(...)`. For real detector logs, build `[]qkd_post_processing.DetectionEvent` yourself and call `Run` directly.
 
 ### Layout
 
 | file | step |
 |---|---|
 | `events.go` / `sifting.go` | `DetectionEvent`/`Basis` types, coincidence-window sifting |
+| `coincfilter.go` / `detdelay.go` | coincidence filtering: removes clock drift, window = HWHM of a Gaussian fit (`cmd/importtt -filter`, on by default); per-detector delay calibration; see `doc/coincidence_filtering.md` |
 | `blockdetect.go` | generator-matrix block parity detection (parallel, bit-packed), never flips a bit |
 | `bch.go` | BCH-code generator matrix, a guaranteed-detection alternative |
 | `matrixsearch.go` | `SearchGeneratorMatrix()`: hill-climbs a matrix against actual key rate |
 | `winnow.go` / `pipeline_winnow.go` | Winnow error *correction* (`RunWinnow()`), a different tradeoff than block discard |
 | `ldpc.go` / `pipeline_ldpc.go` | LDPC belief-propagation error correction (`RunLDPC()`) |
+| `polar.go` / `pipeline_polar.go` | polar-code error correction with SC/SCL decoding (`RunPolar()`), see `doc/architecture.md` 3.4b |
+| `softrecon.go` | timing-aware soft reconciliation for LDPC/polar (`-soft-bins`), see `doc/timing_aware_reconciliation.md` |
 | `crcverify.go` / `qber.go` | CRC-16 chunk verification, QBER estimation |
 | `toeplitz*.go` / `privacyamp.go` | Toeplitz hash (hardware-CLMUL on amd64) + privacy amplification |
 | `encryption.go` | AEAD encrypt/decrypt with the distilled key |
@@ -23,12 +26,14 @@ Library package (`import "qoj_post_processing"`); `cmd/qoj_post_processing` is a
 | `cmd/importtt` | runs the chain over a real dual-TimeTagger recording (see `acquisition/`) |
 | `acquisition/` | Python: records from two TimeTaggers, finds their clock offset, plus a standalone CHSH/Bell diagnostic |
 | `ui/` | a small dashboard: run the pipeline, watch metrics, check live alignment on recordings |
+| `docs/` | vendor PDFs, including the post-processing review `doc/finite_key_procedure.md` responds to |
+| `doc/` | `architecture.md` (code/API reference), `security_proof.md` (formal security analysis of the KMS and relay), `finite_key_procedure.md`, `coincidence_filtering.md` and `timing_aware_reconciliation.md` (formal procedures) |
 
 ### Quick start
 
 ```bash
 go build ./...
-go run ./cmd/qoj_post_processing -n 300000 -err 0.005 -chunk 3000
+go run ./cmd/qkd_post_processing -n 300000 -err 0.005 -chunk 3000
 ```
 
 Key flags (`-h` for all): `-n` raw attempts, `-err` intrinsic bit error rate, `-window` coincidence window (ps), `-matrix bch` (default) or `-search-matrix`, `-winnow`/`-ldpc` to correct errors instead of discarding blocks, `-chunk` step 3 CRC chunk size.
@@ -50,7 +55,7 @@ Both CLIs take `-keystore <dir>`: the distilled key is sliced into 256-bit chunk
 ### Library usage
 
 ```go
-import qkd "qoj_post_processing"
+import qkd "qkd_post_processing"
 
 cfg := qkd.Config{CoincidenceWindowPS: 500, GeneratorMatrix: qkd.GeneratorMatrixBCHt2, ChunkSize: 2048}
 res, err := qkd.Run(aliceEvents, bobEvents, cfg)
@@ -64,7 +69,7 @@ plaintext, err = qkd.DecryptWithKey(res.FinalKeyBytes, ciphertext)
 
 The sifted key splits into `m`-bit blocks; each side computes `p` parity bits as $P = M \cdot G^{T}$ (mod 2) from a shared generator matrix `G`. Only parity crosses the channel. **Block discard** (the default) drops a block on any disagreement, never flipping a bit -- the simplest, most conservative option. `BCHGeneratorMatrix`/`GeneratorMatrixBCHt2` gives a proven Hamming-weight detection guarantee instead of an empirically tuned one; `CascadeGeneratorMatrices(g1, g2)` stacks two matrices to catch collisions invisible to either alone.
 
-**Winnow** (`winnow.go`) and **LDPC belief propagation** (`ldpc.go`) *correct* errors instead of discarding, at the cost of leaking more per block and (Winnow) needing several passes. Neither is a strict upgrade over discard --> measure on your own data. Both need a much smaller CRC chunk size than discard's default, or step 3 discards nearly everything; `cmd/importtt -winnow`/`-ldpc` (and `cmd/qoj_post_processing` the same way) set this automatically.
+**Winnow** (`winnow.go`) and **LDPC belief propagation** (`ldpc.go`) *correct* errors instead of discarding, at the cost of leaking more per block and (Winnow) needing several passes. Neither is a strict upgrade over discard --> measure on your own data. Both need a much smaller CRC chunk size than discard's default, or step 3 discards nearly everything; `cmd/importtt -winnow`/`-ldpc` (and `cmd/qkd_post_processing` the same way) set this automatically.
 
 `Sift`, `BlockErrorDetect`, and `CRCVerify` are combined convenience wrappers; each has a split, one-sided form (`ComputeBlockParity`/`ReconcileBlocks`, `ComputeChunkCRC`/`ReconcileChunks`) for running Alice and Bob as two independent processes that never share raw bits.
 
@@ -82,7 +87,7 @@ make test      # go test ./... -v
 make test-all  # build+vet+fmt+race tests+cross-arch build, see scripts/test.sh
 make bench     # go test -run '^$' -bench . -benchmem ./...
 make tune      # sweep step 2 block size for the highest key rate
-make run       # go run ./cmd/qoj_post_processing with sane demo defaults
+make run       # go run ./cmd/qkd_post_processing with sane demo defaults
 make check     # fmt+vet+build+test+run in one shot
 make vet       # go vet ./...
 make fmt       # gofmt -l . (fails if anything is unformatted)
@@ -92,9 +97,9 @@ make clean     # remove build artifacts
 ### Docker
 
 ```bash
-docker build -t qoj-post-processing .
-docker run --rm qoj-post-processing qoj_post_processing -n 300000 -err 0.005 -chunk 3000
-docker run --rm -v "$(pwd)/acquisition:/app/acquisition" qoj-post-processing importtt -dir acquisition/example/20260909
+docker build -t qkd-post-processing .
+docker run --rm qkd-post-processing qkd_post_processing -n 300000 -err 0.005 -chunk 3000
+docker run --rm -v "$(pwd)/acquisition:/app/acquisition" qkd-post-processing importtt -dir acquisition/example/20260909
 ```
 
-One image, no server: Python 3.12 + Go 1.24, with `qoj_post_processing`/`importtt`/`tuneblock` prebuilt to `/usr/local/bin`. Mount `acquisition/` whenever a command needs to read or write a recording. For the dashboard instead, see `ui/` (separate Docker + Caddy deployment, see `ui/deploy.md`).
+One image, no server: Python 3.12 + Go 1.24, with `qkd_post_processing`/`importtt`/`tuneblock` prebuilt to `/usr/local/bin`. Mount `acquisition/` whenever a command needs to read or write a recording. For the dashboard instead, see `ui/` (separate Docker + Caddy deployment, see `ui/deploy.md`).
