@@ -3,14 +3,18 @@
 package relay
 
 import (
+	"encoding/binary"
 	"fmt"
 	"time"
 
 	"qkd_post_processing/kms"
 )
 
-// defaultRelayTTL bounds how long a delivered key waits unconsumed locally
-const defaultRelayTTL = 24 * time.Hour
+// defaultRelayTTL bounds how long a delivered key waits for its slave SAE
+var defaultRelayTTL = 24 * time.Hour
+
+// SetDeliveryTTL sets how long relayed keys wait at their destination for the slave SAE
+func SetDeliveryTTL(d time.Duration) { defaultRelayTTL = d }
 
 // RelayXOR one-time-pads payload with pad; same length required, always
 func RelayXOR(payload, pad []byte) ([]byte, error) {
@@ -38,112 +42,192 @@ func NewRelayNode(id string, local *kms.KMS, hopPools map[string]*kms.KMS, route
 	return &RelayNode{ID: id, Local: local, HopPools: hopPools, NextHop: routes}
 }
 
-// RelayedPacket is what one hop sends the next: ciphertext and tag, plus
-// key_ID references to the pad/MAC key -- never the key material itself
+// RelayedPacket is what one hop sends the next: ciphertext and tag, key_ID references to the
+// pad and MAC keys (never key material), and the end-to-end key_ID and SAE pair it is reserved for
 type RelayedPacket struct {
 	Dest      string   `json:"dest"`
 	FromHop   string   `json:"from_hop"`
+	Origin    string   `json:"origin"`
+	KeyID     string   `json:"key_ID"`
+	MasterSAE string   `json:"master_SAE_ID"`
+	SlaveSAE  string   `json:"slave_SAE_ID"`
 	PadKeyIDs []string `json:"pad_key_ids"`
 	MACKeyIDs []string `json:"mac_key_ids"`
-	Cipher    []byte   `json:"cipher"`
-	Tag       []byte   `json:"tag"`
+	// PayloadKeyIDs, first hop only: the key is these pool keys of the sender's half, which the
+	// receiver holds too, so they travel as IDs and need no pad
+	PayloadKeyIDs []string `json:"payload_key_ids,omitempty"`
+	Cipher        []byte   `json:"cipher"`
+	Tag           []byte   `json:"tag"`
 }
 
-// macMessage is the canonical, length-prefixed encoding the MAC covers --
-// everything an attacker could tamper with, not just the ciphertext bytes
-func macMessage(dest, fromHop string, padKeyIDs []string, cipher []byte) []byte {
+// macMessage is the canonical encoding the MAC covers: every field an attacker could change,
+// each length-prefixed (uvarint) so no two packets share an encoding
+func macMessage(p RelayedPacket) []byte {
 	var buf []byte
-	field := func(s string) {
-		buf = append(buf, byte(len(s)))
-		buf = append(buf, s...)
+	field := func(b []byte) {
+		buf = binary.AppendUvarint(buf, uint64(len(b)))
+		buf = append(buf, b...)
 	}
-	field(dest)
-	field(fromHop)
-	buf = append(buf, byte(len(padKeyIDs)))
-	for _, id := range padKeyIDs {
-		field(id)
+	for _, s := range []string{p.Dest, p.FromHop, p.Origin, p.KeyID, p.MasterSAE, p.SlaveSAE} {
+		field([]byte(s))
 	}
-	return append(buf, cipher...)
+	for _, ids := range [][]string{p.PadKeyIDs, p.PayloadKeyIDs} {
+		buf = binary.AppendUvarint(buf, uint64(len(ids)))
+		for _, id := range ids {
+			field([]byte(id))
+		}
+	}
+	field(p.Cipher)
+	return buf
 }
 
-// Originate encrypts and authenticates keyBytes for the first hop toward dest
-func (n *RelayNode) Originate(dest string, keyBytes []byte) (RelayedPacket, error) {
+// Originate encrypts and authenticates keyBytes for the first hop toward dest, where it will be
+// stored as keyID for the SAE pair master/slave only
+func (n *RelayNode) Originate(dest, keyID, master, slave string, keyBytes []byte) (RelayedPacket, error) {
 	hop, ok := n.NextHop[dest]
 	if !ok {
 		return RelayedPacket{}, fmt.Errorf("relay: no route to %s", dest)
 	}
-	return n.forward(hop, dest, keyBytes)
+	return n.forward(hop, RelayedPacket{Dest: dest, Origin: n.ID, KeyID: keyID, MasterSAE: master, SlaveSAE: slave}, keyBytes)
 }
 
-// forward draws a fresh pad and a fresh MAC key from the hop's pool,
-// encrypts, then authenticates the ciphertext plus its own routing metadata
-func (n *RelayNode) forward(hop, dest string, keyBytes []byte) (RelayedPacket, error) {
+// OriginateFromPool makes a key of size bytes for keyID from this node's half of the pool it
+// shares with the first hop toward dest, QKD output end to end; it returns the packet and the key
+func (n *RelayNode) OriginateFromPool(dest, keyID, master, slave string, size int) (RelayedPacket, []byte, error) {
+	hop, ok := n.NextHop[dest]
+	if !ok {
+		return RelayedPacket{}, nil, fmt.Errorf("relay: no route to %s", dest)
+	}
+	pool, ok := n.HopPools[hop]
+	if !ok {
+		return RelayedPacket{}, nil, fmt.Errorf("relay: no key pool shared with %s", hop)
+	}
+	if size <= 0 || size%kms.ETSI014KeySizeBytes != 0 {
+		return RelayedPacket{}, nil, fmt.Errorf("relay: key size must be a positive multiple of %d bytes", kms.ETSI014KeySizeBytes)
+	}
+	material, ids, err := pool.GetNextBytesMatching(size+PolyMACKeyBytes, kms.OriginatorOf(n.ID, hop))
+	if err != nil {
+		return RelayedPacket{}, nil, fmt.Errorf("relay: key and mac key: %w", err)
+	}
+	keyIDs, macIDs, err := splitIDs(ids, size)
+	if err != nil {
+		clear(material)
+		return RelayedPacket{}, nil, err
+	}
+	pkt := RelayedPacket{Dest: dest, FromHop: n.ID, Origin: n.ID, KeyID: keyID, MasterSAE: master, SlaveSAE: slave,
+		MACKeyIDs: macIDs, PayloadKeyIDs: keyIDs}
+	pkt.Tag, err = ComputePolyMAC(macMessage(pkt), material[size:])
+	clear(material[size:])
+	if err != nil {
+		clear(material)
+		return RelayedPacket{}, nil, err
+	}
+	return pkt, material[:size], nil
+}
+
+// forward draws a fresh pad and a fresh MAC key from this node's own half of the hop's pool,
+// encrypts, then authenticates the ciphertext with all of the packet's metadata
+func (n *RelayNode) forward(hop string, meta RelayedPacket, keyBytes []byte) (RelayedPacket, error) {
 	pool, ok := n.HopPools[hop]
 	if !ok {
 		return RelayedPacket{}, fmt.Errorf("relay: no key pool shared with %s", hop)
 	}
+	mine := kms.OriginatorOf(n.ID, hop)
 
-	pad, padIDs, err := pool.GetNextBytes(len(keyBytes))
+	// one draw for pad and MAC key together, so a short pool consumes nothing
+	need := len(keyBytes) + PolyMACKeyBytes
+	material, ids, err := pool.GetNextBytesMatching(need, mine)
 	if err != nil {
-		return RelayedPacket{}, fmt.Errorf("relay: pad: %w", err)
+		return RelayedPacket{}, fmt.Errorf("relay: pad and mac key: %w", err)
 	}
+	defer clear(material)
+	padIDs, macIDs, err := splitIDs(ids, len(keyBytes))
+	if err != nil {
+		return RelayedPacket{}, err
+	}
+	pad, macKey := material[:len(keyBytes)], material[len(keyBytes):]
 	cipher, err := RelayXOR(keyBytes, pad)
 	if err != nil {
 		return RelayedPacket{}, err
 	}
 
-	msg := macMessage(dest, n.ID, padIDs, cipher)
-	macKey, macIDs, err := pool.GetNextBytes(PolyMACKeyBytes)
-	if err != nil {
-		return RelayedPacket{}, fmt.Errorf("relay: mac key: %w", err)
-	}
-	tag, err := ComputePolyMAC(msg, macKey)
-	if err != nil {
+	pkt := meta
+	pkt.FromHop, pkt.PadKeyIDs, pkt.MACKeyIDs, pkt.Cipher, pkt.PayloadKeyIDs = n.ID, padIDs, macIDs, cipher, nil
+	if pkt.Tag, err = ComputePolyMAC(macMessage(pkt), macKey); err != nil {
 		return RelayedPacket{}, fmt.Errorf("relay: mac: %w", err)
 	}
-
-	return RelayedPacket{Dest: dest, FromHop: n.ID, PadKeyIDs: padIDs, MACKeyIDs: macIDs, Cipher: cipher, Tag: tag}, nil
+	return pkt, nil
 }
 
-// Receive verifies the packet's MAC before touching the ciphertext at all
-// (fail closed: an invalid tag is refused, never decrypted), then decrypts
+// splitIDs assigns whole pool keys to the pad and the MAC key; the pool's keys are all the
+// same size, so the pad takes the first ceil(padBytes/keySize) of them
+func splitIDs(ids []string, padBytes int) (padIDs, macIDs []string, err error) {
+	keySize := kms.ETSI014KeySizeBytes
+	nPad := (padBytes + keySize - 1) / keySize
+	if nPad >= len(ids) || padBytes%keySize != 0 {
+		return nil, nil, fmt.Errorf("relay: payload must be a positive multiple of %d bytes, got %d", keySize, padBytes)
+	}
+	return ids[:nPad], ids[nPad:], nil
+}
+
+// Receive verifies the packet's MAC before touching the ciphertext at all (fail closed: an
+// invalid tag is refused, never decrypted), then decrypts
 func (n *RelayNode) Receive(pkt RelayedPacket) ([]byte, error) {
 	pool, ok := n.HopPools[pkt.FromHop]
 	if !ok {
 		return nil, fmt.Errorf("relay: no key pool shared with %s", pkt.FromHop)
 	}
+	// keys from this node's own half could already have padded something it sent: refuse them
+	theirs := kms.OriginatorOf(pkt.FromHop, n.ID)
+	if len(pkt.PayloadKeyIDs) > 0 && (pkt.Origin != pkt.FromHop || len(pkt.PadKeyIDs) > 0 || len(pkt.Cipher) > 0) {
+		return nil, fmt.Errorf("relay: a key sent by IDs must come straight from its origin, without a pad")
+	}
+	for _, id := range append(append(append([]string{}, pkt.PadKeyIDs...), pkt.MACKeyIDs...), pkt.PayloadKeyIDs...) {
+		if !theirs(id) {
+			return nil, fmt.Errorf("relay: %s used key %s from this node's half of the pool", pkt.FromHop, id)
+		}
+	}
 
-	msg := macMessage(pkt.Dest, pkt.FromHop, pkt.PadKeyIDs, pkt.Cipher)
 	macKey, err := pool.GetBytes(pkt.MACKeyIDs, PolyMACKeyBytes)
 	if err != nil {
 		return nil, fmt.Errorf("relay: mac key: %w", err)
 	}
-	if !VerifyPolyMAC(msg, pkt.Tag, macKey) {
+	defer clear(macKey)
+	if !VerifyPolyMAC(macMessage(pkt), pkt.Tag, macKey) {
 		return nil, fmt.Errorf("relay: authentication failed -- packet tampered with or corrupted, discarding")
 	}
 
+	if len(pkt.PayloadKeyIDs) > 0 {
+		key, err := pool.GetBytes(pkt.PayloadKeyIDs, len(pkt.PayloadKeyIDs)*kms.ETSI014KeySizeBytes)
+		if err != nil {
+			return nil, fmt.Errorf("relay: key: %w", err)
+		}
+		return key, nil
+	}
 	pad, err := pool.GetBytes(pkt.PadKeyIDs, len(pkt.Cipher))
 	if err != nil {
 		return nil, fmt.Errorf("relay: pad: %w", err)
 	}
+	defer clear(pad)
 	return RelayXOR(pkt.Cipher, pad)
 }
 
-// Handle is the full receive step: authenticate, decrypt, then deliver
-// locally (if this node is the destination) or re-encrypt toward the next hop
+// Handle is the full receive step: authenticate, decrypt, then store the key reserved for its SAE
+// pair (if this node is the destination) or re-encrypt toward the next hop
 func (n *RelayNode) Handle(pkt RelayedPacket) (delivered bool, keyID string, next RelayedPacket, err error) {
 	keyBytes, err := n.Receive(pkt)
 	if err != nil {
 		return false, "", RelayedPacket{}, err
 	}
+	defer clear(keyBytes)
 	if pkt.Dest == n.ID {
-		keyID, err = n.Local.Put(keyBytes, defaultRelayTTL)
-		return true, keyID, RelayedPacket{}, err
+		err = n.Local.PutReserved(pkt.KeyID, keyBytes, pkt.MasterSAE, pkt.SlaveSAE, defaultRelayTTL)
+		return true, pkt.KeyID, RelayedPacket{}, err
 	}
 	hop, ok := n.NextHop[pkt.Dest]
 	if !ok {
 		return false, "", RelayedPacket{}, fmt.Errorf("relay: no route from %s to %s", n.ID, pkt.Dest)
 	}
-	next, err = n.forward(hop, pkt.Dest, keyBytes)
+	next, err = n.forward(hop, pkt, keyBytes)
 	return false, "", next, err
 }

@@ -7,7 +7,7 @@ import "fmt"
 type PolarRunConfig struct {
 	CoincidenceWindowPS int64
 	SampleFraction      float64         // fraction of sifted bits sacrificed to measure QBER directly
-	BlockLength         int             // polar codeword length N=2^n, 0 defaults to the largest power of two <= the whole remaining key
+	BlockLength         int             // polar codeword length N=2^n, 0 = the largest power of two covering the key, at most PolarMaxDefaultBlock
 	RateMargin          float64         // how far below 1-h2(QBER) to target the code rate, comfortably not marginally, mirroring LDPC's wc/wr guidance
 	ListSize            int             // SCL list size L, 0 defaults to 1 (plain successive cancellation)
 	Seed                int64           // derives sample selection; must be agreed publicly (the code itself needs no secret: N, K, and QBER fix it deterministically)
@@ -61,10 +61,7 @@ func RunPolar(aliceEvents, bobEvents []DetectionEvent, cfg PolarRunConfig) (Pola
 	res.SiftedBits = siftedBits
 	res.QBER = qberResult
 
-	blockLength := cfg.BlockLength
-	if blockLength <= 0 {
-		blockLength = largestPowerOfTwoAtMost(len(aliceRem))
-	}
+	blockLength := polarBlockLength(cfg.BlockLength, len(aliceRem))
 	if blockLength < 2 {
 		return res, fmt.Errorf("polar: nothing left to reconcile after the QBER sample")
 	}

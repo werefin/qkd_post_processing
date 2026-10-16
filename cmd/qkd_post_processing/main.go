@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"qkd_post_processing/kms"
+	"qkd_post_processing/pyec"
 	"qkd_post_processing/qkd"
 )
 
@@ -39,6 +40,12 @@ type jsonReport struct {
 	PolarBlocks       int            `json:"polar_blocks,omitempty"`
 	PolarCorrected    int            `json:"polar_bits_corrected,omitempty"`
 	PolarLeakedBits   int            `json:"polar_leaked_bits,omitempty"`
+	LDPC5GRows        int            `json:"ldpc5g_rows,omitempty"`
+	LDPC5GFrames      int            `json:"ldpc5g_frames,omitempty"`
+	LDPC5GAttempts    int            `json:"ldpc5g_attempts,omitempty"`
+	LDPC5GFailed      int            `json:"ldpc5g_failed,omitempty"`
+	LDPC5GCorrected   int            `json:"ldpc5g_bits_corrected,omitempty"`
+	LDPC5GLeakedBits  int            `json:"ldpc5g_leaked_bits,omitempty"`
 	TimingFlatBound   float64        `json:"timing_flat_bound,omitempty"`
 	TimingSoftBound   float64        `json:"timing_soft_bound,omitempty"`
 	FiniteKey         *finiteKeyJSON `json:"finite_key,omitempty"` // nil in asymptotic mode and for block discard
@@ -210,6 +217,7 @@ func main() {
 	ldpcWr := flag.Int("ldpc-wr", 10, "LDPC row weight (check node degree); tune rate=1-wc/wr comfortably below 1-h2(QBER), not just barely under it -- a regular code's real decoding threshold runs below the Shannon bound, see ldpc_test.go")
 	ldpcIterations := flag.Int("ldpc-iterations", 0, "belief propagation iteration cap per block, 0 = default 50")
 	ldpcSample := flag.Float64("ldpc-sample", 0.05, "fraction of sifted bits sacrificed to measure QBER directly before LDPC correction")
+	ldpc5g := flag.Bool("ldpc5g", false, "correct errors with 5G NR LDPC (py3gpp matrices, ldpc library belief propagation, blind reconciliation), the most efficient method; needs ec/requirements.txt")
 	polar := flag.Bool("polar", false, "correct errors with polar codes (successive cancellation list decoding) instead of discarding blocks (see polar.go/pipeline_polar.go)")
 	polarN := flag.Int("polar-n", 0, "polar codeword length in bits, must be a power of two; 0 = largest power of two covering the whole remaining sifted key")
 	polarMargin := flag.Float64("polar-margin", 0.02, "starting rate margin below the per-block capacity; on a failed block hash the margin rises by 0.02 and only the extra frozen values are revealed (rate-adaptive)")
@@ -228,17 +236,17 @@ func main() {
 	}
 
 	exclusive := 0
-	for _, on := range []bool{*winnow, *ldpc, *polar, *searchMatrix} {
+	for _, on := range []bool{*winnow, *ldpc, *polar, *searchMatrix, *ldpc5g} {
 		if on {
 			exclusive++
 		}
 	}
 	if exclusive > 1 {
-		fail(*jsonOut, "-winnow, -ldpc, -polar, and -search-matrix are mutually exclusive")
+		fail(*jsonOut, "-winnow, -ldpc, -polar, -ldpc5g and -search-matrix are mutually exclusive")
 	}
 
-	if *softBins < 0 || (*softBins > 0 && !*ldpc && !*polar) {
-		fail(*jsonOut, "-soft-bins must be >= 0 and only applies to -ldpc or -polar")
+	if *softBins < 0 || (*softBins > 0 && !*ldpc && !*polar && !*ldpc5g) {
+		fail(*jsonOut, "-soft-bins must be >= 0 and only applies to -ldpc, -polar or -ldpc5g")
 	}
 
 	method := "discard"
@@ -249,6 +257,8 @@ func main() {
 		method = "ldpc"
 	case *polar:
 		method = "polar"
+	case *ldpc5g:
+		method = "ldpc5g"
 	}
 
 	// matrix resolution only matters for the discard/search-matrix path;
@@ -293,6 +303,8 @@ func main() {
 		case "polar":
 			field("Method (step 2/3)", "polar correction (n=%s, margin=%.2f, list=%d, sample=%.2f)",
 				ldpcBlockLabel(*polarN), *polarMargin, *polarList, *polarSample)
+		case "ldpc5g":
+			field("Method (step 2/3)", "5G NR LDPC, blind (sample=%.2f)", *polarSample)
 		}
 		field("Chunk size (step 3)", "%d bits", *chunkSize)
 		field("PRNG seed", "%d", *seed)
@@ -313,6 +325,8 @@ func main() {
 		report = runLDPCPipeline(aliceEv, bobEv, *windowPS, *ldpcBlock, *ldpcWc, *ldpcWr, *ldpcIterations, *ldpcSample, *chunkSize, *softBins, *keystoreDir, *jsonOut)
 	case "polar":
 		report = runPolarPipeline(aliceEv, bobEv, *windowPS, *polarN, *polarMargin, *polarList, *polarSample, *chunkSize, *softBins, *keystoreDir, *jsonOut)
+	case "ldpc5g":
+		report = runLDPC5GPipeline(aliceEv, bobEv, *windowPS, *polarSample, *chunkSize, *softBins, *keystoreDir, *jsonOut)
 	default:
 		report = runDiscardPipeline(aliceEv, bobEv, *windowPS, g, matrixLabel, *chunkSize, *keystoreDir, *jsonOut)
 		report.SearchFitness = searchFitness
@@ -734,4 +748,52 @@ func toFiniteKeyJSON(r *qkd.FiniteKeyReport) *finiteKeyJSON {
 		return nil
 	}
 	return &finiteKeyJSON{PhaseErrorPoint: r.PhiPoint, PhaseErrorBound: r.Phi, TagBits: r.TagBits, Verified: r.Verified, SurvivingBits: r.Bits, ChargedBits: r.LeakedBits}
+}
+
+func runLDPC5GPipeline(aliceEv, bobEv []qkd.DetectionEvent, windowPS int64, sampleFraction float64, chunkSize, timingBins int, keystoreDir string, jsonOut bool) jsonReport {
+	pool, err := pyec.Start(0)
+	if err != nil {
+		fail(jsonOut, "%v", err)
+	}
+	defer pool.Close()
+	cfg := qkd.LDPC5GRunConfig{Backend: pool, CoincidenceWindowPS: windowPS, SampleFraction: sampleFraction, Seed: 1,
+		ChunkSize: chunkSize, TimingBins: timingBins, Asymptotic: keyOpts.asymptotic, FiniteKey: keyOpts.finite, ExpectedQBER: keyOpts.expectedQBER}
+	if keystoreDir != "" {
+		cfg.KeyAlignBits = kms.ETSI014KeySizeBits
+	}
+	t0 := time.Now()
+	res, err := qkd.RunLDPC5G(aliceEv, bobEv, cfg)
+	elapsed := time.Since(t0)
+	if err != nil {
+		fail(jsonOut, "pipeline error: %v", err)
+	}
+	cv := res.CRCVerify
+	rate := 0.0
+	if len(cv.SurvivingAlice) > 0 {
+		rate = float64(len(res.FinalKeyBits)) / float64(len(cv.SurvivingAlice))
+	}
+	if !jsonOut {
+		section("(1): sifting")
+		field("Sifted bits", "%d", res.SiftedBits)
+		section("(4 before 2/3): QBER from a sacrificed public sample")
+		field("Sample bits", "%d", res.QBER.SampleBits)
+		field("QBER estimate", "%.4f", res.QBER.QBER)
+		section("(2): 5G NR LDPC, blind reconciliation")
+		field("Code", "base graph 1, %d rows, %d key bits per frame", res.LDPC.M, res.LDPC.FrameKeyBits)
+		field("Frames", "%d (%d failed), %d attempts", res.LDPC.Frames, res.LDPC.Failed, res.LDPC.Attempts)
+		field("Bits corrected toward Alice", "%d", res.LDPC.BitsCorrected)
+		field("Bits leaked", "%d", res.LDPC.LeakedBits)
+		printTimingReport(res.Timing)
+		printFiniteKey(res.FiniteKey)
+		printCRCAndKey(cv, chunkSize, res.QBER.QBER, res.LeakedBits, res.FinalKeyBits, res.FinalKeyBytes, rate)
+	}
+	keysSaved := saveToKeystore(keystoreDir, res.FinalKeyBytes, jsonOut)
+	return jsonReport{
+		SiftedBits: res.SiftedBits, LDPC5GRows: res.LDPC.M, LDPC5GFrames: res.LDPC.Frames, LDPC5GAttempts: res.LDPC.Attempts,
+		LDPC5GFailed: res.LDPC.Failed, LDPC5GCorrected: res.LDPC.BitsCorrected, LDPC5GLeakedBits: res.LDPC.LeakedBits,
+		TimingFlatBound: timingFlat(res.Timing), TimingSoftBound: timingSoft(res.Timing), FiniteKey: toFiniteKeyJSON(res.FiniteKey),
+		ChunksTotal: cv.ChunksTotal, ChunksKept: cv.ChunksKept, ChunksDropped: cv.ChunksDropped, BitsLeakedCRC: cv.LeakedBits,
+		QBER: res.QBER.QBER, LeakedBitsTotal: res.LeakedBits, FinalKeyBits: len(res.FinalKeyBits), CompressionRate: rate,
+		KeysSaved: keysSaved, ElapsedMS: elapsed.Milliseconds(),
+	}
 }

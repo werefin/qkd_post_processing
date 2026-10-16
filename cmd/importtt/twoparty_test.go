@@ -1,0 +1,117 @@
+package main
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"qkd_post_processing/pyec"
+	"qkd_post_processing/qkd"
+)
+
+// splitRecording turns one joint recording directory into what each site really holds: Alice
+// her own files, Bob his own files plus Alice's announcement and a report naming it input A
+func splitRecording(t *testing.T, joint string) (aliceDir, bobDir string) {
+	t.Helper()
+	tsA, tsB, report, err := findRecording(joint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliceDir, bobDir = t.TempDir(), t.TempDir()
+	link := func(src, dir string) {
+		abs, _ := filepath.Abs(src)
+		if err := os.Symlink(abs, filepath.Join(dir, filepath.Base(src))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link(tsA, aliceDir)
+	link(channelPath(tsA), aliceDir)
+	link(tsB, bobDir)
+	link(channelPath(tsB), bobDir)
+	if _, err := runAliceRole(twoPartyOptions{role: "alice", dirs: []string{aliceDir}, exportDir: bobDir, mpWindowPS: 2000}); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(mustGlob(t, filepath.Join(joint, "*_coincidence.json")))
+	var m map[string]any
+	json.Unmarshal(raw, &m)
+	m["input_a"] = strings.TrimSuffix(filepath.Base(tsA), "_timestamp_sequence.npy") + publicTSSuffix
+	m["input_b"] = filepath.Base(tsB)
+	out, _ := json.Marshal(m)
+	if err := os.WriteFile(filepath.Join(bobDir, "pair_coincidence.json"), out, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = report
+	return aliceDir, bobDir
+}
+
+func mustGlob(t *testing.T, pattern string) string {
+	t.Helper()
+	m, _ := filepath.Glob(pattern)
+	if len(m) != 1 {
+		t.Fatalf("%s: %d matches", pattern, len(m))
+	}
+	return m[0]
+}
+
+// runRoles runs Alice's and Bob's roles at once over an in-process connection
+func runRoles(t *testing.T, aliceDirs, bobDirs []string, cfg qkd.TwoPartyConfig, keysA, keysB string) (a, b twoPartyJSON) {
+	t.Helper()
+	ca, cb := qkd.PipeConns()
+	base := twoPartyOptions{mpWindowPS: 2000, filter: true, cfg: cfg}
+	oa, ob := base, base
+	oa.role, oa.dirs, oa.keystore, oa.dial = "alice", aliceDirs, keysA, func() (qkd.Conn, error) { return ca, nil }
+	ob.role, ob.dirs, ob.keystore, ob.dial = "bob", bobDirs, keysB, func() (qkd.Conn, error) { return cb, nil }
+	errA := make(chan error, 1)
+	go func() {
+		var err error
+		a, err = runAliceRole(oa)
+		errA <- err
+	}()
+	b, errB := runBobRole(ob)
+	if err := <-errA; err != nil || errB != nil {
+		t.Fatalf("alice %v, bob %v", err, errB)
+	}
+	return a, b
+}
+
+// TestTwoPartyRolesOnRealRecording: on the Nitra-Bratislava example, each site using only its own
+// files reaches the same sifted pairs and QBER as the joint pipeline does
+func TestTwoPartyRolesOnRealRecording(t *testing.T) {
+	joint := filepath.Join("..", "..", "acquisition", "example", "20260909")
+	aliceDir, bobDir := splitRecording(t, joint)
+	cfg := qkd.TwoPartyConfig{RateMargin: 0.02, ListSize: 8, ChunkSize: 1024, SampleSeed: 11}
+	a, b := runRoles(t, []string{aliceDir}, []string{bobDir}, cfg, "", "")
+
+	rec, err := loadRecording(joint, 2000, 0, true, qkd.DriftConfig{}, qkd.WindowConfig{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sifted := len(qkd.Sift(rec.alice, rec.bob, rec.filter.WindowPS))
+	if a.SiftedBits != sifted || b.SiftedBits != sifted || a.QBER != b.QBER || a.AnnouncementDigest != b.AnnouncementDigest {
+		t.Fatalf("joint %d sifted; alice %+v; bob %+v", sifted, a, b)
+	}
+	if b.FilterWindowPS != rec.filter.WindowPS {
+		t.Fatalf("Bob's window %d, joint %d", b.FilterWindowPS, rec.filter.WindowPS)
+	}
+	t.Logf("%d sifted, QBER %.3f, window +-%d ps, key %d bits (10 s is too short for a finite key)", a.SiftedBits, a.QBER, b.FilterWindowPS, a.FinalKeyBits)
+}
+
+// TestTwoPartyRolesLDPC5GOnExample: the default method on the Nitra-Bratislava example, each site
+// with only its own files: same pairs, same QBER, same disclosure on both sides, every error corrected
+func TestTwoPartyRolesLDPC5GOnExample(t *testing.T) {
+	pool, err := pyec.Start(2)
+	if err != nil {
+		t.Skipf("5G NR LDPC service unavailable: %v", err)
+	}
+	defer pool.Close()
+	aliceDir, bobDir := splitRecording(t, filepath.Join("..", "..", "acquisition", "example", "20260909"))
+	cfg := qkd.TwoPartyConfig{ChunkSize: 1024, SampleSeed: 11, Method: "ldpc5g", LDPC: pool}
+	a, b := runRoles(t, []string{aliceDir}, []string{bobDir}, cfg, "", "")
+	if a.SiftedBits != b.SiftedBits || a.QBER != b.QBER || a.LeakedBitsTotal != b.LeakedBitsTotal || a.LDPC5GFailed != 0 || b.ChunksKept != b.ChunksTotal {
+		t.Fatalf("alice %+v; bob %+v", a, b)
+	}
+	t.Logf("%d sifted, QBER %.3f, %d frames, %d attempts, %d bits disclosed for error correction, all chunks kept",
+		a.SiftedBits, a.QBER, a.LDPC5GFrames, a.LDPC5GAttempts, a.LDPC5GLeakedBits)
+}

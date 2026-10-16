@@ -46,6 +46,24 @@ func newKeyID() (string, error) {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
 }
 
+// SaveKeys256WithIDs is SaveKeys256 under key_IDs agreed with the peer, one per 256-bit chunk,
+// so both ends of a link store the same key under the same ID
+func SaveKeys256WithIDs(dir string, keyBytes []byte, ids []string) ([]StoredKey, error) {
+	n := len(keyBytes) / ETSI014KeySizeBytes
+	if len(ids) < n {
+		return nil, fmt.Errorf("save keys: %d key_IDs for %d keys", len(ids), n)
+	}
+	stored := make([]StoredKey, 0, n)
+	for i := range n {
+		sk, err := saveKeyAs(dir, ids[i], keyBytes[i*ETSI014KeySizeBytes:(i+1)*ETSI014KeySizeBytes])
+		if err != nil {
+			return stored, err
+		}
+		stored = append(stored, sk)
+	}
+	return stored, nil
+}
+
 // SaveKey assigns a fresh key_ID to keyBytes and writes it as <dir>/<key_ID>.json in the ETSI 014 key container format,
 // creating dir if it does not exist --> returns the stored record, key_ID included
 func SaveKey(dir string, keyBytes []byte) (StoredKey, error) {
@@ -53,12 +71,20 @@ func SaveKey(dir string, keyBytes []byte) (StoredKey, error) {
 	if err != nil {
 		return StoredKey{}, err
 	}
+	return saveKeyAs(dir, keyID, keyBytes)
+}
+
+// saveKeyAs writes one record under keyID, refusing to replace an existing one
+func saveKeyAs(dir, keyID string, keyBytes []byte) (StoredKey, error) {
+	if !validKeyID(keyID) {
+		return StoredKey{}, fmt.Errorf("save key: invalid key_ID %q", keyID)
+	}
 	stored := StoredKey{
 		KeyID: keyID,
 		Key:   base64.StdEncoding.EncodeToString(keyBytes),
 	}
 
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return StoredKey{}, fmt.Errorf("save key %s: %w", keyID, err)
 	}
 	data, err := json.MarshalIndent(stored, "", "  ")
@@ -66,7 +92,14 @@ func SaveKey(dir string, keyBytes []byte) (StoredKey, error) {
 		return StoredKey{}, fmt.Errorf("save key %s: %w", keyID, err)
 	}
 	// 0o600: key material, not group/world readable
-	if err := os.WriteFile(filepath.Join(dir, keyID+".json"), data, 0o600); err != nil {
+	f, err := os.OpenFile(filepath.Join(dir, keyID+".json"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err == nil {
+		_, err = f.Write(data)
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+	}
+	if err != nil {
 		return StoredKey{}, fmt.Errorf("save key %s: %w", keyID, err)
 	}
 	return stored, nil
@@ -88,3 +121,6 @@ func LoadKey(dir, keyID string) ([]byte, error) {
 	}
 	return keyBytes, nil
 }
+
+// NewKeyID is a fresh random key_ID, for keys minted outside SaveKey
+func NewKeyID() (string, error) { return newKeyID() }

@@ -38,7 +38,7 @@ class TimeTaggerStream():
     }
 
     TT_CONNECTION_PARAMS_DEFAULT = {
-        'tt_ip': '10.10.10.10',
+        'tt_ip': '192.0.2.10',
         'tt_port': 40_401,                # port used for the Customer Interface
         'auth_key_hex': '4444'            # key used for the Customer Interface
     }
@@ -310,7 +310,7 @@ if __name__ == '__main__':
 
     # Things you might want to configure
     tt_stream_connection_parameters = {
-        'tt_ip': '192.168.101.3',  # adapt to your network settings
+        'tt_ip': '192.0.2.10',  # adapt to your network settings
         'tt_port': 49_404,
         'auth_key_hex': '4444'
     }

@@ -1,106 +1,79 @@
-# Architecture
+### Architecture
 
-Scope: this document describes the structure of the codebase — module boundaries,
-data flow, exported APIs, and build/deployment mechanics. It is not a security
-proof. Where a module makes a cryptographic or correctness claim, this document
-states that claim in one sentence and defers the justification to
-`security_proof.md` (the companion document) and to `doc/finite_key_procedure.md`
-(the existing formal finite-key specification this repository already
-implements). Line numbers cite the source as read; they will drift as the code
-changes and should be treated as a pointer, not a guarantee.
+Scope: the structure of the codebase, meaning module boundaries, data flow, exported APIs and build and deployment mechanics. It is not a security proof: where a module makes a cryptographic or correctness claim, this document states it in one sentence and defers the justification to `security_proof.md`, `finite_key_procedure.md` and `key_management.md`. Code is cited by file and identifier, never by line.
 
-## 1. Overview
+### Overview
 
-This repository implements the classical post-processing chain for a BBM92
-entangled-photon QKD link, end to end: raw detector timestamps from two
-TimeTaggers go in, and finite-key-sized, privacy-amplified secret key material
-— stored under ETSI GS QKD 014-shaped key records and optionally relayed across
-multiple network hops — comes out. The chain has five logical stages (sifting,
-error reconciliation, error verification, QBER/phase-error estimation, privacy
-amplification), each implemented as a Go package-level function operating on
-plain `[]byte` bit arrays, composed by one of four top-level `Run*` orchestrator
-functions depending on which error-reconciliation strategy is selected. A
-separate key-management layer (`kms.go`, `cmd/kms-server`) and multi-hop relay
-layer (`relay.go`) sit downstream of the distilled key, independent of which
-reconciliation strategy produced it.
+The repository implements the classical post-processing chain of a BBM92 entangled-photon QKD link and the key management system of a network of such links. Raw detector timestamps from two TimeTaggers go in; finite-key-certified secret keys come out, land in the pool of the QKD link that produced them, and are handed to applications through ETSI GS QKD 014, directly between neighbors or relayed across trusted nodes.
 
-The Go module `qkd_post_processing` (Go 1.24, see `go.mod`) has three library
-packages: `qkd` (the post-processing chain), `kms` (key store) and `relay`
-(multi-hop relay, which imports `kms`); `qkd` imports neither. The one external
-dependency is `golang.org/x/crypto` (Poly1305). Python scripts under
-`acquisition/` are a separate, loosely-coupled layer: they produce the two
-`.npy`/`.json` recording files that `cmd/importtt` consumes, but the Go pipeline
-never calls into Python and vice versa.
+The chain has five logical stages (sifting, error reconciliation, error verification, phase-error estimation, privacy amplification), each a Go package-level function on plain `[]byte` bit arrays, composed by one of four `Run*` orchestrators according to the reconciliation strategy. Downstream of the distilled key and independent of how it was produced sit the key store (package `kms`), the relay (package `relay`) and the key management system itself (`cmd/kms`), one instance per network node.
 
-### 1.1 Top-level layout
+The Go module `qkd_post_processing` (Go 1.24, `go.mod`) has three library packages: `qkd` (the post-processing chain), `kms` (the encrypted key store) and `relay` (hop-by-hop key relay, which imports `kms`); `qkd` imports neither. The one external dependency is `golang.org/x/crypto` (Poly1305). The Python scripts under `acquisition/` are a separate layer that writes the recordings `cmd/importtt` reads; the Go code never calls Python and the reverse holds too, except that the dashboard runs both.
+
+### Top-level layout
 
 | Path | Purpose |
 |---|---|
-| `qkd/` | Package `qkd`: sifting, coincidence filtering, reconciliation, verification, QBER, finite-key privacy amplification, orchestrators, and their tests; `qkd/testdata/` holds fixed Toeplitz test vectors |
-| `kms/` | Package `kms`: lifecycle-managed key store, ETSI 014 key records, AES-256-GCM at rest |
-| `relay/` | Package `relay`: multi-hop trusted-node relay, one-time pad plus Poly1305 per hop |
-| `cmd/qkd_post_processing/` | CLI: runs the full chain over a simulated click stream |
-| `cmd/importtt/` | CLI: runs the full chain over real dual-TimeTagger recordings |
-| `cmd/tuneblock/` | CLI: sweeps step-2 generator matrices for the highest key rate on one fixed batch |
-| `cmd/kms-server/` | HTTP server: ETSI GS QKD 014 key delivery plus multi-hop relay, over mutual TLS |
-| `acquisition/` | Python: records from two TimeTaggers, finds their clock offset/skew, a standalone CHSH/Bell diagnostic |
-| `ui/` | Flask dashboard: run the pipeline, watch metrics, manage recordings/keystore, drive acquisition remotely |
-| `doc/` | This document, `security_proof.md`, the formal procedures, and `doc/references/` (vendor PDFs) |
-| `scripts/` | `test.sh` (build+vet+fmt+race+cross-arch), `tune-blocksize.sh`, `cross_check_toeplitz.py` |
-| `Dockerfile`, `Makefile`, `go.mod`, `go.sum` | Build: single image with the CLIs and Python dependencies; `make` targets; module definition |
+| `qkd/` | Package `qkd`: sifting, coincidence filtering, reconciliation, verification, QBER, finite-key privacy amplification, orchestrators and their tests; `qkd/testdata/` holds fixed Toeplitz test vectors |
+| `kms/` | Package `kms`: the encrypted key store with an in-memory index, single delivery, reservation for one SAE pair, wiping and tombstones; ETSI 014 key records |
+| `relay/` | Package `relay`: hop-by-hop relay, one-time pad plus Poly1305 per hop, each end of a link drawing only from its own half of the pool |
+| `cmd/kms/` | The key management system, one instance (KME) per node: ETSI GS QKD 014 for applications, pool coordination and relay between nodes, management, importer, audit trail |
+| `cmd/qkdpki/` | The network's private CA, per-node credential bundles, application certificates, and edits to the shared network description |
+| `cmd/importtt/` | CLI: the full chain over real dual-TimeTagger recordings |
+| `cmd/qkd_post_processing/` | CLI: the full chain over simulated click streams |
+| `cmd/tuneblock/` | CLI: compares block-discard generator matrices on one fixed batch |
+| `acquisition/` | Python: records from two TimeTaggers, finds their clock offset and skew, CHSH diagnostic |
+| `ec/` | `ldpc5g.py`: the matrix work of 5G NR LDPC on `py3gpp` (TS 38.212 matrices) and `ldpc` (belief propagation), as a service (`serve`) for the Go pipeline and on its own for `scripts/ec_compare.py` |
+| `pyec/` | Go client for that service: a pool of its processes implementing `qkd.LDPC5GBackend` |
+| `ui/` | Flask dashboard: every operation of one node through the browser |
+| `deploy/` | Per-node deployment: `compose.yml` (kms, app, ui containers), `Caddyfile`, `setup.sh`, `trust-ca.sh` |
+| `doc/` | This document and the formal procedures |
+| `references/` | Vendor documents, local only: ignored by git and Docker and refused by the pre-commit hook |
+| `scripts/` | `test.sh` (build, vet, fmt, race, cross-architecture), `tune-blocksize.sh`, `cross_check_toeplitz.py` |
+| `Dockerfile`, `Makefile`, `go.mod`, `go.sum` | Multi-stage build of the kms, app and tools images; `make` targets; module definition |
 
-## 2. Data flow
+### Data flow
 
 ```mermaid
 flowchart TD
     subgraph ACQ["Acquisition (Python, acquisition/)"]
         A1[Alice TimeTagger] --> A2["tt_record_dual.py<br/>records both sides, shared start barrier"]
         B1[Bob TimeTagger] --> A2
-        A2 --> A3["coincidence_peak.py<br/>finds clock offset + skew, writes *_coincidence.json"]
+        A2 --> A3["coincidence_peak.py<br/>clock offset and skew, *_coincidence.json"]
     end
 
     A3 --> P0["cmd/importtt<br/>(or simulated DetectionEvents from<br/>cmd/qkd_post_processing / library callers)"]
 
-    subgraph PIPE["Go pipeline (qkd_post_processing)"]
-        P0 --> P1["[1] Sift — sifting.go<br/>coincidence-window + basis matching"]
-        P1 -- "Run()" --> P2A["[2] BlockErrorDetect — blockdetect.go<br/>discard: drops any block whose parity disagrees"]
-        P1 -- "RunWinnow()" --> P2B["[2] WinnowReconcile — winnow.go<br/>corrects bits, nothing discarded up front"]
-        P1 -- "RunLDPC()" --> P2C["[2] LDPCReconcile — ldpc.go<br/>corrects bits, nothing discarded up front"]
-        P1 -- "RunPolar()" --> P2D["[2] PolarReconcile — polar.go<br/>SC/SCL decoding, nothing discarded up front"]
-        P2B -.->|"QBER from a sacrificed<br/>public sample"| Q0["siftAndSampleQBER — qber.go"]
-        P2C -.->|"QBER from a sacrificed<br/>public sample"| Q0
-        P2D -.->|"QBER from a sacrificed<br/>public sample"| Q0
-        P2A --> P3["[3] CRC verification — crcverify.go<br/>per-chunk CRC-16, drops disagreeing chunks"]
+    subgraph PIPE["Go pipeline (package qkd)"]
+        P0 --> PF["Coincidence filtering --> coincfilter.go<br/>drift removal, HWHM window"]
+        PF --> P1["Sift --> sifting.go<br/>coincidence window and basis matching"]
+        P1 -- "Run()" --> P2A["BlockErrorDetect --> blockdetect.go<br/>discard: drops any block whose parity disagrees"]
+        P1 -- "RunWinnow()" --> P2B["WinnowReconcile --> winnow.go"]
+        P1 -- "RunLDPC()" --> P2C["LDPCReconcile --> ldpc.go"]
+        P1 -- "RunPolar()" --> P2D["PolarReconcile --> polar.go<br/>rate-adaptive SC/SCL"]
+        P2B -.->|"QBER from a sacrificed<br/>public sample"| Q0["siftAndSampleQBER --> qber.go"]
+        P2C -.-> Q0
+        P2D -.-> Q0
+        P2A --> P3["CRC verification --> crcverify.go<br/>per-chunk CRC-16"]
         P2B --> P3
         P2C --> P3
         P2D --> P3
-        P3 --> P4["[4] QBER — qber.go<br/>CalculateQBER (discard) or siftAndSampleQBER (winnow/ldpc/polar)"]
+        P3 --> P4["Phase-error bound --> finitekey.go<br/>exact hypergeometric tail"]
         Q0 -.-> P4
-        P4 --> P5["[5] Privacy amplification<br/>privacyamp.go / finitekey.go<br/>Toeplitz hash of the error-free stream"]
+        P4 --> P5["Universal-hash check, then privacy amplification<br/>universalhash.go, finitekey.go, toeplitz.go"]
     end
 
-    P5 --> R["Result.FinalKeyBytes"]
-    R --> K1["keystore.go<br/>SaveKeys256 — local ETSI 014 JSON records, no server"]
-    R --> K2["kms.go<br/>KMS.Put / KMS.PutWithID — lifecycle-managed store"]
-    K2 --> K3["cmd/kms-server<br/>ETSI GS QKD 014 HTTP API<br/>(Get Key / Get Key with Key IDs / Get Status)"]
-    K3 --> K4["relay.go<br/>RelayNode.Originate / Handle<br/>optional multi-hop relay (section 5)"]
+    P5 --> K1["kms.SaveKeys256<br/>ETSI 014 records in the link's import folder"]
+    K1 --> K2["cmd/kms importer<br/>encrypts into that link's pool, deletes the plaintext"]
+    K2 --> K3["cmd/kms<br/>ETSI GS QKD 014 to applications"]
+    K3 --> K4["neighbor: pool key reserved at both ends<br/>distant node: relayed hop by hop (package relay)"]
 ```
 
-Everything up to and including step 5 operates on one side's own bits plus the
-peer's already-public metadata (parity bits, CRCs, syndromes); the two sides
-never exchange raw key bits. `pipeline.go`, `pipeline_winnow.go`,
-`pipeline_ldpc.go`, and `pipeline_polar.go` each provide a convenience orchestrator
-(`Run`, `RunWinnow`, `RunLDPC`, `RunPolar`) that runs both sides together for simulation/testing; real two-site
-operation uses the split, one-sided functions each stage exposes
-(`ComputeBlockParity`/`ReconcileBlocks`, `ComputeChunkCRC`/`ReconcileChunks`,
-etc.) so Alice and Bob can run as independent processes that never share raw
-bits.
+Everything up to privacy amplification operates on one side's own bits plus the peer's public metadata (parities, CRCs, syndromes, frozen values, hash tags); the two sides never exchange raw key bits. `pipeline.go`, `pipeline_winnow.go`, `pipeline_ldpc.go` and `pipeline_polar.go` each provide an orchestrator (`Run`, `RunWinnow`, `RunLDPC`, `RunPolar`) that runs both sides together; real two-site operation uses the split, one-sided functions each stage exposes (`ComputeBlockParity`/`ReconcileBlocks`, `ComputeChunkCRC`/`ReconcileChunks` and so on), so Alice and Bob can run as processes that never share raw bits. In production the two sides run apart: `qkd/twoparty.go` implements the protocol over public messages, `importtt -role alice|bob` runs each site's half on its own recording, and the dashboards exchange the messages through their KMSs (How a link's pools are filled in `key_management.md`).
 
-### 2.1 Selecting a reconciliation strategy
+### Selecting a reconciliation strategy
 
-The four strategies are mutually exclusive at the CLI level and structurally
-separate at the library level — there is no shared "strategy" interface; each
-is its own top-level function with its own `*RunConfig` / `*RunResult` pair:
+The four strategies are mutually exclusive at the CLI level and structurally separate at the library level --> there is no shared "strategy" interface; each is its own top-level function with its own `*RunConfig` / `*RunResult` pair:
 
 | Strategy | Entry point | Config type | Result type | CLI flag (`cmd/importtt`, `cmd/qkd_post_processing`) |
 |---|---|---|---|---|
@@ -109,30 +82,15 @@ is its own top-level function with its own `*RunConfig` / `*RunResult` pair:
 | LDPC belief propagation | `RunLDPC` (`pipeline_ldpc.go`) | `LDPCRunConfig` (`pipeline_ldpc.go`) | `LDPCRunResult` (`pipeline_ldpc.go`) | `-ldpc` |
 | Polar SC/SCL decoding | `RunPolar` (`pipeline_polar.go`) | `PolarRunConfig` (`pipeline_polar.go`) | `PolarRunResult` (`pipeline_polar.go`) | `-polar` |
 
-`cmd/importtt/main.go` and `cmd/qkd_post_processing/main.go` both
-enforce that `-winnow`, `-ldpc`, `-polar`, and `-search-matrix` are mutually exclusive at
-flag-parsing time; `main()` then dispatches to exactly one of
-`runDiscardPipeline` / `runWinnowPipeline` / `runLDPCPipeline` / `runPolarPipeline` (plus
-`runEpochedPipeline` in `cmd/importtt`, discard-only). The four strategies
-differ structurally, not just parametrically: discard measures QBER from the
-blocks it already dropped (`CalculateQBER`, `qber.go`), while Winnow, LDPC, and polar
-never discard anything up front, so they measure QBER from a separate
-sacrificed public sample (`siftAndSampleQBER`, `qber.go`) taken before
-reconciliation runs.
+`cmd/importtt/main.go` and `cmd/qkd_post_processing/main.go` both enforce that `-winnow`, `-ldpc`, `-polar`, and `-search-matrix` are mutually exclusive at flag-parsing time; `main()` then dispatches to exactly one of `runDiscardPipeline` / `runWinnowPipeline` / `runLDPCPipeline` / `runPolarPipeline` (plus `runEpochedPipeline` in `cmd/importtt`, discard-only). The four strategies differ structurally, not just parametrically: discard measures QBER from the blocks it already dropped (`CalculateQBER`, `qber.go`), while Winnow, LDPC, and polar never discard anything up front, so they measure QBER from a separate sacrificed public sample (`siftAndSampleQBER`, `qber.go`) taken before reconciliation runs.
 
-`doc/finite_key_procedure.md` section 2.3 records the formal recommendation on
-which to use: LDPC as the default (tuned per-link), Winnow as a fallback where
-belief propagation is judged too complex to operate, and discard only for its
-original role as the simplest, most conservative baseline — its reconciliation
-inefficiency is markedly worse than either corrector's.
+The Error correction section of `doc/finite_key_procedure.md` records which to use: rate-adaptive polar codes by default, LDPC as the alternative tuned per link, Winnow where belief propagation is judged too complex to operate, and discard only as the simplest, most conservative baseline, whose reconciliation inefficiency is markedly worse than any corrector's.
 
-## 3. Pipeline stages
+### Pipeline stages
 
-### 3.1 Sifting (`sifting.go`, `events.go`)
+### Sifting
 
-Purpose: from each side's raw detector clicks, find the subset that are
-basis-matched, unambiguous, single-photon coincidences — the only clicks that
-can contribute key bits.
+Purpose: from each side's raw detector clicks, find the subset that are basis-matched, unambiguous, single-photon coincidences --> the only clicks that can contribute key bits.
 
 | Identifier | Signature | File |
 |---|---|---|
@@ -145,28 +103,11 @@ can contribute key bits.
 | `SiftedBit` | `struct { AliceBit, BobBit byte; AliceIdx, BobIdx int }` | `sifting.go` |
 | `Sift` | `func Sift(aliceEvents, bobEvents []DetectionEvent, windowPS int64) []SiftedBit` | `sifting.go` |
 
-Inputs: two `[]DetectionEvent` (or, for the split one-sided form, two
-`[]PublicEvent`, since `MatchCoincidences` never needs the measured bit,
-only timestamp/basis/multi-photon-flag — that is the point of the
-`PublicEvent`/`DetectionEvent` split: classical-channel-safe metadata is a
-distinct type from the secret bit value). Output: `[]SiftedBit` (bit values,
-for simulation) or `[]MatchedPair` (indices only, for the real two-sided
-protocol). Selectable parameter: `windowPS`, the coincidence window in
-picoseconds (`-window` in both CLIs). A click flagged `MultiPhoton` is excluded
-from matching entirely; a timestamp with more than one basis-matched candidate
-on the peer side within the window is dropped on both sides as ambiguous
-(`bobCandidateCount`, `sifting.go`).
+Inputs: two `[]DetectionEvent` (or, for the split one-sided form, two `[]PublicEvent`, since `MatchCoincidences` never needs the measured bit, only timestamp/basis/multi-photon-flag --> that is the point of the `PublicEvent`/`DetectionEvent` split: classical-channel-safe metadata is a distinct type from the secret bit value). Output: `[]SiftedBit` (bit values, for simulation) or `[]MatchedPair` (indices only, for the real two-sided protocol). Selectable parameter: `windowPS`, the coincidence window in picoseconds (`-window` in both CLIs). A click flagged `MultiPhoton` is excluded from matching entirely; a timestamp with more than one basis-matched candidate on the peer side within the window is dropped on both sides as ambiguous (`bobCandidateCount`, `sifting.go`).
 
-### 3.1b Coincidence filtering (`coincfilter.go`, `detdelay.go`)
+### Coincidence filtering
 
-Runs in `cmd/importtt` after clock alignment and before sifting (`-filter`, on by
-default), specified in `doc/coincidence_filtering.md`. It prunes Bob clicks that
-can never coincide, tracks the coincidence peak in 250 ms slices from public
-timing only, removes its drift iteratively with linear extrapolation, and sets
-the window half-width to the HWHM of a Gaussian fit to the corrected peak. On
-the real recordings the window narrows from 1-10 ns to ±38-41 ps and QBER falls
-from 20-43% to 5.2-9.4%. `-dir a,b,c` pools recordings into one PA block;
-`-calibrate-delays` / `-detector-delays` measure and remove per-detector delays.
+Runs in `cmd/importtt` after clock alignment and before sifting (`-filter`, on by default), specified in `doc/coincidence_filtering.md`. It prunes Bob clicks that can never coincide, tracks the coincidence peak in 250 ms slices from public timing only, removes its drift iteratively with linear extrapolation, and sets the window half-width to the HWHM of a Gaussian fit to the corrected peak. On the real recordings the window narrows from 1-10 ns to ±38-41 ps and QBER falls from 20-43% to 5.2-9.4%. `-dir a,b,c` pools recordings into one PA block; `-calibrate-delays` / `-detector-delays` measure and remove per-detector delays.
 
 | Identifier | Signature | File |
 |---|---|---|
@@ -181,11 +122,9 @@ from 20-43% to 5.2-9.4%. `-dir a,b,c` pools recordings into one PA block;
 | `ApplyDetectorDelays` | `func ApplyDetectorDelays(events []DetectionEvent, delays [2][2]float64) []DetectionEvent` | `detdelay.go` |
 | `TimingLeakBits` | `func TimingLeakBits(peaks []PairPeak) float64` | `detdelay.go` |
 
-### 3.2 Error detection — block discard (`blockdetect.go`, `bch.go`, `matrixsearch.go`)
+### Error detection: block discard
 
-Purpose: detect (never correct) errors in `m`-bit blocks of the sifted key via
-a shared linear generator matrix; a block whose parity disagrees is dropped
-whole, both sides' copies, never patched bit by bit.
+Purpose: detect (never correct) errors in `m`-bit blocks of the sifted key via a shared linear generator matrix; a block whose parity disagrees is dropped whole, both sides' copies, never patched bit by bit.
 
 | Identifier | Signature | File |
 |---|---|---|
@@ -200,27 +139,11 @@ whole, both sides' copies, never patched bit by bit.
 | `GeneratorMatrixBCHt2` | `var GeneratorMatrixBCHt2 = mustBCHGeneratorMatrix(6, 2, 32)` | `bch.go` |
 | `SearchGeneratorMatrix` | `func SearchGeneratorMatrix(m, p int, aliceEvents, bobEvents []DetectionEvent, windowPS int64, chunkSize, iterations int, seed int64) (best GeneratorMatrix, bestKeyRate float64)` | `matrixsearch.go` |
 
-Inputs: each side's own bit array plus a shared `GeneratorMatrix` (parity bit
-`i` is the XOR of the message bits `G` row `i` selects: `P = M·Gᵀ` mod 2).
-Output: `BlockDetectResult` with `SurvivingAlice`/`SurvivingBob` (kept blocks,
-concatenated) and `DiscardedAlice`/`DiscardedBob` (dropped blocks, fed to
-`CalculateQBER`). Selectable parameters: which matrix (`-matrix bch`, the only
-built-in name; `GeneratorMatrixBCHt2` is a 32-bit-block, Hamming-weight-2
-guaranteed-detection BCH matrix) or `-search-matrix` (hill-climbs a matrix
-directly against key rate via `SearchGeneratorMatrix`, with its own
-`-search-m`/`-search-p`/`-search-iterations`/`-search-seed` and, critically,
-`-search-offline-err`/`-search-offline-n` — the search must run on independent
-proxy data, never the real session's own bits, or the matrix choice itself
-leaks information `PrivacyAmplify` never accounts for; both CLIs enforce this
-ordering automatically). `CascadeGeneratorMatrices` stacks two matrices'
-rows to catch collisions invisible to either alone.
+Inputs: each side's own bit array plus a shared `GeneratorMatrix` (parity bit `i` is the XOR of the message bits `G` row `i` selects: `P = M·Gᵀ` mod 2). Output: `BlockDetectResult` with `SurvivingAlice`/`SurvivingBob` (kept blocks, concatenated) and `DiscardedAlice`/`DiscardedBob` (dropped blocks, fed to `CalculateQBER`). Selectable parameters: which matrix (`-matrix bch`, the only built-in name; `GeneratorMatrixBCHt2` is a 32-bit-block, Hamming-weight-2 guaranteed-detection BCH matrix) or `-search-matrix` (hill-climbs a matrix directly against key rate via `SearchGeneratorMatrix`, with its own `-search-m`/`-search-p`/`-search-iterations`/`-search-seed` and, critically, `-search-offline-err`/`-search-offline-n` --> the search must run on independent proxy data, never the real session's own bits, or the matrix choice itself leaks information `PrivacyAmplify` never accounts for; both CLIs enforce this ordering automatically). `CascadeGeneratorMatrices` stacks two matrices' rows to catch collisions invisible to either alone.
 
-### 3.3 Error correction — Winnow (`winnow.go`, `pipeline_winnow.go`)
+### Error correction: Winnow
 
-Purpose: correct (not merely detect) single-bit errors per block via
-Hamming-code syndrome comparison, across one or more passes with different
-block sizes and permutations, trading more classical-channel leakage for not
-discarding correct bits alongside errors.
+Purpose: correct (not merely detect) single-bit errors per block via Hamming-code syndrome comparison, across one or more passes with different block sizes and permutations, trading more classical-channel leakage for not discarding correct bits alongside errors.
 
 | Identifier | Signature | File |
 |---|---|---|
@@ -232,24 +155,11 @@ discarding correct bits alongside errors.
 | `WinnowRunConfig` | `struct { ...; WinnowBlockSizes []int; Seed int64; ChunkSize int; KeyAlignBits int }` | `pipeline_winnow.go` |
 | `RunWinnow` | `func RunWinnow(aliceEvents, bobEvents []DetectionEvent, cfg WinnowRunConfig) (WinnowRunResult, error)` | `pipeline_winnow.go` |
 
-Inputs: sifted bits remaining after a random public sample is sacrificed for
-QBER (`siftAndSampleQBER`); a list of per-pass Hamming block sizes
-(`-winnow-blocks`, default `"25,50,100"`) and matching permutations (derived
-from `Seed`). Output: `WinnowRunResult` carrying `WinnowCorrections` (bits
-flipped), `WinnowLeakedBits` (syndrome bits disclosed), and the usual
-`FinalKeyBits`/`FinalKeyBytes`. Selectable parameters: `-winnow-blocks` (one
-Hamming block size per pass — larger blocks correct fewer, smaller errors leak
-fewer bits per pass; multiple passes with different permutations catch errors
-a single pass's one-error-per-block model misses), `-winnow-sample` (fraction
-of sifted bits sacrificed for the direct QBER sample, default 0.05). Winnow's
-one-error-per-block model can still miss a block with two or more errors; the
-subsequent CRC pass (3.5) catches most of what it misses.
+Inputs: sifted bits remaining after a random public sample is sacrificed for QBER (`siftAndSampleQBER`); a list of per-pass Hamming block sizes (`-winnow-blocks`, default `"25,50,100"`) and matching permutations (derived from `Seed`). Output: `WinnowRunResult` carrying `WinnowCorrections` (bits flipped), `WinnowLeakedBits` (syndrome bits disclosed), and the usual `FinalKeyBits`/`FinalKeyBytes`. Selectable parameters: `-winnow-blocks` (one Hamming block size per pass --> larger blocks correct fewer, smaller errors leak fewer bits per pass; multiple passes with different permutations catch errors a single pass's one-error-per-block model misses), `-winnow-sample` (fraction of sifted bits sacrificed for the direct QBER sample, default 0.05, overridden by the automatic sample size `-sample-auto` in finite-key mode). Winnow's one-error-per-block model can still miss a block with two or more errors; the CRC pass (Error verification, below) catches most of what it misses.
 
-### 3.4 Error correction — LDPC (`ldpc.go`, `pipeline_ldpc.go`)
+### Error correction: LDPC
 
-Purpose: correct errors via one LDPC syndrome reveal per block, decoded by
-normalized min-sum belief propagation, instead of Winnow's multi-pass
-syndrome exchange.
+Purpose: correct errors via one LDPC syndrome reveal per block, decoded by normalized min-sum belief propagation, instead of Winnow's multi-pass syndrome exchange.
 
 | Identifier | Signature | File |
 |---|---|---|
@@ -263,28 +173,11 @@ syndrome exchange.
 | `LDPCRunConfig` | `struct { ...; BlockLength int; ColWeight int; RowWeight int; MaxIterations int; Seed int64; ... }` | `pipeline_ldpc.go` |
 | `RunLDPC` | `func RunLDPC(aliceEvents, bobEvents []DetectionEvent, cfg LDPCRunConfig) (LDPCRunResult, error)` | `pipeline_ldpc.go` |
 
-Inputs: same QBER-sample-then-reconcile structure as Winnow. `BuildRegularLDPC`
-constructs a Gallager-style regular sparse parity-check matrix with 4-cycle
-avoidance up to a cost cap (`ldpcCycleAvoidanceMaxPairs`, `ldpc.go`);
-`BuildPEGLDPC` is an alternative Progressive Edge Growth construction that
-directly maximizes local girth (available as a library function; not wired to
-a CLI flag in either `cmd/importtt` or `cmd/qkd_post_processing`). Output:
-`LDPCRunResult` carrying `LDPCBlocks`/`LDPCConverged` (syndrome satisfied
-within the iteration cap) /`LDPCLeakedBits`. Selectable parameters:
-`-ldpc-block` (codeword length, 0 = one block spanning the whole remaining
-key), `-ldpc-wc`/`-ldpc-wr` (column/row weight; code rate is `1-wc/wr`, which
-`doc/finite_key_procedure.md` 2.3 recommends tuning comfortably — not
-marginally — below `1-h2(QBER)`, since a finite-degree regular code's real
-decoding threshold runs below the Shannon bound), `-ldpc-iterations` (belief
-propagation cap per block, 0 = default 50, `defaultLDPCMaxIterations`,
-`ldpc.go`), `-ldpc-sample` (QBER sample fraction, default 0.05).
+Inputs: same QBER-sample-then-reconcile structure as Winnow. `BuildRegularLDPC` constructs a Gallager-style regular sparse parity-check matrix with 4-cycle avoidance up to a cost cap (`ldpcCycleAvoidanceMaxPairs`, `ldpc.go`); `BuildPEGLDPC` is an alternative Progressive Edge Growth construction that directly maximizes local girth (available as a library function; not wired to a CLI flag in either `cmd/importtt` or `cmd/qkd_post_processing`). Output: `LDPCRunResult` carrying `LDPCBlocks`/`LDPCConverged` (syndrome satisfied within the iteration cap) /`LDPCLeakedBits`. Selectable parameters: `-ldpc-block` (codeword length, 0 = one block spanning the whole remaining key), `-ldpc-wc`/`-ldpc-wr` (column/row weight; code rate is `1-wc/wr`, which the Error correction section of `doc/finite_key_procedure.md` recommends tuning comfortably --> not marginally --> below `1-h2(QBER)`, since a finite-degree regular code's real decoding threshold runs below the Shannon bound), `-ldpc-iterations` (belief propagation cap per block, 0 = default 50, `defaultLDPCMaxIterations`, `ldpc.go`), `-ldpc-sample` (QBER sample fraction, default 0.05).
 
-### 3.4b Error correction — polar codes (`polar.go`, `pipeline_polar.go`)
+### Error correction: polar codes
 
-Purpose: correct errors with one disclosure per block and a single-pass,
-non-iterative decoder, following Arıkan (2009) and its QKD reconciliation use in
-Jouguet & Kunz-Jacques (2014), with successive-cancellation list (SCL) decoding
-per Tal & Vardy (2012) and its QKD evaluation in Yan et al. (2018).
+Purpose: correct errors with one disclosure per block and a single-pass, non-iterative decoder, following Arıkan (2009) and its QKD reconciliation use in Jouguet and Kunz-Jacques (2014), with successive-cancellation list (SCL) decoding per Tal and Vardy (2012) and its QKD evaluation in Yan et al. (2018).
 
 | Identifier | Signature | File |
 |---|---|---|
@@ -298,31 +191,20 @@ per Tal & Vardy (2012) and its QKD evaluation in Yan et al. (2018).
 | `PolarRunConfig` | `struct { ...; BlockLength int; RateMargin float64; ListSize int; Seed int64; ... }` | `pipeline_polar.go` |
 | `RunPolar` | `func RunPolar(aliceEvents, bobEvents []DetectionEvent, cfg PolarRunConfig) (PolarRunResult, error)` | `pipeline_polar.go` |
 
-**Protocol.** Each sifted bit is modelled as passing through a binary symmetric
-channel with crossover probability equal to the sampled QBER. Alice applies the
-polar transform $G_N = F^{\otimes n}$, $F = \begin{psmallmatrix}1&0\\1&1\end{psmallmatrix}$
-(no bit-reversal permutation, so the transform is its own inverse) to each
-$N$-bit block and discloses the values at the $N-K$ least reliable positions.
-Bob decodes from his own bits' channel LLRs plus those disclosed values, then
-applies the same transform to recover Alice's block. Leaked bits are exactly
-$N-K$ per block, the same role as LDPC's syndrome.
+**Protocol**: each sifted bit is modelled as passing through a binary symmetric channel with crossover probability equal to the sampled QBER.
 
-**Construction.** Positions are ranked by the Gaussian approximation
-(Trifonov 2012), started from the LLR mean of a BI-AWGN channel whose capacity
-equals the BSC's ($1-h_2(\mathrm{QBER})$). The simpler Bhattacharyya bound was
-measured to give a 2.3× higher block failure rate at $N=1024$ and is not used.
+Alice applies the polar transform $G_N = F^{\otimes n}$:
 
-**Decoding.** For $x = (T(u_1)\oplus T(u_2),\ T(u_2))$ the decoder recovers
-$u_1$ from $f(L_\text{left}, L_\text{right})$, re-encodes it, then recovers
-$u_2$ from $g(L_\text{left}, L_\text{right}, T(\hat u_1))$, recursively. $f$ is
-the min-sum approximation and the SCL path metric is the approximate LLR form of
-Balatsoukas-Stimming et al. (2015); list size 1 takes a zero-allocation
-plain-SC path. Selectable parameters: `-polar-n` (block length, a power of two,
-0 = largest covering the remaining key), `-polar-margin` (rate margin below
-$1-h_2(\mathrm{QBER})$, default 0.1), `-polar-list` (SCL list size $L$, default 8,
-1 = plain SC), `-polar-sample` (QBER sample fraction, default 0.05).
+$$F = \begin{pmatrix}1 & 0 \\ 1 & 1\end{pmatrix}
+$$
 
-**Measured behaviour** (`polar_test.go`, `bench_test.go`; one machine, indicative):
+(no bit-reversal permutation, so the transform is its own inverse) to each $N$-bit block and discloses the values at the $N-K$ least reliable positions. Bob decodes from his own bits' channel LLRs plus those disclosed values, then applies the same transform to recover Alice's block. Leaked bits are exactly $N-K$ per block, the same role as LDPC's syndrome.
+
+**Construction**: positions are ranked by the Gaussian approximation (Trifonov 2012), started from the LLR mean of a BI-AWGN channel whose capacity equals the BSC's ($1-h_2(\mathrm{QBER})$). The simpler Bhattacharyya bound was measured to give a 2.3× x higher block failure rate at $N=1024$ and is not used.
+
+**Decoding**: for $x = (T(u_1)\oplus T(u_2),\ T(u_2))$ the decoder recovers $u_1$ from $f(L_\text{left}, L_\text{right})$, re-encodes it, then recovers $u_2$ from $g(L_\text{left}, L_\text{right}, T(\hat u_1))$, recursively. $f$ is the min-sum approximation and the SCL path metric is the approximate LLR form of Balatsoukas-Stimming et al. (2015); list size 1 takes a zero-allocation plain-SC path. Selectable parameters: `-polar-n` (block length, a power of two, 0 = largest covering the remaining key), `-polar-margin` (starting rate margin below $1-h_2(\mathrm{QBER})$, default 0.02; a block whose hash fails is retried with the margin raised by 0.02, revealing only the extra frozen values), `-polar-list` (SCL list size $L$, default 8, 1 = plain SC), `-polar-sample` (QBER sample fraction, default 0.05).
+
+**Measured behaviour**:
 
 | Check | Result |
 |---|---|
@@ -331,24 +213,11 @@ $1-h_2(\mathrm{QBER})$, default 0.1), `-polar-list` (SCL list size $L$, default 
 | Block failure, $N=1024$, QBER 3%, rate 0.656 | SC 9.8%, SCL ($L=16$) 2.4% |
 | Decode time, $2^{20}$ bits, QBER 3%, rate 0.7 | LDPC 0.30 s, polar SC 0.13 s, polar SCL ($L=8$) 1.13 s |
 
-**Tradeoff, stated plainly.** Plain SC is faster than this codebase's LDPC
-decoder and has no non-convergence mode, but at short-to-moderate $N$ it fails
-more blocks than its rate suggests; SCL closes much of that gap at roughly $L$
-times SC's cost. A failed block is not silently accepted: it leaves residual
-errors that the CRC stage (3.5) drops. Systematic encoding and CRC-aided list
-decoding, both used in the literature, are not implemented.
+**Tradeoff**: Plain SC is faster than this codebase's LDPC decoder and has no non-convergence mode, but at short-to-moderate $N$ it fails more blocks than its rate suggests; SCL closes much of that gap at roughly $L$ times SC's cost. A failed block is not silently accepted: it leaves residual errors that the CRC stage drops. Systematic encoding and CRC-aided list decoding, both used in the literature, are not implemented.
 
-### 3.4c Timing-aware soft reconciliation (`softrecon.go`)
+### Timing-aware soft reconciliation
 
-An option on the LDPC and polar strategies (`TimingBins` in `LDPCRunConfig` /
-`PolarRunConfig`, CLI `-soft-bins`), specified formally in
-`doc/timing_aware_reconciliation.md`. Each sifted bit's public arrival-time
-offset $\Delta t$ selects its own error rate $q(\Delta t)$, estimated per bin from
-the sacrificed QBER sample, and the decoder starts from per-bit LLRs instead of
-one flat QBER. By Jensen's inequality the disclosure bound can only fall. LDPC
-discloses the same syndrome and converges more blocks; polar also builds each
-block's code and rate from its bits' $q_i$, so it discloses less. Privacy
-amplification is unchanged.
+An option on the LDPC and polar strategies (`TimingBins` in `LDPCRunConfig` / `PolarRunConfig`, CLI `-soft-bins`), specified formally in `doc/timing_aware_reconciliation.md`. Each sifted bit's public arrival-time offset $\Delta t$ selects its own error rate $q(\Delta t)$, estimated per bin from the sacrificed QBER sample, and the decoder starts from per-bit LLRs instead of one flat QBER. By Jensen's inequality the disclosure bound can only fall. LDPC discloses the same syndrome and converges more blocks; polar also builds each block's code and rate from its bits' $q_i$, so it discloses less. Privacy amplification is unchanged.
 
 | Identifier | Signature | File |
 |---|---|---|
@@ -360,11 +229,9 @@ amplification is unchanged.
 | `LDPCReconcileSoft` | `func LDPCReconcileSoft(h *LDPCMatrix, alice, bob []byte, q []float64, cfg LDPCDecodeConfig) (...)` | `softrecon.go` |
 | `TimingReport` | `struct { Model TimingErrorModel; SoftBound, FlatBound float64 }` | `softrecon.go` |
 
-### 3.5 Error verification (`crcverify.go`)
+### Error verification (`crcverify.go`)
 
-Purpose: a cheap, fast second check over the EC-surviving stream, to catch
-what step 2/3's own correction missed (a block whose decode converged to the
-wrong codeword, a two-error Winnow block, etc.).
+Purpose: a cheap, fast second check over the EC-surviving stream, to catch what error correction itself missed (a block whose decode converged to the wrong codeword, a two-error Winnow block, etc.).
 
 | Identifier | Signature | File |
 |---|---|---|
@@ -373,21 +240,11 @@ wrong codeword, a two-error Winnow block, etc.).
 | `ReconcileChunks` | `func ReconcileChunks(ownBits []byte, ownCRC, peerCRC []uint16, chunkSize int) ChunkReconcileResult` | `crcverify.go` |
 | `CRCVerify` | `func CRCVerify(alice, bob []byte, chunkSize int) CRCVerifyResult` | `crcverify.go` |
 
-Inputs: the EC-surviving bit stream, plus `chunkSize` in bits (`-chunk`).
-Algorithm: CRC-16/CCITT-FALSE (`crc16Poly = 0x1021`, `crcverify.go`) computed
-per chunk, 16 bits leaked per surviving chunk. Selectable parameter: `-chunk`
-— discard's default is 2048 bits; Winnow/LDPC need a much smaller value (the
-CLIs' help text suggests ~128) since without an upfront discard step, a large
-CRC chunk containing even one residual error discards far more good bits per
-catch. Claim (one sentence; see `doc/finite_key_procedure.md` section 2.4 and
-`security_proof.md` for the justification): CRC-16 alone bounds correctness
-only to about `2⁻¹⁶`, which is why `universalhash.go` (section 6) exists as a
-stronger check immediately before privacy amplification.
+Inputs: the EC-surviving bit stream, plus `chunkSize` in bits (`-chunk`). Algorithm: CRC-16/CCITT-FALSE (`crc16Poly = 0x1021`, `crcverify.go`) computed per chunk, 16 bits leaked per surviving chunk. Selectable parameter: `-chunk` --> discard's default is 2048 bits; Winnow/LDPC need a much smaller value (the CLIs' help text suggests ~128) since without an upfront discard step, a large CRC chunk containing even one residual error discards far more good bits per catch. Claim (one sentence; the Error verification and correctness section of `doc/finite_key_procedure.md` and `security_proof.md` give the justification): CRC-16 alone bounds correctness only to about `2⁻¹⁶`, which is why `universalhash.go` (see Finite-key sizing) exists as a stronger check immediately before privacy amplification.
 
-### 3.6 QBER estimation (`qber.go`)
+### QBER estimation (`qber.go`)
 
-Purpose: produce the single error-rate number that privacy amplification's
-Devetak-Winter / finite-key rate formula consumes.
+Purpose: produce the single error-rate number that privacy amplification's Devetak-Winter / finite-key rate formula consumes.
 
 | Identifier | Signature | File |
 |---|---|---|
@@ -395,19 +252,11 @@ Devetak-Winter / finite-key rate formula consumes.
 | `siftAndSampleQBER` (unexported) | `func siftAndSampleQBER(aliceEvents, bobEvents []DetectionEvent, windowPS int64, sampleFraction float64, seed int64) (siftedBits int, aliceRem, bobRem []byte, qber QBERResult)` | `qber.go` |
 | `CalculateQBER` | `func CalculateQBER(discardedAliceBlocks, discardedBobBlocks []byte, siftedBits int) QBERResult` | `qber.go` |
 
-Two distinct estimators, one per reconciliation family: `CalculateQBER` (used
-by `Run`) reads the error rate off the blocks block-discard already dropped,
-over the whole sifted key; `siftAndSampleQBER` (used by `RunWinnow`/`RunLDPC`)
-measures a direct, unbiased rate from a random public sample taken before
-reconciliation runs, since the residual error rate after correction is exactly
-what correction just tried to drive to zero and so cannot be used to estimate
-its own input error rate.
+Two distinct estimators, one per reconciliation family: `CalculateQBER` (used by `Run`) reads the error rate off the blocks block-discard already dropped, over the whole sifted key; `siftAndSampleQBER` (used by `RunWinnow`, `RunLDPC` and `RunPolar`) measures a direct, unbiased rate from a random public sample taken before reconciliation runs, since the residual error rate after correction is exactly what correction just tried to drive to zero and so cannot be used to estimate its own input error rate.
 
-### 3.7 Privacy amplification (`privacyamp.go`, `toeplitz.go`, `toeplitz_clmul_amd64.go`, `finitekey.go`)
+### Privacy amplification (`privacyamp.go`, `toeplitz.go`, `toeplitz_clmul_amd64.go`, `finitekey.go`)
 
-Purpose: compress the error-free, verified bit stream down to a length short
-enough that an eavesdropper's information about it is negligible, via a
-two-universal (Toeplitz) hash family.
+Purpose: compress the error-free, verified bit stream down to a length short enough that an eavesdropper's information about it is negligible, via a two-universal (Toeplitz) hash family.
 
 | Identifier | Signature | File |
 |---|---|---|
@@ -421,36 +270,14 @@ two-universal (Toeplitz) hash family.
 
 Two accounting modes, chosen per run:
 
-- **Finite-key (default for Winnow, LDPC and polar).** `distillFiniteKey`
-  bounds the phase error of the kept bits across bases (key bits of each basis
-  from the other basis's sample errors, plus the fluctuation term at
-  $\varepsilon_\text{PE}/2$, scaled up for CRC-dropped chunks), verifies the two
-  surviving strings with a $\log_2(1/\varepsilon_\text{cor})$-bit universal hash
-  (no key on mismatch), and hashes to `FiniteKeySecureKeyLength`'s length. CLI:
-  `-eps-sec` (default $10^{-10}$), `-eps-cor` (default $10^{-15}$).
-- **Asymptotic** (`-asymptotic`, and always for block discard, which has no
-  random sample): `SecureKeyLength` = $n(1 - h_2(\mathrm{QBER}))$ minus the bits
-  actually disclosed. The earlier form $n(1 - 2h_2)$ minus disclosure charged
-  error correction twice and was corrected.
+- **Finite-key (default for Winnow, LDPC and polar).** `distillFiniteKey` bounds the phase error of the kept bits across bases (key bits of each basis from the other basis's sample errors, plus the fluctuation term at $\varepsilon_\text{PE}/2$, scaled up for CRC-dropped chunks), verifies the two surviving strings with a $\log_2(1/\varepsilon_\text{cor})$-bit universal hash (no key on mismatch), and hashes to `FiniteKeySecureKeyLength`'s length. CLI: `-eps-sec` (default $10^{-10}$), `-eps-cor` (default $10^{-15}$).
+- **Asymptotic** (`-asymptotic`, and always for block discard, which has no random sample): `SecureKeyLength` = $n(1 - h_2(\mathrm{QBER}))$ minus the bits actually disclosed. The earlier form $n(1 - 2h_2)$ minus disclosure charged error correction twice and was corrected.
 
-A phase-error bound at or above $\tfrac12$ yields no key in both modes; the
-earlier clamp at 1 would have certified the whole block, since $h_2(1) = 0$.
-`toeplitzHashFast` dispatches to a hardware-CLMUL implementation
-(`toeplitzHashCLMUL`, `toeplitz_clmul_amd64.go`) on amd64 CPUs that support
-`PCLMULQDQ`, falling back to a POPCNT-based implementation
-(`toeplitzHashPopcount`, `toeplitz.go`) elsewhere; both compute the same
-function, verified against each other and against a reference `O(l·n)`
-implementation (`toeplitzHashNaive`, `toeplitz.go`, test-only) in
-`toeplitz_test.go`/`toeplitz_vectors_test.go`. Selectable parameter:
-`alignBits` / `-keystore` implies `KeyAlignBits = ETSI014KeySizeBits`
-(256) so a caller chunking the key into fixed-size records afterward never
-discards a partial-record remainder.
+A phase-error bound at or above $\tfrac12$ yields no key in both modes; the earlier clamp at 1 would have certified the whole block, since $h_2(1) = 0$. `toeplitzHashFast` dispatches to a hardware-CLMUL implementation (`toeplitzHashCLMUL`, `toeplitz_clmul_amd64.go`) on amd64 CPUs that support `PCLMULQDQ`, falling back to a POPCNT-based implementation (`toeplitzHashPopcount`, `toeplitz.go`) elsewhere; both compute the same function, verified against each other and against a reference `O(l·n)` implementation (`toeplitzHashNaive`, `toeplitz.go`, test-only) in `toeplitz_test.go`/`toeplitz_vectors_test.go`. Selectable parameter: `alignBits` / `-keystore` implies `KeyAlignBits = ETSI014KeySizeBits` (256) so a caller chunking the key into fixed-size records afterward never discards a partial-record remainder.
 
-### 3.8 Window and epoch reporting (`windowreport.go`, `epoch.go`)
+### Window and epoch reporting (`windowreport.go`, `epoch.go`)
 
-Purpose: two read-only / structural diagnostics layered on top of the chain
-above, neither of which feeds back into which bits become key material except
-as noted.
+Purpose: two read-only / structural diagnostics layered on top of the chain above, neither of which feeds back into which bits become key material except as noted.
 
 | Identifier | Signature | File |
 |---|---|---|
@@ -461,200 +288,11 @@ as noted.
 | `EpochedResult` | `struct { Epochs []EpochResult; FinalKeyBits, FinalKeyBytes []byte }` | `epoch.go` |
 | `RunEpoched` | `func RunEpoched(aliceEvents, bobEvents []DetectionEvent, cfg Config, epochPS int64) (EpochedResult, error)` | `epoch.go` |
 
-`ReportWindowQuality` (`cmd/importtt -window-report`) buckets already-sifted
-pairs by elapsed time and reports each bucket's own QBER — diagnostic only; it
-never selects which bits become key, precisely because doing so after seeing
-per-bucket QBER would be the kind of post-selection bias
-`doc/finite_key_procedure.md` section 2.5 and `EstimatePhaseError`'s
-`conservative` parameter exist to guard against. `RunEpoched`
-(`cmd/importtt -epoch-s`) is structural, not diagnostic: it reruns the entire
-discard-only `Run` chain independently once per fixed time epoch instead of
-pooling a whole recording into one QBER estimate, so a noisy epoch contributes
-zero key bits on its own account rather than being silently averaged in or
-excluded after the fact. It is wired to the block-discard path only —
-`cmd/importtt` refuses `-epoch-s` together with `-winnow`/`-ldpc`/`-search-matrix`
-(`cmd/importtt/main.go`).
+`ReportWindowQuality` (`cmd/importtt -window-report`) buckets already-sifted pairs by elapsed time and reports each bucket's own QBER --> diagnostic only; it never selects which bits become key, precisely because doing so after seeing per-bucket QBER would be the kind of post-selection bias the Phase-error estimation section of `doc/finite_key_procedure.md` and `EstimatePhaseError`'s `conservative` parameter exist to guard against. `RunEpoched` (`cmd/importtt -epoch-s`) is structural, not diagnostic: it reruns the entire discard-only `Run` chain independently once per fixed time epoch instead of pooling a whole recording into one QBER estimate, so a noisy epoch contributes zero key bits on its own account rather than being silently averaged in or excluded after the fact. It is wired to the block-discard path only --> `cmd/importtt` refuses `-epoch-s` together with `-winnow`/`-ldpc`/`-search-matrix` (`cmd/importtt/main.go`).
 
-## 4. Key management (KMS)
+### Finite-key sizing (`finitekey.go`)
 
-### 4.1 Data model (`kms.go`)
-
-`KMS` is one site's on-disk key store: one JSON file per `key_ID` under a
-directory, encrypted at rest.
-
-| Identifier | Signature / shape | File |
-|---|---|---|
-| `kmsRecord` (unexported) | `struct { KeyID string; Ciphertext string; CreatedAt, ExpiresAt time.Time; Consumed bool; ConsumedAt time.Time }` | `kms.go` |
-| `KMS` | `struct { dir string; masterKey []byte; mu sync.Mutex }` | `kms.go` |
-| `NewKMS` | `func NewKMS(dir string, masterKey []byte) (*KMS, error)` | `kms.go` |
-| `(*KMS) Put` | `func (k *KMS) Put(keyBytes []byte, ttl time.Duration) (keyID string, err error)` | `kms.go` |
-| `(*KMS) PutWithID` | `func (k *KMS) PutWithID(keyID string, keyBytes []byte, ttl time.Duration) error` | `kms.go` |
-| `(*KMS) Get` | `func (k *KMS) Get(keyID string) ([]byte, error)` | `kms.go` |
-| `DeliveredKey` | `struct { KeyID string; Key []byte }` | `kms.go` |
-| `(*KMS) GetNext` | `func (k *KMS) GetNext(n int) ([]DeliveredKey, error)` | `kms.go` |
-| `(*KMS) GetNextBytes` | `func (k *KMS) GetNextBytes(n int) ([]byte, []string, error)` | `kms.go` |
-| `(*KMS) GetBytes` | `func (k *KMS) GetBytes(ids []string, n int) ([]byte, error)` | `kms.go` |
-| `Status` | `struct { StoredKeyCount, ConsumedKeyCount, ExpiredKeyCount int }` | `kms.go` |
-| `(*KMS) Status` | `func (k *KMS) Status() (Status, error)` | `kms.go` |
-
-`Ciphertext` is `EncryptWithKey`'s AES-256-GCM output under the KMS's own
-32-byte `masterKey` (operator-provisioned, not QKD-derived — losing it loses
-every stored key, per `kms.go`'s doc comment). Record files are written
-`0o600`, the containing directory `0o700` (`NewKMS`, `kms.go`). Single-delivery
-semantics: `Get` marks a record `Consumed` on its first successful call
-(`kms.go`) and returns `ErrKeyConsumed` (`kms.go`) on any subsequent
-call for the same `key_ID`; `ErrKeyExpired` (`kms.go`) is returned once
-`time.Now()` passes `ExpiresAt`. `Put` mints a fresh UUIDv4 `key_ID`
-(`newKeyID`, `keystore.go`) for the "master" side that computed the key
-first; `PutWithID` lets the peer ("slave") store the same, already
-bit-identical bytes under that same `key_ID`, refusing if the ID already
-exists (`kms.go`) so one ID can never map to two different keys.
-`GetNextBytes`/`GetBytes` concatenate whole pool keys via repeated
-`GetNext(1)` calls until `n` bytes are collected, returning the ordered list
-of `key_ID`s consumed alongside the bytes — this is the primitive section 5's
-relay layer uses to draw a pad or MAC key of an arbitrary byte length from a
-pool of fixed-size QKD-derived keys. One claim (see `security_proof.md` for
-justification): `KMS` enforces that no two callers can ever receive the same
-key material, which is the delivery-side precondition any one-time-pad or
-MAC usage of that material depends on.
-
-Concurrency/deployment limitation stated in `kms.go`'s own doc comment,
-reproduced here for completeness: `KMS` is a single-writer-per-directory
-store; cross-process concurrent access to the same directory is not its
-supported model.
-
-### 4.2 `cmd/kms-server` HTTP API
-
-`cmd/kms-server/main.go` implements the subset of ETSI GS QKD 014 this
-project targets, one master/slave SAE pair per KMS instance, plus the multi-hop
-relay endpoints of `cmd/kms-server/relay.go` when `-node-id` is set.
-
-| Route | Method | Request | Response | Handler |
-|---|---|---|---|---|
-| `/api/v1/keys/{slave_sae_id}/enc_keys` | GET | query param `number` (optional, default `-default-count`) | `etsiKeyContainer{Keys: []etsiKey{KeyID, Key (base64)}}` | `handleEncKeys`, `main.go` |
-| `/api/v1/keys/{master_sae_id}/dec_keys` | POST | `etsiKeyIDsRequest{KeyIDs: []{KeyID}}` | `etsiKeyContainer` (same shape) | `handleDecKeys`, `main.go` |
-| `/api/v1/keys/{slave_sae_id}/status` | GET | — | `{source_KME_ID, target_KME_ID, master_SAE_ID, slave_SAE_ID, key_size, stored_key_count, consumed_key_count, expired_key_count, max_key_per_request}` | `handleStatus`, `main.go` |
-| `/api/v1/relay` | POST | `RelayedPacket` (JSON) from a neighbor | `relayResult{status, dest, key_ID}`, the destination's answer passed back | `handleRelay`, `relay.go` |
-| `/api/v1/relay/originate/{dest_node_id}` | POST | `{"key_bytes": base64}` from the local application | `relayResult`, with the destination's `key_ID` | `handleOriginate`, `relay.go` |
-
-`handleEncKeys` is ETSI 014's "Get Key": it calls `KMS.GetNext(n)` and returns
-up to `n` keys, fewer if the pool is short (not an error). `handleDecKeys` is
-"Get Key with Key IDs": it calls `KMS.Get(id)` once per requested ID, erroring
-the whole request on the first missing/consumed/expired one. `handleStatus"
-wraps `KMS.Status()`. All three mint no new state beyond what `kms.go` already
-tracks. Startup flags: `-dir`/`-master-key-file` (required; `-generate-master-key
-<path>` writes a fresh random 32-byte base64 key and exits), `-listen`
-(default `:8443`), `-tls-cert`/`-tls-key` (plain HTTP if omitted — logged as a
-`[WARN]`, development only), `-tls-ca` (mutual TLS: the server demands and
-verifies client certificates signed by this CA, and relay peers are verified
-against it; TLS 1.3), `-default-count`, `-source-kme-id`/`-target-kme-id`/
-`-master-sae-id`/`-slave-sae-id` (reported in `/status`). Relay flags:
-`-node-id`, `-relay-routes` (`dest=next_hop,...`), `-relay-peers`
-(`node=url,...`) and `-relay-pools` (`node=dir,...`, each a KMS directory holding
-that link's QKD key pool); relayed keys are delivered into the main store, so
-applications fetch them through the ETSI 014 endpoints. Tested end to end over
-HTTP and over mutual TLS, including refusal of a client without a certificate
-(`cmd/kms-server/relay_test.go`).
-
-## 5. Multi-hop relay (`relay.go`)
-
-Purpose: move already-distilled key material from the node that produced it to
-a non-adjacent destination node, hop by hop, re-encrypting and re-authenticating
-at every hop with fresh, QKD-derived, single-use key material — so an
-intermediate hop never needs to see the key material.
-
-| Identifier | Signature | File |
-|---|---|---|
-| `RelayXOR` | `func RelayXOR(payload, pad []byte) ([]byte, error)` | `relay.go` |
-| `RelayNode` | `struct { ID string; Local *KMS; HopPools map[string]*KMS; NextHop map[string]string }` | `relay.go` |
-| `NewRelayNode` | `func NewRelayNode(id string, local *KMS, hopPools map[string]*KMS, routes map[string]string) *RelayNode` | `relay.go` |
-| `RelayedPacket` | `struct { Dest, FromHop string; PadKeyIDs, MACKeyIDs []string; Cipher, Tag []byte }` | `relay.go` |
-| `(*RelayNode) Originate` | `func (n *RelayNode) Originate(dest string, keyBytes []byte) (RelayedPacket, error)` | `relay.go` |
-| `forward` (unexported) | `func (n *RelayNode) forward(hop, dest string, keyBytes []byte) (RelayedPacket, error)` | `relay.go` |
-| `(*RelayNode) Receive` | `func (n *RelayNode) Receive(pkt RelayedPacket) ([]byte, error)` | `relay.go` |
-| `(*RelayNode) Handle` | `func (n *RelayNode) Handle(pkt RelayedPacket) (delivered bool, keyID string, next RelayedPacket, err error)` | `relay.go` |
-
-`RelayNode` holds one `*KMS` per neighboring link (`HopPools`, each pool being
-that link's own QKD output, already delivered and sitting in its own `KMS`
-store) plus a destination-to-next-hop routing table (`NextHop`). `RelayedPacket`
-never carries key material directly, only `key_ID` references into the
-relevant hop's `KMS` pool (`PadKeyIDs`, `MACKeyIDs`) plus the ciphertext and
-MAC tag — so capturing a packet in flight reveals nothing without also
-compromising that specific hop's `KMS`.
-
-### 5.1 Per-hop cryptographic draw
-
-Each hop draws exactly two disjoint pieces of key material from the
-destination-hop's `KMS` pool, both via `GetNextBytes` (`kms.go`), both
-single-use:
-
-- a one-time pad, length equal to the payload (`forward`, `relay.go`),
-  consumed by `RelayXOR` (`relay.go`) — **secrecy** claim (one sentence; see
-  `security_proof.md` for justification): XOR under a uniform, single-use,
-  QKD-derived pad hides the plaintext from anyone without that specific pad.
-- a 32-byte Poly1305 key (`PolyMACKeyBytes`, `polymac.go`), consumed by
-  `ComputePolyMAC` (`polymac.go`) over `macMessage` (`relay.go` — the
-  length-prefixed encoding of `dest`, `fromHop`, `PadKeyIDs`, and the
-  ciphertext, i.e. everything an attacker could tamper with, not just the
-  ciphertext bytes alone) — **authenticity** claim (one sentence; see
-  `security_proof.md`): a single-use, QKD-derived Poly1305 key gives
-  information-theoretic authentication of that one message, detecting any
-  tampering with the ciphertext or its routing metadata in transit.
-
-Since the pad and MAC key are drawn from the same `HopPools[hop]` pool but as
-two separate `GetNextBytes` calls, `KMS`'s single-delivery enforcement
-(section 4.1) is exactly what guarantees they are disjoint, never-reused key
-material — the relay layer's security properties are built directly on the
-KMS layer's delivery guarantee, not independent of it.
-
-### 5.2 Call sequence across a multi-hop path
-
-```mermaid
-sequenceDiagram
-    participant A as A (origin)
-    participant B as B (intermediate)
-    participant C as C (destination)
-
-    A->>A: Originate(dest="C", keyBytes)
-    A->>A: forward(hop="B", ...)<br/>consumes 1 pad + 1 MAC key from A.HopPools["B"]
-    A->>B: POST /api/v1/relay (pkt1)
-    B->>B: Handle(pkt1) -> Receive(pkt1)
-    Note over B: verify MAC first (fail closed),<br/>then XOR-decrypt with B.HopPools["A"]
-    Note over B: pkt1.Dest ("C") != B.ID
-    B->>B: forward(hop="C", ...)<br/>consumes 1 pad + 1 MAC key from B.HopPools["C"]
-    B->>C: POST /api/v1/relay (pkt2)
-    C->>C: Handle(pkt2) -> Receive(pkt2)
-    Note over C: verify MAC, then XOR-decrypt<br/>with C.HopPools["B"]
-    Note over C: pkt2.Dest ("C") == C.ID
-    C->>C: Local.Put(keyBytes, ttl)
-    Note over C: returns (delivered=true, keyID, ...)
-```
-
-```mermaid
-graph LR
-    A((A)) <-->|HopPools AB| B((B))
-    B <-->|HopPools BC| C((C))
-```
-
-`Originate` (`relay.go`) is the only entry point an application calls
-directly; it looks up the first hop from `NextHop[dest]` and calls `forward`.
-`Handle` (`relay.go`) is what every receiving node calls on an inbound
-`RelayedPacket`: it always calls `Receive` first — which verifies the MAC
-before touching the ciphertext at all, fail-closed (`relay.go`'s
-comment: an invalid tag is refused, never decrypted) — then either delivers
-locally via `Local.Put` (if `pkt.Dest == n.ID`) or re-`forward`s toward the
-next hop. Each hop re-encrypts and re-authenticates from scratch with that
-hop's own fresh key draw; no ciphertext or tag survives past the node that
-produced it. At the HTTP layer (`cmd/kms-server/relay.go`), `handleOriginate`
-and `handleRelay` drive this sequence over the network (section 4.2).
-
-## 6. Finite-key sizing (`finitekey.go`)
-
-`finitekey.go` is the non-asymptotic replacement for `SecureKeyLength`
-(`privacyamp.go`); `doc/finite_key_procedure.md` is the authoritative,
-formal procedure this module implements — this section describes the Go API
-surface only, not the derivation. Do not treat anything below as re-deriving
-or superseding that document or `security_proof.md`.
+`finitekey.go` is the non-asymptotic replacement for `SecureKeyLength` (`privacyamp.go`); `doc/finite_key_procedure.md` is the authoritative, formal procedure this module implements --> this section describes the Go API surface only, not the derivation. Do not treat anything below as re-deriving or superseding that document or `security_proof.md`.
 
 | Identifier | Signature | File | Operational meaning of its parameters |
 |---|---|---|---|
@@ -664,100 +302,131 @@ or superseding that document or `security_proof.md`.
 | `SecurityBudget` | `struct { EpsPE, EpsPA, EpsCor float64 }` | `finitekey.go` | the three composable security parameters this procedure tracks per PA block |
 | `SplitSecurityBudget` | `func SplitSecurityBudget(epsSec, epsCor float64) SecurityBudget` | `finitekey.go` | splits a target total secrecy failure probability `epsSec` into `EpsPE`/`EpsPA` (each `epsSec/3`) while keeping correctness (`epsCor`) tracked separately, per the procedure's own composition convention |
 
-Use `conservative=true` in `EstimatePhaseError` unless and until bit and phase
-errors have been confirmed independent for the specific detector/source pair
-in use — this is an explicit open item in `doc/finite_key_procedure.md`
-section 2.5, not something either this module or this document resolves on
-its own. See `doc/finite_key_procedure.md` for the full procedure, including
-recommended parameter values, PA block-size guidance, and the universal-hash
-correctness check (`universalhash.go`, used ahead of this stage — see section
-3.5's forward reference) that this finite-key accounting depends on.
+Use `conservative=true` in `EstimatePhaseError` unless and until bit and phase errors have been confirmed independent for the specific detector/source pair in use --> this is an explicit open item in the Phase-error estimation section of `doc/finite_key_procedure.md`, not something either this module or this document resolves on its own. See `doc/finite_key_procedure.md` for the full procedure, including recommended parameter values, PA block-size guidance, and the universal-hash correctness check (`universalhash.go`, run just before this stage) that this finite-key accounting depends on.
 
-## 7. Build, test, and deployment
+### Key store (package `kms`)
 
-### 7.1 Makefile targets (`Makefile`)
+`KMS` is one encrypted store: one JSON record per `key_ID` in a directory, indexed in memory when the store opens, so every lookup, draw and status call reads the index rather than the disk. A node has several: its delivery store (keys reserved for application pairs) and one pool per QKD link.
+
+| Identifier | Signature or shape | File |
+|---|---|---|
+| `kmsRecord` (unexported) | `struct { KeyID, Ciphertext string; CreatedAt, ExpiresAt time.Time; Consumed bool; ConsumedAt time.Time; MasterSAE, SlaveSAE string }` | `kms.go` |
+| `NewKMS` | `func NewKMS(dir string, masterKey []byte) (*KMS, error)` | `kms.go` |
+| `(*KMS) Put`, `PutWithID` | `func (k *KMS) PutWithID(keyID string, keyBytes []byte, ttl time.Duration) error` | `kms.go` |
+| `(*KMS) PutReserved` | `func (k *KMS) PutReserved(keyID string, keyBytes []byte, master, slave string, ttl time.Duration) error` | `kms.go` |
+| `(*KMS) Get`, `GetReserved`, `CheckReserved` | `func (k *KMS) GetReserved(keyID, master, slave string) ([]byte, error)` | `kms.go` |
+| `(*KMS) GetNext`, `GetNextMatching` | `func (k *KMS) GetNextMatching(n int, match func(string) bool) ([]DeliveredKey, error)` | `kms.go` |
+| `(*KMS) GetNextBytes`, `GetNextBytesMatching` | `func (k *KMS) GetNextBytesMatching(n int, match func(string) bool) ([]byte, []string, error)` | `kms.go` |
+| `(*KMS) GetBytes` | `func (k *KMS) GetBytes(ids []string, n int) ([]byte, error)` | `kms.go` |
+| `(*KMS) Status`, `CountAvailable`, `AvailableIDs` | counts and IDs only, never key material | `kms.go` |
+| `(*KMS) Sweep` | `func (k *KMS) Sweep() (int, error)` | `kms.go` |
+| `OriginatorOf` | `func OriginatorOf(self, peer string) func(string) bool` | `kms.go` |
+| `SaveKeys256`, `SaveKey`, `LoadKey`, `NewKeyID` | plaintext ETSI 014 records, the pipeline's output format | `keystore.go` |
+| `EncryptWithKey`, `DecryptWithKey` | AES-256-GCM with an HKDF-SHA256-derived key | `encryption.go` |
+
+Records are AES-256-GCM under the node's 32-byte master key, written atomically (temporary file, sync, rename) with mode `0o600` in a `0o700` directory. Delivery is single: taking a key wipes its ciphertext from disk and leaves a tombstone, `Sweep` does the same for expired keys, and a tombstoned `key_ID` can never be stored again. A key stored with `PutReserved` is invisible to every draw and goes only to its own master and slave SAE pair. `GetBytes` checks every listed ID before consuming any, so a bad list consumes nothing, and `GetNextBytesMatching` consumes nothing when the pool cannot cover the request. `OriginatorOf` splits a link's pool between its two ends by the parity of the first hex digit of each `key_ID`; the two ends' filters are exact complements, so no pool key is ever drawn by both.
+
+### The key management system (`cmd/kms`)
+
+One instance per node, the node's KME. It reads the network description every node shares (`network.json`: nodes and their KME URLs, QKD links, and the home node of every application), derives its neighbors and shortest-path routes from it (`nextHops`, breadth-first, ties to the alphabetically first neighbor), and opens `local/` plus `pools/<neighbor>/` under its data directory. `key_management.md` specifies the protocols; this section lists the surface.
+
+| Route | Caller | Handler, file | Does |
+|---|---|---|---|
+| `GET /api/v1/keys/{slave}/status` | SAE of this node | `handleStatus`, `etsi.go` | ETSI Get Status for the pair, with the count deliverable now |
+| `GET` or `POST /api/v1/keys/{slave}/enc_keys` | SAE of this node | `handleEncKeys`, `etsi.go` | ETSI Get Key: up to 128 keys, sizes multiples of 256 bits |
+| `GET` or `POST /api/v1/keys/{master}/dec_keys` | SAE of this node | `handleDecKeys`, `etsi.go` | ETSI Get Key with Key IDs: every ID checked before any is delivered |
+| `POST /kme/v1/reserve` | neighbor KME | `handleReserve`, `relay.go` | holds named pool keys of the sender's half for one SAE pair |
+| `POST /kme/v1/relay` | the neighbor named in the packet | `handleRelay`, `relay.go` | authenticates, decrypts, stores (destination) or forwards |
+| `GET /kme/v1/node` | any KME, or this node's admin | `handleNode`, `node.go` | counts per store and link; `?probe=1` (admin) checks every neighbor |
+| `GET /kme/v1/network`, `/kme/v1/audit` | this node's admin | `handleNetwork`, `handleAudit`, `node.go` | the network description and routes; the newest audit events |
+| `POST /kme/v1/pp/send`, `GET /kme/v1/pp/recv`, `GET /kme/v1/pp/sessions` | this node's admin | `mailbox.go` | two-party post-processing messages to and from a neighbor's dashboard |
+| `POST /kme/v1/pp/inbox` | neighbor KME | `handlePPInbox`, `mailbox.go` | queues a neighbor's post-processing message |
+
+Callers are identified by their client certificate alone: the organizational unit gives the role (`kme`, `sae` or `admin`) and the common name the ID, so an application certificate can never act as a node, a node never as an application, and a dashboard never as its node. Every answer from a peer is checked to come from the node it was sent to (`kmePost`, `relay.go`). Requests are capped at 1 MiB, post-processing messages at 128 MiB. Without `-tls-cert`, `-tls-key` and `-tls-ca` the server refuses to start unless `-insecure-plain-http` is given, which takes identities from headers and exists for development only.
+
+```mermaid
+sequenceDiagram
+    participant S1 as SAE alice (node A)
+    participant A as KME A
+    participant B as KME B
+    participant S2 as SAE bob (node B)
+    S1->>A: GET /api/v1/keys/bob/enc_keys
+    Note over A: bob's home is B, a neighbor
+    A->>A: take keys from A's half of pool A-B
+    A->>B: POST /kme/v1/reserve (key_ID, pool key IDs, alice, bob)
+    Note over B: checks the IDs are A's half and unused,<br/>moves them into local/ reserved for alice-bob
+    B-->>A: reserved
+    A-->>S1: keys and key_IDs
+    S1-->>S2: key_IDs, over the application's own channel
+    S2->>B: POST /api/v1/keys/alice/dec_keys
+    B-->>S2: the same keys, once
+```
+
+For a slave whose home is not a neighbor, `relay.RelayNode.OriginateFromPool` takes the key from the master's half of the first link's pool and sends the first hop only its key_IDs, then `POST /kme/v1/relay` carries it hop by hop; the destination stores it reserved for the pair and answers with the `key_ID` the origin chose, and only then does the origin hand the key out. If the peer does not confirm, the keys already taken are destroyed and logged as burned, never delivered. `importKeys` (`node.go`) moves settled plaintext records from `<import-root>/<neighbor>/` into that link's pool every two seconds and deletes each file once it is stored encrypted; `runSweeper` wipes expired material every ten minutes; `auditLog` (`audit.go`) appends one JSON line per key event, with key and SAE IDs only.
+
+### Relay (package `relay`)
+
+| Identifier | Signature | File |
+|---|---|---|
+| `RelayNode` | `struct { ID string; Local *kms.KMS; HopPools map[string]*kms.KMS; NextHop map[string]string }` | `relay.go` |
+| `RelayedPacket` | `struct { Dest, FromHop, Origin, KeyID, MasterSAE, SlaveSAE string; PadKeyIDs, MACKeyIDs []string; Cipher, Tag []byte }` | `relay.go` |
+| `(*RelayNode) Originate` | `func (n *RelayNode) Originate(dest, keyID, master, slave string, keyBytes []byte) (RelayedPacket, error)` | `relay.go` |
+| `(*RelayNode) Receive`, `Handle` | `func (n *RelayNode) Handle(pkt RelayedPacket) (delivered bool, keyID string, next RelayedPacket, err error)` | `relay.go` |
+| `RelayXOR` | `func RelayXOR(payload, pad []byte) ([]byte, error)` | `relay.go` |
+| `ComputePolyMAC`, `VerifyPolyMAC` | Poly1305 under a single-use 32-byte key, constant-time comparison | `polymac.go` |
+
+Each hop takes the pad and the MAC key in one draw from its own half of the pool shared with the next hop (`forward`), so a short pool consumes nothing. The MAC covers every field an attacker could change, destination, sender, origin, end-to-end `key_ID`, SAE pair, pad key IDs and ciphertext, each length-prefixed (`macMessage`). `Receive` refuses a packet whose pad or MAC keys come from the receiver's own half before consuming anything, verifies the tag before decrypting, and wipes pad and key buffers after use. A packet carries key IDs, never key material, and an intermediate node keeps nothing once it has forwarded.
+
+### Build, test and deployment
+
+### Makefile targets (`Makefile`)
 
 | Target | Command | Purpose |
 |---|---|---|
 | `build` | `go build ./...` | compile everything |
-| `test` | `go test ./... -v` | run the Go test suite |
-| `test-all` | `./scripts/test.sh` | build+vet+fmt+race tests+cross-arch build |
-| `bench` | `go test -run '^$' -bench . -benchmem ./...` | run benchmarks only |
-| `tune` | `./scripts/tune-blocksize.sh` | sweep step-2 block size for the highest key rate |
-| `run` | `go run ./cmd/qkd_post_processing -n 300000 -err 0.005 -chunk 3000` | demo run with sane defaults |
-| `vet` | `go vet ./...` | static analysis |
-| `fmt` | `gofmt -l .` (fails if anything unformatted) | formatting check |
-| `clean` | `rm -f qkd_post_processing; go clean` | remove build artifacts |
-| `check` | `fmt vet build test run` | everything in one shot |
+| `test` | `go test ./... -v` | the Go test suite |
+| `test-all` | `./scripts/test.sh` | build, vet, fmt, race tests, cross-architecture build |
+| `bench` | `go test -run '^$' -bench . -benchmem ./...` | benchmarks only |
+| `tune` | `./scripts/tune-blocksize.sh` | block-size sweep for the discard strategy |
+| `run` | `go run ./cmd/qkd_post_processing -n 300000 -err 0.005 -chunk 3000` | demo run |
+| `vet`, `fmt` | `go vet ./...`, `gofmt -l .` | static analysis, formatting check |
+| `check` | `fmt vet build test run` | everything in one go |
 
-### 7.2 The three CLI binaries
+### Commands
 
-| Binary | Source | Invocation (minimal) | What it does |
-|---|---|---|---|
-| `qkd_post_processing` | `cmd/qkd_post_processing/main.go` | `go run ./cmd/qkd_post_processing -n 300000 -err 0.005 -chunk 3000` | simulates correlated Alice/Bob click streams (`simulate`, `main.go`) and runs the full chain; `-json` prints a machine-readable report instead of the human-readable one |
-| `importtt` | `cmd/importtt/main.go` | `go run ./cmd/importtt -dir acquisition/<recording dir>` | loads a real dual-TimeTagger recording (via `cmd/importtt/npy.go`'s `loadNpyInt64`/`loadNpyInt8`), aligns clocks using `coincidence_peak.py`'s fitted lag+skew, maps detector channels to BBM92 (basis, bit) pairs (`channelToBasisBit`, `main.go`), then runs the same chain plus acquisition-specific diagnostics (visibility, per-channel delay, window report, per-epoch mode) |
-| `tuneblock` | `cmd/tuneblock/main.go` | `go run ./cmd/tuneblock` | runs `Run` once per candidate generator matrix (currently just `bch`, plus an optional `-search`ed matrix) over one fixed simulated batch, and reports whichever yields the highest key rate |
+| Binary | Source | What it does |
+|---|---|---|
+| `kms` | `cmd/kms/` | the key management system of one node, see above |
+| `qkdpki` | `cmd/qkdpki/main.go` | `ca` (network CA), `node` (kms, app and ui credentials plus master key), `sae` (application certificate), `net` (edit `network.json`) |
+| `importtt` | `cmd/importtt/main.go` | loads a real recording (`npy.go`), aligns clocks with `coincidence_peak.py`'s affine model, maps channels to basis and bit, filters coincidences, runs the chosen chain; `-dir a,b,c` pools recordings, `-calibrate-delays` and `-detector-delays` handle per-detector delays, `-keystore` writes the key as ETSI records, `-json` prints one report |
+| `qkd_post_processing` | `cmd/qkd_post_processing/main.go` | simulates correlated click streams (`simulate`) and runs the same chain |
+| `tuneblock` | `cmd/tuneblock/main.go` | runs `Run` once per candidate generator matrix on one simulated batch |
 
-### 7.3 Docker (`Dockerfile`)
+### Images (`Dockerfile`)
 
-One image, `python:3.12-slim` base, Go 1.24 toolchain installed at build time
-only to produce three prebuilt binaries (`qkd_post_processing`, `importtt`,
-`tuneblock`) under `/usr/local/bin`; the Python acquisition dependencies
-(`acquisition/requirements.txt`) are installed via `pip`. No server process —
-`CMD ["bash"]` — commands are run via `docker run --rm qkd-post-processing
-<binary> <args>`, mounting `acquisition/` when a command needs to read or
-write a recording. The dashboard (`ui/`) is a separate deployment, its own
-`Dockerfile`/`docker-compose.yml`/Caddy reverse proxy (`ui/deploy.md`).
+One multi-stage file. The `build` stage cross-compiles every command with `CGO_ENABLED=0` on the build machine's own architecture for the target's (`--platform=$BUILDPLATFORM`, `GOARCH=$TARGETARCH`), so amd64 and arm64 nodes build from the same file. Target `kms` is the `kms` and `qkdpki` binaries on a distroless static base, about 13 MB, no shell, non-root. Target `app` is Python 3.12 slim with the dashboard, the acquisition scripts and the `importtt` and `qkd_post_processing` binaries, about 550 MB, running gunicorn with one worker (jobs, caches and the acquisition process live in it) and eight threads, with a health check on `/healthz`. Target `tools` adds matplotlib and every binary, for offline analysis. `.dockerignore` keeps credentials, recordings, keys, `deploy/`, `doc/` and `references/` out of the build context.
 
-### 7.4 UI dashboard (`ui/app.py`, `ui/Caddyfile`, `ui/deploy.md`)
+### One node (`deploy/`)
 
-`ui/app.py` is a Flask application (`app = Flask(__name__)`, `ui/app.py`)
-exposing JSON endpoints under `/api/*` — `status`, `run` (invokes the Go
-binaries as subprocesses), `upload`/`recordings` (manage recording files),
-`config` (read/write `acquisition/config.json`), `acquire/start|stop|status`
-(drive `tt_record_dual.py` as a background process), `align/live|run` (drive
-`coincidence_peak.py` and `cmd/importtt`), and `chsh/run|download` (drive
-`chsh_diagnostic.py`) — plus a single HTML page served at `/`. It is meant to
-run on the lab's own network (`ui/deploy.md`'s stated rationale: it needs to
-reach the TimeTaggers directly, and it writes real distilled key material to
-disk), fronted by Caddy (`ui/Caddyfile`) for TLS termination via
-`docker compose up` (`ui/docker-compose.yml`). Deployment configuration is
-either environment variables (`UPLOAD_MAX_MB`, `KEYSTORE_MAX`,
-`RECORDINGS_MAX_GB`, `KEYSTORE_DIR`/`RECORDINGS_DIR`/`CONFIG_DIR`) or
-`ui/config/config.json` (the same shape `acquisition/config.example.json`
-documents).
+`compose.yml` runs three containers per node, each read-only, without Linux capabilities (the front end keeps only the one its binary carries), with no-new-privileges, as the installing user, and with only its own credentials mounted: `kms` (`pki/kms`: node certificate, node key, master key), `app` (`pki/app`: the admin certificate and the dashboard's SAE certificate, never the node key or the master key) and `ui` (Caddy with `pki/ui`, a server-only certificate from the network CA, and the node's login). `setup.sh` drives everything with Docker alone: `ca`, `node`, `link`, `sae` and `bundle` on the administration machine, `install`, `up`, `down`, `logs` and `status` on a node. `deployment.md` is the operator's guide.
 
-### 7.5 Acquisition scripts feeding the Go pipeline (`acquisition/*.py`)
+### Dashboard (`ui/`)
+
+`ui/app.py` is a Flask application serving one page and a JSON API: `status`, `upload` and `recordings` (pairs detected by shared start time), `config` and `acquire/start|stop|status` (drives `tt_record_dual.py`), `align/live` (any pair, analysis cached per pair and file version), `jobs` (key extraction, two-party extraction with a neighbor and delay calibration as background jobs with live logs and a stored history; a background listener starts this node's half when a neighbor announces; extraction writes the key into `<import>/<neighbor>/`, where the KMS takes it), `chsh/run|download`, `run` (the simulator, whose demo keys stay apart and never reach the KMS), and `node`, `kms/audit`, `kms/status`, `kms/enc`, `kms/dec` (the KMS through the admin certificate and the dashboard's own SAE certificate; key exchange answers carry key IDs and SHA-256 fingerprints, never key material). The page loads no inline script (`script-src 'self'`), and every server string is escaped before display (`esc`, `main.js`).
+
+### Acquisition scripts (`acquisition/*.py`)
 
 Three Python scripts, run in sequence, bridge real hardware to `cmd/importtt`:
 
-1. `tt_stream_external.py` — vendor-provided TimeTagger network client
-   (`TimeTaggerStream`: `connect`/`start_stream`/`read_stream`), included as
-   provided.
-2. `tt_record_dual.py` — connects to two TimeTaggers (configured in
-   `acquisition/config.json`), starts both recording behind one
-   `threading.Barrier` so the two capture windows begin at the same instant,
-   and writes per-side `*_timestamp_sequence.npy` (int64 picoseconds) +
-   `*_channel_sequence.npy` (int8 physical channel, 1-4) + `*_meta.json`. It
-   also runs a lower-fidelity live coincidence check in the background
-   (`live_coincidence_thread`) purely as an operator-facing progress signal.
-3. `coincidence_peak.py` — the computational core of alignment: FFT
-   cross-correlation for a coarse lag estimate, exact-timestamp-difference
-   refinement for picosecond precision, and a segmented linear fit for clock
-   skew (drift). Writes `<dir>_coincidence.json`, which records the fitted
-   affine clock model (`ClockSkew.ReferenceElapsedPS`/`LagAtReferencePS`/
-   `SkewFraction`) that `cmd/importtt` inverts (`toAliceClock`,
-   `cmd/importtt/main.go`) to map every Bob timestamp onto Alice's clock
-   before sifting. `cmd/importtt` refuses to run against a report whose
-   `"detected"` field is `false` (`findRecording`, `cmd/importtt/main.go`).
+- `tt_stream_external.py` --> vendor-provided TimeTagger network client (`TimeTaggerStream`: `connect`/`start_stream`/`read_stream`), included as provided.
+- `tt_record_dual.py` --> connects to two TimeTaggers (configured in `acquisition/config.json`), starts both recording behind one `threading.Barrier` so the two capture windows begin at the same instant, and writes per-side `*_timestamp_sequence.npy` (int64 picoseconds) + `*_channel_sequence.npy` (int8 physical channel, 1-4) + `*_meta.json`. It also feeds every frame to the live tracker (`live_peak.py`), which locks onto the coincidence peak with a joint lag and clock-skew search and then follows it chunk by chunk, for the operator and the dashboard; the final alignment still comes from `coincidence_peak.py` over the whole recording.
+- `coincidence_peak.py` --> the computational core of alignment: FFT cross-correlation for a coarse lag estimate, exact-timestamp-difference refinement for picosecond precision, and a segmented linear fit for clock skew (drift). Writes `<dir>_coincidence.json`, which records the fitted affine clock model (`ClockSkew.ReferenceElapsedPS`/`LagAtReferencePS`/ `SkewFraction`) that `cmd/importtt` inverts (`toAliceClock`, `cmd/importtt/main.go`) to map every Bob timestamp onto Alice's clock before sifting. `cmd/importtt` refuses to run against a report whose `"detected"` field is `false` (`findRecording`, `cmd/importtt/main.go`).
 
-`chsh_diagnostic.py` is a separate, standalone diagnostic (CHSH/Bell
-self-testing statistics) over the same aligned recording; it is not part of
-the key-generation chain and its output does not feed `cmd/importtt`.
+`chsh_diagnostic.py` is a separate, standalone diagnostic (CHSH/Bell self-testing statistics) over the same aligned recording; it is not part of the key-generation chain and its output does not feed `cmd/importtt`.
 
-## 8. File-by-file reference
+### File-by-file reference
 
-### 8.1 Package `qkd` (`qkd/`)
+### Package `qkd` (`qkd/`)
 
 | Path | Purpose | Key exported identifiers |
 |---|---|---|
@@ -784,20 +453,22 @@ the key-generation chain and its output does not feed `cmd/importtt`.
 | `qkd/finitekey.go` | Finite-key sizing: exact hypergeometric phase-error bound, sample optimizer, distillation | `PhaseErrorEstimate`, `EstimatePhaseError`, `HypergeomUpperRate`, `OptimalSampleFraction`, `FiniteKeySecureKeyLength`, `SecurityBudget`, `SplitSecurityBudget`, `FiniteKeyConfig`, `FiniteKeyReport` |
 | `qkd/universalhash.go` | Toeplitz-based universal-hash correctness check | `UniversalHashTagBits`, `ComputeUniversalHashTag`, `UniversalHashSeed`, `VerifyUniversalHash` |
 | `qkd/pipeline.go` | Block-discard orchestrator (the original `Run`) | `Config`, `Result`, `Run` |
+| `qkd/ldpc5g.go` | 5G NR LDPC reconciliation: frame plan fitted to the data, Alice's frames, Bob's attempts, accounting, joint pipeline; the matrix work behind `LDPC5GBackend` | `LDPC5GBackend`, `LDPC5GPlan`, `PlanLDPC5G`, `LDPC5GReconcile`, `LDPC5GResult`, `LDPC5GRunConfig`, `RunLDPC5G` |
+| `qkd/twoparty.go` | Two-party protocol: Alice and Bob as separate processes exchanging only public messages | `Conn`, `TwoPartyConfig`, `TwoPartyResult`, `RunAlice`, `RunBob`, `PublicDigest`, `PipeConns`, `DecodeMessage`, `ErrPeerAborted` |
 | `qkd/epoch.go` | Per-time-epoch independent reruns of `Run` | `EpochResult`, `EpochedResult`, `RunEpoched` |
 | `qkd/windowreport.go` | Diagnostic per-time-bucket QBER reporting | `WindowReportConfig`, `WindowBucketReport`, `ReportWindowQuality` |
 
-### 8.2 Packages `kms` and `relay`
+### Packages `kms` and `relay`
 
 | Path | Purpose | Key exported identifiers |
 |---|---|---|
-| `kms/encryption.go` | AEAD encrypt/decrypt with a distilled key | `EncryptWithKey`, `DecryptWithKey` |
-| `kms/keystore.go` | Local ETSI 014 key container JSON files, no server | `StoredKey`, `ETSI014KeySizeBytes`, `ETSI014KeySizeBits`, `SaveKeys256`, `SaveKey`, `LoadKey` |
-| `kms/kms.go` | Lifecycle-managed key store (single delivery, TTL, at-rest encryption) | `ErrKeyNotFound`, `ErrKeyConsumed`, `ErrKeyExpired`, `KMS`, `NewKMS`, `(*KMS).Put`, `(*KMS).PutWithID`, `(*KMS).Get`, `DeliveredKey`, `(*KMS).GetNext`, `(*KMS).GetNextBytes`, `(*KMS).GetBytes`, `Status`, `(*KMS).Status` |
-| `relay/relay.go` | Multi-hop OTP+MAC relay between `RelayNode`s | `RelayXOR`, `RelayNode`, `NewRelayNode`, `RelayedPacket`, `(*RelayNode).Originate`, `(*RelayNode).Receive`, `(*RelayNode).Handle` |
-| `relay/polymac.go` | Poly1305 MAC under a single-use QKD-derived key | `PolyMACKeyBytes`, `ComputePolyMAC`, `VerifyPolyMAC` |
+| `kms/kms.go` | Encrypted, indexed key store: single delivery, reservation, wiping, pool split | `KMS`, `NewKMS`, `Put`, `PutWithID`, `PutReserved`, `Get`, `GetReserved`, `CheckReserved`, `GetNext`, `GetNextMatching`, `GetNextBytes`, `GetNextBytesMatching`, `GetBytes`, `Status`, `CountAvailable`, `AvailableIDs`, `Sweep`, `OriginatorOf`, `ErrKeyNotFound`, `ErrKeyConsumed`, `ErrKeyExpired`, `ErrKeyReserved` |
+| `kms/keystore.go` | Plaintext ETSI 014 records, the pipeline's output | `StoredKey`, `ETSI014KeySizeBytes`, `ETSI014KeySizeBits`, `SaveKeys256`, `SaveKeys256WithIDs`, `SaveKey`, `LoadKey`, `NewKeyID` |
+| `kms/encryption.go` | AES-256-GCM with an HKDF-derived key | `EncryptWithKey`, `DecryptWithKey` |
+| `relay/relay.go` | Hop-by-hop relay with reserved delivery | `RelayXOR`, `RelayNode`, `NewRelayNode`, `RelayedPacket`, `Originate`, `OriginateFromPool`, `Receive`, `Handle`, `SetDeliveryTTL` |
+| `relay/polymac.go` | Poly1305 under a single-use QKD-derived key | `PolyMACKeyBytes`, `ComputePolyMAC`, `VerifyPolyMAC` |
 
-### 8.3 Tests and support
+### Tests and support
 
 | Path | Purpose |
 |---|---|
@@ -810,7 +481,7 @@ the key-generation chain and its output does not feed `cmd/importtt`.
 | `qkd/finitekey_test.go` | `EstimatePhaseError` / `FiniteKeySecureKeyLength` / `SplitSecurityBudget` |
 | `qkd/fuzz_test.go` | Fuzz targets over sifting/reconciliation/CRC inputs |
 | `kms/keystore_test.go` | `SaveKey(s256)` / `LoadKey` round-trip |
-| `kms/kms_test.go` | `KMS` single-delivery, TTL, concurrency behavior |
+| `kms/kms_test.go` | Single delivery, TTL, reservation, wiping and tombstones, all-or-nothing batches, index after reopening, pool split |
 | `qkd/ldpc_test.go` | LDPC construction, decode convergence, rate-vs-threshold behavior |
 | `qkd/matrixsearch_test.go` | `SearchGeneratorMatrix` hill-climbing behavior |
 | `qkd/pipeline_test.go` | `Run` end-to-end |
@@ -819,7 +490,7 @@ the key-generation chain and its output does not feed `cmd/importtt`.
 | `qkd/polar_test.go` | Transform self-inverse, brute-force ML cross-check, reliability ordering, SC vs. SCL block failure |
 | `qkd/softrecon_test.go` | Jensen bound, timing-model recovery, timing-aware vs. flat polar and LDPC on a simulated accidental-dominated link |
 | `qkd/property_test.go` | Property-based invariants across stages |
-| `relay/relay_test.go` | `RelayNode` multi-hop `Originate`/`Handle` sequences |
+| `relay/relay_test.go` | Two-hop delivery, tampering with any authenticated field, refusal of the receiver's own half, pool exhaustion |
 | `relay/polymac_test.go` | Poly1305 round trip, tamper detection, forgery-rate check |
 | `qkd/sifting_test.go` | `MatchCoincidences` / `Sift` correctness, including ambiguous-match handling |
 | `qkd/split_e2e_test.go` | End-to-end test using the split, one-sided API (Alice/Bob as independent processes) |
@@ -828,26 +499,38 @@ the key-generation chain and its output does not feed `cmd/importtt`.
 | `qkd/universalhash_test.go` | Universal-hash tag computation and verification |
 | `qkd/windowreport_test.go` | `ReportWindowQuality` bucketing |
 | `qkd/winnow_test.go` | Winnow correction/reconciliation correctness |
+| `qkd/twoparty_test.go` | Two-party against the joint pipeline (same key length and disclosure), Bob's timing-aware decoding, refused parameter and announcement mismatches, short runs, bad pair lists |
+| `cmd/importtt/twoparty_test.go` | The roles on the Nitra-Bratislava example recording, each site with only its own files; with `QKD_POOL` set, the pooled Bratislava-Trnava recordings giving the same key at both sites |
 | `qkd/bench_test.go` | Benchmarks (`go test -bench`) |
 | `qkd/testdata/toeplitz_vectors.json` | Fixed Toeplitz-hash test vectors |
 | `scripts/test.sh` | `make test-all`: build+vet+fmt+race+cross-arch |
 | `scripts/tune-blocksize.sh` | `make tune`: block-size sweep driver for `cmd/tuneblock` |
 | `scripts/cross_check_toeplitz.py` | Re-derives `qkd/testdata/toeplitz_vectors.json` independently with NumPy |
+| `scripts/ec_compare.py` | Runs `cmd/ecbench` and `ec/ldpc5g.py` on the same data and prints the comparison tables |
 
-### 8.4 `cmd/`
+| `cmd/kms/node_test.go` | Three KMEs over mutual TLS: neighbor and relayed delivery, caller identity per role, ETSI status, both ends at once, refused reservations, relay sender check, audit without key material, importer |
+| `cmd/kms/relay_test.go` | Route computation and network description validation |
 
-| Path | Purpose | Key exported/entry identifiers |
+### `cmd/`
+
+| Path | Purpose | Key identifiers |
 |---|---|---|
+| `cmd/kms/main.go` | Server, flags, caller identity, routes, mutual TLS | `server`, `caller`, `who`, `localSAE`, `isAdmin`, `openServer`, `routes`, `mutualTLS` |
+| `cmd/kms/etsi.go` | ETSI GS QKD 014 handlers | `handleStatus`, `handleEncKeys`, `handleDecKeys`, `availableToward`, `slaveRoute` |
+| `cmd/kms/relay.go` | Delivery toward neighbors and distant nodes, KME-to-KME handlers | `deliver`, `deliverDirect`, `kmePost`, `handleReserve`, `handleRelay` |
+| `cmd/kms/node.go` | Node status, probes, management, importer, sweeper | `handleNode`, `probe`, `handleNetwork`, `handleAudit`, `importKeys`, `runImporter`, `runSweeper` |
+| `cmd/kms/network.go` | Shared network description and routes | `networkConfig`, `loadNetwork`, `validate`, `neighbors`, `nextHops`, `homeOf` |
+| `cmd/kms/audit.go` | Audit trail | `auditEvent`, `auditLog`, `openAudit` |
+| `cmd/kms/mailbox.go` | Post-processing messages between neighbors' dashboards | `mailbox`, `handlePPSend`, `handlePPInbox`, `handlePPRecv`, `handlePPSessions` |
+| `cmd/importtt/twoparty.go` | `-role alice` (announcement export and Alice's half) and `-role bob`, the KMS mailbox transport | `runTwoParty`, `runAliceRole`, `runBobRole`, `loadBobRecording`, `mailboxConn`, `writeNpyInt64`, `writeNpyInt8` |
+| `cmd/qkdpki/main.go` | Network CA, node bundles, SAE certificates, network edits | `cmdCA`, `cmdNode`, `cmdSAE`, `cmdNet`, `issue` |
+| `cmd/importtt/main.go` | CLI over a real dual-TimeTagger recording | `main`, `findRecording`, `channelToBasisBit`, `detectMultiPhoton`, `buildEvents`, `runDiscardPipeline`, `runEpochedPipeline`, `runWinnowPipeline`, `runLDPCPipeline`, `runPolarPipeline` |
+| `cmd/importtt/npy.go` | Minimal `.npy` reader | `readNpyHeader`, `loadNpyInt64`, `loadNpyInt8` |
 | `cmd/qkd_post_processing/main.go` | CLI over simulated click streams | `main`, `simulate`, `runDiscardPipeline`, `runWinnowPipeline`, `runLDPCPipeline`, `runPolarPipeline` |
-| `cmd/tuneblock/main.go` | Generator-matrix sweep CLI | `main`, `simulate`, `addRow` |
-| `cmd/importtt/main.go` | CLI over a real dual-TimeTagger recording | `main`, `findRecording`, `channelToBasisBit`, `detectMultiPhoton`, `buildEvents`, `computeVisibilityMetrics`, `runDiscardPipeline`, `runEpochedPipeline`, `runWinnowPipeline`, `runLDPCPipeline`, `runPolarPipeline` |
-| `cmd/importtt/npy.go` | Minimal `.npy` reader (int64/int8 flat arrays) | `readNpyHeader`, `loadNpyInt64`, `loadNpyInt8` |
-| `cmd/importtt/main_test.go`, `npy_test.go`, `visibility_test.go` | Tests for the above | — |
-| `cmd/kms-server/main.go` | ETSI GS QKD 014 HTTP server | `main`, `server`, `handleEncKeys`, `handleDecKeys`, `handleStatus` |
-| `cmd/kms-server/relay.go` | Relay HTTP handlers, registered when `-node-id` is set | `relayHandler`, `handleRelay`, `handleOriginate`, `newRelayHandler` |
-| `cmd/kms-server/relay_test.go` | Three-node relay over HTTP and over mutual TLS | — |
+| `cmd/tuneblock/main.go` | Generator-matrix comparison | `main`, `simulate`, `addRow` |
+| `cmd/ecbench/main.go` | The Go error-correction methods on a simulated channel, per QBER; `scripts/ec_compare.py` adds 5G NR LDPC | `main`, `methods`, `parallelBlocks` |
 
-### 8.5 `acquisition/`
+### `acquisition/`
 
 | Path | Purpose |
 |---|---|
@@ -860,25 +543,24 @@ the key-generation chain and its output does not feed `cmd/importtt`.
 | `README.md` | Full acquisition workflow documentation |
 | `example/` | Sample recording for exercising `cmd/importtt` without live hardware |
 
-### 8.6 `ui/`
+### `ui/` and `deploy/`
 
 | Path | Purpose |
 |---|---|
-| `app.py` | Flask dashboard: run the pipeline, manage recordings/keystore/config, drive acquisition and alignment remotely |
-| `Caddyfile` | TLS termination + reverse proxy configuration |
-| `docker-compose.yml` | `app` (gunicorn + Flask) + `caddy` services |
-| `Dockerfile` | UI-specific image (separate from the repo-root `Dockerfile`) |
-| `deploy.md` | Deployment instructions and environment variable reference |
-| `trust_caddy_ca.sh` / `trust_ca_client.sh` | Install/trust Caddy's local CA on the deploy host / other LAN machines |
-| `static/`, `templates/` | Dashboard front-end assets and HTML |
-| `config/`, `keys/`, `recordings/` | Bind-mounted runtime directories (config, keystore, recordings) |
+| `ui/app.py` | Flask dashboard and JSON API |
+| `ui/templates/index.html`, `ui/static/` | The page, its script and styles |
+| `ui/requirements.txt` | Flask, gunicorn, NumPy, SciPy, Numba |
+| `deploy/compose.yml` | The kms, app and ui containers of one node |
+| `deploy/Caddyfile` | HTTPS with the network CA's certificate, login on every request |
+| `deploy/setup.sh` | CA, nodes, links, applications, bundles, start and stop, all through Docker |
+| `deploy/trust-ca.sh` | Trusts the network CA on a machine that opens the dashboards |
 
-### 8.7 `doc/`
+### `doc/`
 
 | Path | Purpose |
 |---|---|
-| `doc/finite_key_procedure.md` | Formal finite-key and KMS-delivery procedure this codebase implements |
-| `doc/coincidence_filtering.md`, `doc/timing_aware_reconciliation.md` | Formal procedures for coincidence filtering and timing-aware reconciliation |
-| `doc/security_proof.md` | Formal security analysis of the KMS and relay |
-| `doc/references/bbm92_post_processing_open_questions_v3.pdf` | Vendor/review PDF that `doc/finite_key_procedure.md` responds to |
-| `doc/references/bbm92_details_post_processing.pdf`, `doc/references/qoj_patent_post_processing.pdf`, `doc/references/qoj_patent_post_processing_en.md` | Vendor reference documents |
+| `doc/finite_key_procedure.md` | The finite-key procedure, stage by stage |
+| `doc/coincidence_filtering.md`, `doc/timing_aware_reconciliation.md` | Coincidence filtering and timing-aware reconciliation |
+| `doc/key_management.md` | The key management system: entities, protocols, lifecycle |
+| `doc/security_proof.md` | Security analysis of privacy amplification, the key management system and the relay |
+| `doc/deployment.md` | Operator's guide: CA, nodes, links, applications, updates |

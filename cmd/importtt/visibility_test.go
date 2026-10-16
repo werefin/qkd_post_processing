@@ -100,8 +100,8 @@ func TestFindRecordingRejectsWrongFileCounts(t *testing.T) {
 
 // TestChannelPath derives the sibling *_channel_sequence.npy path
 func TestChannelPath(t *testing.T) {
-	got := channelPath("/rec/20261006_095147_192_168_101_3_p40404_timestamp_sequence.npy")
-	want := "/rec/20261006_095147_192_168_101_3_p40404_channel_sequence.npy"
+	got := channelPath("/rec/20261006_095147_192_0_2_10_p40404_timestamp_sequence.npy")
+	want := "/rec/20261006_095147_192_0_2_10_p40404_channel_sequence.npy"
 	if got != want {
 		t.Fatalf("channelPath() = %q, want %q", got, want)
 	}

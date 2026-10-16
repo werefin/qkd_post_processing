@@ -70,10 +70,8 @@ function drawGauge(canvasId, value, max) {
   if (!c) return;
   const dpr = window.devicePixelRatio || 1;
   const W = c.clientWidth, H = c.clientHeight;
-  // A canvas in a display:none section (the other gauge, while this one's
-  // section is the active one) has zero layout size, so r below would go
-  // negative and ctx.arc() throws, aborting whatever the caller runs next
-  // Skip it; navigate() redraws from cached state once that section is shown
+  // a canvas in a hidden section has zero size and ctx.arc() would throw; skip it,
+  // navigate() redraws from cached state once the section is shown
   if (W <= 0 || H <= 0) return;
   c.width = W * dpr; c.height = H * dpr;
   const ctx = c.getContext('2d');
@@ -96,10 +94,8 @@ function drawGauge(canvasId, value, max) {
   }
 }
 
-// Snapshot plots (coincidence_peak.py's save_plot() panels, redrawn fresh on
-// every check instead of accumulated as history like the sparklines above),
-// each zoomable: scroll to zoom around the cursor, drag to zoom to a range,
-// double-click to reset -- see attachZoom() below
+// Snapshot plots of coincidence_peak.py's save_plot() panels, redrawn on every check; scroll
+// zooms around the cursor, drag zooms to a range, double-click resets (attachZoom below)
 function drawSeriesPlot(canvasId, xs, ys, color, opts = {}) {
   const c = document.getElementById(canvasId);
   if (!c) return;
@@ -289,9 +285,8 @@ function drawDriftPlot(canvasId, segX, segY, fitY, color, opts = {}) {
   }
 }
 
-// Zoom state per canvas id: null (full range) or [lo, hi] in that plot's
-// own x units. Wheel zooms around the cursor, drag selects a range,
-// double-click resets -- attached once per canvas in attachZoom() below
+// Zoom state per canvas id: null (full range) or [lo, hi] in that plot's own x units,
+// attached once per canvas by attachZoom()
 const _zoomState = {};
 function _clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
@@ -356,9 +351,8 @@ function attachZoom(canvasId, getFullDomain, drawFn) {
   c.addEventListener('dblclick', () => { _zoomState[canvasId] = null; drawFn(); });
 }
 
-// Per-canvas draw wrappers: read the last-fetched alignment data (see
-// refreshAlignment()) plus this canvas's own zoom state, so both the 5s
-// poll and every zoom/hover interaction redraw from the same source
+// Per-canvas draw wrappers over the last alignment data and the canvas's zoom state, so the
+// poll and every zoom or hover redraw from the same source
 function _alignXs(canvasId) {
   const d = lastAlignData;
   if (!d || !d.plots) return null;
@@ -415,76 +409,76 @@ attachZoom('align-plot-c1', () => _alignFullDomain('align-plot-c1'), drawAlignFi
 attachZoom('align-plot-c2', () => _alignFullDomain('align-plot-c2'), drawAlignDrift);
 attachZoom('align-plot-c3', () => _alignFullDomain('align-plot-c3'), drawAlignCorrected);
 
-// Navigation (same pattern as skQCI: toggle .active on nav items + sections,
-// re-arm per-section polling so a hidden section's expensive checks stop)
-let alignPollInterval = null;
-let acquirePollInterval = null;
+// Everything below talks to the backend; server text is always escaped before it reaches the page
+function esc(v) {
+  return String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
 
-function navigate(sectionName) {
-  document.querySelectorAll('.nav-item').forEach(el => {
-    el.classList.toggle('active', el.dataset.section === sectionName);
-  });
-  document.querySelectorAll('.section').forEach(el => {
-    el.classList.toggle('active', el.id === 'section-' + sectionName);
-  });
+function chipsHTML(items) {
+  return items.map(([k, v]) => `<div class="chip"><span class="chip-k">${esc(k)}</span><span class="chip-v">${esc(v)}</span></div>`).join('');
+}
 
-  if (alignPollInterval) { clearInterval(alignPollInterval); alignPollInterval = null; }
-  if (acquirePollInterval) { clearInterval(acquirePollInterval); acquirePollInterval = null; }
+function postJSON(url, body) {
+  return apiFetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+}
 
-  // Canvases drawn while their section was display:none have zero size;
-  // redraw from cached state now that the section is visible again
-  if (sectionName === 'home') {
-    redrawHomeGauge();
-  } else if (sectionName === 'run') {
-    redrawRunPlots();
-  } else if (sectionName === 'align') {
-    redrawAlignPlots();
-    refreshAlignment();
-    alignPollInterval = setInterval(refreshAlignment, 5000);
-  } else if (sectionName === 'acquire') {
-    refreshAcquireStatus();
-    acquirePollInterval = setInterval(refreshAcquireStatus, 2000);
-  } else if (sectionName === 'recordings') {
-    refreshRecordingsList();
-  }
+function setBadge(id, text, kind) {
+  const b = document.getElementById(id);
+  if (!b) return;
+  b.textContent = text;
+  b.className = 'badge badge-' + (kind || 'muted');
+}
+
+function emptyRow(cols, text) {
+  return `<tr><td colspan="${cols}" class="empty">${esc(text)}</td></tr>`;
+}
+
+function fmtTime(t) {
+  return t ? new Date(t * 1000).toLocaleString() : '-';
+}
+
+// Navigation: each section polls only while it is open
+const pollers = {};
+function stopPolls() {
+  for (const k of Object.keys(pollers)) { clearInterval(pollers[k]); delete pollers[k]; }
+}
+function poll(name, fn, ms) {
+  fn();
+  pollers[name] = setInterval(fn, ms);
+}
+
+function navigate(section) {
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.section === section));
+  document.querySelectorAll('.section').forEach(el => el.classList.toggle('active', el.id === 'section-' + section));
+  stopPolls();
+  if (section === 'home') { redrawHomeGauge(); refreshNode(); }
+  else if (section === 'run') redrawRunPlots();
+  else if (section === 'align') { refreshRecordings().then(() => { redrawAlignPlots(); poll('align', refreshAlignment, 5000); }); }
+  else if (section === 'extract') { refreshRecordings(); refreshNode(); poll('jobs', refreshJobs, 2000); }
+  else if (section === 'network') { poll('node', refreshNode, 10000); refreshAudit(); }
+  else if (section === 'chsh') refreshRecordings();
+  else if (section === 'acquire') { refreshRecordings(); poll('acquire', refreshAcquireStatus, 2000); poll('live', refreshLive, 1000); }
+  else if (section === 'recordings') refreshRecordings();
 }
 
 document.getElementById('main-nav').addEventListener('click', e => {
   const item = e.target.closest('.nav-item');
   if (item) { e.preventDefault(); navigate(item.dataset.section); }
 });
-document.querySelectorAll('.nav-card').forEach(card => {
-  card.addEventListener('click', e => { e.preventDefault(); navigate(card.dataset.section); });
-});
+document.querySelectorAll('.nav-card').forEach(card => card.addEventListener('click', e => { e.preventDefault(); navigate(card.dataset.section); }));
 
-// Run and metrics
-const METRICS_MAX_HISTORY = 30;
-const history = { qber: [], key_rate: [], compression: [], leaked: [] };
-let lastMetrics = null;
-
-const PLOTS = [
-  { title: 'QBER (%)', short: 'QBER', color: '#E84B8C', key: 'qber', val: m => (m.qber * 100).toFixed(2) },
-  { title: 'Final key (bits)', short: 'Key bits', color: '#2BBDE8', key: 'key_rate', val: m => m.final_key_bits },
-  { title: 'Compression ratio', short: 'Compression', color: '#9B5CF5', key: 'compression', val: m => m.compression_rate.toFixed(4) },
-  { title: 'Leaked bits (total)', short: 'Leaked', color: '#F59E0B', key: 'leaked', val: m => m.leaked_bits_total },
-];
-
-// One chip list for any run's -json output, simulated or real: filter, correction, finite key
+// One result renderer for any -json report, simulated or real
 function metricItems(m) {
   const items = [['Sifted bits', m.sifted_bits]];
   if (m.filter_window_ps) {
-    items.push(['Window (fit HWHM)', `\u00b1${m.filter_window_ps} ps`],
+    items.push(['Window (fit HWHM)', `±${m.filter_window_ps} ps`],
       ['Predicted accidentals', ((m.filter_predicted_accidental_fraction || 0) * 100).toFixed(1) + '%']);
   }
-  if (m.method === 'polar') {
-    items.push(['Polar blocks', m.polar_blocks], ['Bits corrected', m.polar_bits_corrected], ['Leaked (frozen values)', m.polar_leaked_bits]);
-  } else if (m.method === 'winnow') {
-    items.push(['Corrections', m.winnow_corrections], ['Leaked (syndromes)', m.winnow_leaked_bits]);
-  } else if (m.method === 'ldpc') {
-    items.push(['Blocks converged', `${m.ldpc_converged || 0} / ${m.ldpc_blocks}`], ['Leaked (syndromes)', m.ldpc_leaked_bits]);
-  } else {
-    items.push(['Blocks kept', `${m.blocks_kept} / ${m.blocks_total}`]);
-  }
+  if (m.method === 'ldpc5g') items.push(['5G NR frames', `${m.ldpc5g_frames || 0} (${m.ldpc5g_failed || 0} failed, ${m.ldpc5g_attempts || 0} attempts)`], ['Bits corrected', m.ldpc5g_bits_corrected || 0], ['Leaked (syndromes, tags)', m.ldpc5g_leaked_bits]);
+  else if (m.method === 'polar') items.push(['Polar blocks', m.polar_blocks], ['Bits corrected', m.polar_bits_corrected], ['Leaked (frozen values)', m.polar_leaked_bits]);
+  else if (m.method === 'winnow') items.push(['Corrections', m.winnow_corrections], ['Leaked (syndromes)', m.winnow_leaked_bits]);
+  else if (m.method === 'ldpc') items.push(['Blocks converged', `${m.ldpc_converged || 0} / ${m.ldpc_blocks}`], ['Leaked (syndromes)', m.ldpc_leaked_bits]);
+  else items.push(['Blocks kept', `${m.blocks_kept} / ${m.blocks_total}`]);
   items.push(['QBER', (m.qber * 100).toFixed(2) + '%']);
   const fk = m.finite_key;
   if (fk) {
@@ -493,29 +487,21 @@ function metricItems(m) {
   } else {
     items.push(['Key length', 'asymptotic (no finite-size guarantee)']);
   }
-  items.push(['Final key', m.final_key_bits + ' bits'], ['Compression', m.compression_rate.toFixed(4)], ['Keys saved', m.keys_saved]);
+  items.push(['Final key', m.final_key_bits + ' bits'], ['Compression', (m.compression_rate || 0).toFixed(4)], ['Keys saved', m.keys_saved]);
   return items;
 }
 
-function chipsHTML(items) {
-  return items.map(([k, v]) => `<div class="chip"><span class="chip-k">${k}</span><span class="chip-v">${v}</span></div>`).join('');
-}
+// Simulator
+const METRICS_MAX_HISTORY = 30;
+const history = { qber: [], key_rate: [], compression: [], leaked: [] };
+let lastMetrics = null;
+const PLOTS = [
+  { color: '#E84B8C', key: 'qber', val: m => (m.qber * 100).toFixed(2) },
+  { color: '#2BBDE8', key: 'key_rate', val: m => m.final_key_bits },
+  { color: '#9B5CF5', key: 'compression', val: m => m.compression_rate.toFixed(4) },
+  { color: '#F59E0B', key: 'leaked', val: m => m.leaked_bits_total },
+];
 
-function renderMetrics(m) {
-  const chips = document.getElementById('run-chips');
-  chips.innerHTML = chipsHTML([...metricItems(m), ['Elapsed', m.elapsed_ms + ' ms']]);
-
-  PLOTS.forEach(p => history[p.key].push(p.val(m) * 1) > METRICS_MAX_HISTORY && history[p.key].shift());
-  lastMetrics = m;
-  redrawRunPlots();
-
-  if (m.keys_in_store != null) lastKeysSaved = m.keys_in_store;
-  redrawHomeGauge();
-}
-
-// Redraws the run section's plots/gauge from cached state, needed both
-// after a run and when switching back to a section that was display:none
-// (a canvas drawn while hidden has zero size)
 function redrawRunPlots() {
   PLOTS.forEach((p, i) => {
     sparkline('plot-c' + i, history[p.key], p.color);
@@ -525,7 +511,7 @@ function redrawRunPlots() {
 
 const methodSelect = document.getElementById('f-method');
 function syncMethodFields() {
-  for (const name of ['polar', 'ldpc', 'winnow', 'discard']) {
+  for (const name of ['ldpc5g', 'polar', 'ldpc', 'winnow', 'discard']) {
     document.getElementById('method-' + name).style.display = methodSelect.value === name ? '' : 'none';
   }
 }
@@ -542,11 +528,8 @@ document.getElementById('run-form').addEventListener('submit', async e => {
   try {
     const method = methodSelect.value;
     const body = {
-      n: Number(document.getElementById('f-n').value),
-      err: Number(document.getElementById('f-err').value),
-      method,
-      save_keystore: true,
-      asymptotic: document.getElementById('f-asymptotic').checked,
+      n: Number(document.getElementById('f-n').value), err: Number(document.getElementById('f-err').value),
+      method, asymptotic: document.getElementById('f-asymptotic').checked,
     };
     if (method === 'polar') {
       body.polar_margin = Number(document.getElementById('f-polar-margin').value);
@@ -557,66 +540,231 @@ document.getElementById('run-form').addEventListener('submit', async e => {
       body.ldpc_wc = Number(document.getElementById('f-ldpc-wc').value);
       body.ldpc_wr = Number(document.getElementById('f-ldpc-wr').value);
     } else {
-      // no matrix field to send: the backend defaults -matrix to bch,
-      // the only fixed matrix left, unless a searched one is requested
       body.search_matrix = document.getElementById('f-search').checked;
     }
-    const m = await apiFetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    renderMetrics(m);
+    const m = await postJSON('/api/run', body);
+    document.getElementById('run-chips').innerHTML = chipsHTML([...metricItems(m), ['Elapsed', m.elapsed_ms + ' ms']]);
+    PLOTS.forEach(p => history[p.key].push(p.val(m) * 1) > METRICS_MAX_HISTORY && history[p.key].shift());
+    lastMetrics = m;
+    redrawRunPlots();
   } catch (err) {
     errEl.textContent = err.message;
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Run pipeline';
+    btn.textContent = 'Run simulation';
   }
 });
 
-// Status (sidebar dot, always polled) + the keys-in-store gauge, shown on
-// both Home and the Run section
-let lastKeysSaved = 0;
-let lastStatusOnline = false;
-const KEYSTORE_MAX = 30000;  // matches app.py's KEYSTORE_MAX / -keystore-max
+// Status: backend, KMS and the running job, always polled
+let poolKeys = 0;
+let lastNode = null;
 
 function redrawHomeGauge() {
-  drawGauge('home-gauge-canvas', lastKeysSaved, KEYSTORE_MAX);
-  setEl('home-gauge-value', lastKeysSaved);
-  drawGauge('gauge-canvas', lastKeysSaved, KEYSTORE_MAX);
-  setEl('gauge-value', lastKeysSaved);
-  setEl('sidebar-key-count', lastKeysSaved);
-  const chips = document.getElementById('home-status-chips');
-  if (chips) {
-    chips.innerHTML = [
-      ['Backend', lastStatusOnline ? 'reachable' : 'unreachable'],
-      ['Keys in store', lastKeysSaved],
-    ].map(([k, v]) => `<div class="chip"><span class="chip-k">${k}</span><span class="chip-v">${v}</span></div>`).join('');
-  }
+  drawGauge('home-gauge-canvas', poolKeys, Math.max(1000, poolKeys * 1.25));
+  setEl('home-gauge-value', poolKeys);
 }
 
 async function refreshStatus() {
-  const dot = document.getElementById('status-dot');
-  const label = document.getElementById('status-label');
   try {
     const d = await apiFetch('/api/status');
-    dot.className = 'status-dot online';
-    label.textContent = 'Backend reachable';
-    lastStatusOnline = true;
-    lastKeysSaved = d.keys_saved;
+    document.getElementById('status-dot').className = 'status-dot online';
+    setEl('status-label', 'Dashboard reachable');
+    setEl('sidebar-node-id', d.node_id || '');
+    setEl('job-label', d.job ? `Job ${d.job.id} (${d.job.kind}) ${d.job.status}` : 'No job running');
+    if (!d.kms) {
+      document.getElementById('kms-dot').className = 'status-dot offline';
+      setEl('kms-label', 'No KMS configured');
+    }
   } catch (e) {
-    dot.className = 'status-dot offline';
-    label.textContent = 'Backend unreachable';
-    lastStatusOnline = false;
+    document.getElementById('status-dot').className = 'status-dot offline';
+    setEl('status-label', 'Dashboard unreachable');
+  }
+}
+refreshStatus();
+setInterval(refreshStatus, 10000);
+
+// Network and KMS
+async function refreshNode() {
+  try {
+    const n = await apiFetch('/api/node');
+    lastNode = n;
+    document.getElementById('kms-dot').className = 'status-dot online';
+    poolKeys = (n.links || []).reduce((s, l) => s + l.mine + l.theirs, 0);
+    setEl('kms-label', `KMS: ${poolKeys} pool keys`);
+    renderNode(n);
+  } catch (e) {
+    lastNode = null;
+    document.getElementById('kms-dot').className = 'status-dot offline';
+    setEl('kms-label', 'KMS unreachable');
+    setBadge('net-badge', e.message, 'danger');
+    document.getElementById('home-node-chips').innerHTML = chipsHTML([['KMS', e.message]]);
   }
   redrawHomeGauge();
 }
-refreshStatus();
-setInterval(refreshStatus, 15000);
 
-// Dropzone: upload recordings (e.g., Trnava's, copied off the box by hand)
+function renderNode(n) {
+  const links = n.links || [];
+  const up = links.filter(l => l.reachable).length;
+  setBadge('net-badge', `${up} of ${links.length} links reachable`, up === links.length ? 'success' : 'warn');
+  const nodeChips = [
+    ['Node', n.node_id], ['Applications here', (n.saes || []).join(', ') || 'none'],
+    ['Reserved keys waiting', n.local.reserved_key_count], ['Delivered', n.local.consumed_key_count],
+    ['Links', links.length], ['Pool keys', poolKeys],
+  ];
+  document.getElementById('net-node-chips').innerHTML = chipsHTML(nodeChips);
+  document.getElementById('home-node-chips').innerHTML = chipsHTML([
+    ['Node', n.node_id], ['Links up', `${up} / ${links.length}`], ['Pool keys', poolKeys],
+    ['Reachable nodes', Object.keys(n.routes || {}).length],
+  ]);
+  document.getElementById('net-links').innerHTML = links.length ? links.map(l => `<tr>
+      <td>${esc(l.neighbor)}</td>
+      <td class="${l.reachable ? 'positive' : ''}">${l.reachable ? 'yes, ' + l.rtt_ms.toFixed(1) + ' ms' : 'no' + (l.error ? ': ' + esc(l.error) : '')}</td>
+      <td>${l.mine}</td><td>${l.theirs}</td><td>${l.pool.consumed_key_count + l.pool.expired_key_count}</td>
+    </tr>`).join('') : emptyRow(5, 'no QKD links declared for this node');
+
+  const saes = (n.network && n.network.saes) || {};
+  const byNode = {};
+  for (const [sae, home] of Object.entries(saes)) (byNode[home] = byNode[home] || []).push(sae);
+  const nodes = Object.keys((n.network && n.network.nodes) || {}).sort();
+  document.getElementById('net-routes').innerHTML = nodes.map(id => `<tr>
+      <td>${esc(id)}${id === n.node_id ? ' (this node)' : ''}</td>
+      <td>${id === n.node_id ? '-' : esc((n.routes || {})[id] || 'unreachable')}</td>
+      <td class="mono">${esc((byNode[id] || []).sort().join(', '))}</td>
+    </tr>`).join('');
+
+  // the dashboard's own SAE can exchange keys with applications on every other reachable node
+  const remote = Object.entries(saes).filter(([, home]) => home !== n.node_id && (n.routes || {})[home]).map(([s, home]) => [s, home]).sort();
+  for (const id of ['kx-slave', 'kx-master']) {
+    const sel = document.getElementById(id);
+    const keep = sel.value;
+    sel.innerHTML = remote.map(([s, home]) => `<option value="${esc(s)}">${esc(s)} (node ${esc(home)})</option>`).join('');
+    if (keep) sel.value = keep;
+  }
+  const tpSel = document.getElementById('tp-peer');
+  const keepPeer = tpSel.value;
+  tpSel.innerHTML = links.map(l => `<option value="${esc(l.neighbor)}">${esc(l.neighbor)}${l.reachable === false ? ' (unreachable)' : ''}</option>`).join('');
+  if (keepPeer) tpSel.value = keepPeer;
+  const linkSel = document.getElementById('extract-link');
+  const keepLink = linkSel.value;
+  linkSel.innerHTML = links.map(l => `<option value="${esc(l.neighbor)}">${esc(n.node_id)}-${esc(l.neighbor)}</option>`).join('') +
+    '<option value="">do not save the key</option>';
+  if (keepLink !== undefined && [...linkSel.options].some(o => o.value === keepLink)) linkSel.value = keepLink;
+}
+
+document.getElementById('kx-enc-btn').addEventListener('click', async () => {
+  const err = document.getElementById('kx-enc-error');
+  err.textContent = '';
+  try {
+    const d = await postJSON('/api/kms/enc', {
+      slave: document.getElementById('kx-slave').value,
+      number: Number(document.getElementById('kx-number').value), size: Number(document.getElementById('kx-size').value),
+    });
+    document.getElementById('kx-enc-table').innerHTML = d.keys.map(k => `<tr><td class="mono">${esc(k.key_ID)}</td><td class="mono">${esc(k.fingerprint)}</td></tr>`).join('');
+    refreshNode(); refreshAudit();
+  } catch (e) { err.textContent = e.message; }
+});
+
+document.getElementById('kx-dec-btn').addEventListener('click', async () => {
+  const err = document.getElementById('kx-dec-error');
+  err.textContent = '';
+  try {
+    const d = await postJSON('/api/kms/dec', {
+      master: document.getElementById('kx-master').value,
+      key_ids: document.getElementById('kx-ids').value.split(/\s+/).filter(Boolean),
+    });
+    document.getElementById('kx-dec-table').innerHTML = d.keys.map(k => `<tr><td class="mono">${esc(k.key_ID)}</td><td class="mono">${esc(k.fingerprint)}</td></tr>`).join('');
+    refreshNode(); refreshAudit();
+  } catch (e) { err.textContent = e.message; }
+});
+
+async function refreshAudit() {
+  try {
+    const d = await apiFetch('/api/kms/audit?n=200');
+    document.getElementById('audit-table').innerHTML = d.events.length ? d.events.map(e => `<tr>
+        <td>${esc((e.time || '').replace('T', ' ').slice(0, 19))}</td><td>${esc(e.event)}</td>
+        <td class="mono" title="${esc(e.key_ID)}">${esc((e.key_ID || '').slice(0, 8))}</td>
+        <td>${esc(e.master_SAE_ID)}</td><td>${esc(e.slave_SAE_ID)}</td><td>${esc(e.peer)}</td>
+        <td>${esc(e.bits || e.count || '')}</td><td>${esc(e.detail)}</td>
+      </tr>`).join('') : emptyRow(8, 'no key events yet');
+  } catch (e) {
+    document.getElementById('audit-table').innerHTML = emptyRow(8, e.message);
+  }
+}
+document.getElementById('audit-refresh').addEventListener('click', refreshAudit);
+
+// Recordings, and the pair pickers every analysis page shares
+let recordings = { files: [], pairs: [], items: [] };
+
+function fillPairPickers() {
+  const opts = recordings.files.map(f => `<option value="${esc(f)}">${esc(f.replace('_timestamp_sequence.npy', ''))}</option>`).join('');
+  document.querySelectorAll('select.pair-a, select.pair-b').forEach(sel => {
+    const keep = sel.value;
+    sel.innerHTML = opts;
+    if (keep && recordings.files.includes(keep)) sel.value = keep;
+  });
+  // default to the newest auto-detected pair, else the two newest files
+  const last = recordings.pairs[recordings.pairs.length - 1];
+  const [da, db] = last ? [last.a, last.b] : recordings.files.slice(-2);
+  document.querySelectorAll('select.pair-a').forEach(s => { if (!s.dataset.touched && da) s.value = da; });
+  document.querySelectorAll('select.pair-b').forEach(s => { if (!s.dataset.touched && db) s.value = db; });
+}
+document.querySelectorAll('select.pair-a, select.pair-b').forEach(s => s.addEventListener('change', () => { s.dataset.touched = '1'; }));
+
+const extractPairs = [];  // chosen pairs, [{a, b, checked}]
+
+function renderExtractPairs() {
+  for (const p of recordings.pairs) {
+    if (!extractPairs.some(q => q.a === p.a && q.b === p.b)) extractPairs.push({ a: p.a, b: p.b, checked: false });
+  }
+  const tb = document.getElementById('extract-pairs');
+  tb.innerHTML = extractPairs.length ? extractPairs.map((p, i) => `<tr>
+      <td><input type="checkbox" data-pair="${i}" ${p.checked ? 'checked' : ''}></td>
+      <td class="mono">${esc(p.a.replace('_timestamp_sequence.npy', ''))}</td>
+      <td class="mono">${esc(p.b.replace('_timestamp_sequence.npy', ''))}</td>
+    </tr>`).join('') : emptyRow(3, 'no recording pairs yet: upload or record, or pair two by hand below');
+}
+document.getElementById('extract-pairs').addEventListener('change', e => {
+  const i = e.target.dataset.pair;
+  if (i !== undefined) extractPairs[i].checked = e.target.checked;
+});
+document.getElementById('extract-add-btn').addEventListener('click', () => {
+  const a = document.getElementById('extract-add-a').value, b = document.getElementById('extract-add-b').value;
+  if (!a || !b || a === b) return;
+  const found = extractPairs.find(q => q.a === a && q.b === b);
+  if (found) found.checked = true; else extractPairs.push({ a, b, checked: true });
+  renderExtractPairs();
+});
+
+async function refreshRecordings() {
+  try {
+    recordings = await apiFetch('/api/recordings');
+  } catch (e) { return; }
+  fillPairPickers();
+  renderExtractPairs();
+  renderTwoPartyRecordings();
+  const badge = document.getElementById('recordings-usage-badge');
+  const cap = recordings.max_gb > 0 ? recordings.max_gb * 1024 ** 3 : null;
+  badge.textContent = formatBytes(recordings.total_bytes) + (cap ? ` / ${recordings.max_gb} GB cap` : ' (no cap set)');
+  badge.className = 'badge ' + (cap && recordings.total_bytes > cap * 0.9 ? 'badge-warn' : 'badge-muted');
+  document.getElementById('recordings-table-body').innerHTML = recordings.items.length ? recordings.items.map(it => `<tr>
+      <td class="mono">${esc(it.name)}</td><td>${formatBytes(it.bytes)}</td>
+      <td><button class="btn btn-outline" style="padding:.3rem .6rem;font-size:.72rem" data-delete-recording="${esc(it.base)}">Delete</button></td>
+    </tr>`).join('') : emptyRow(3, 'none uploaded yet');
+}
+
+function formatBytes(n) {
+  if (!n) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let u = 0;
+  while (n >= 1024 && u < units.length - 1) { n /= 1024; u++; }
+  return (u === 0 ? n : n.toFixed(1)) + ' ' + units[u];
+}
+
 function setupDropzone(dropId, inputId, onFiles) {
   const drop = document.getElementById(dropId);
   const input = document.getElementById(inputId);
-  if (!drop || !input) return;
   drop.addEventListener('click', () => input.click());
+  drop.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') input.click(); });
   drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('drag-over'); });
   drop.addEventListener('dragleave', () => drop.classList.remove('drag-over'));
   drop.addEventListener('drop', e => {
@@ -627,103 +775,51 @@ function setupDropzone(dropId, inputId, onFiles) {
   input.addEventListener('change', () => { if (input.files.length) onFiles(input.files); });
 }
 
-function uploadRecordings(files) {
+setupDropzone('rec-drop', 'rec-file-input', files => {
   const track = document.getElementById('upload-progress');
   const fill = document.getElementById('upload-progress-fill');
   const list = document.getElementById('upload-file-list');
   const fd = new FormData();
   for (const f of files) fd.append('files', f);
-
   track.classList.add('active');
   fill.style.width = '0%';
-
   const xhr = new XMLHttpRequest();
   xhr.open('POST', '/api/upload');
-  xhr.upload.addEventListener('progress', e => {
-    if (e.lengthComputable) fill.style.width = ((e.loaded / e.total) * 100).toFixed(0) + '%';
-  });
+  xhr.upload.addEventListener('progress', e => { if (e.lengthComputable) fill.style.width = ((e.loaded / e.total) * 100).toFixed(0) + '%'; });
   xhr.onload = () => {
     track.classList.remove('active');
     try {
       const d = JSON.parse(xhr.responseText);
-      const rows = d.saved.map(n => `<div class="ok">saved: ${n}</div>`)
-        .concat(d.skipped.map(n => `<div class="bad">skipped (unexpected name): ${n}</div>`));
-      list.innerHTML = rows.join('');
-      refreshRecordingsList();
-    } catch (e) {
-      list.innerHTML = `<div class="bad">upload failed</div>`;
-    }
+      list.innerHTML = d.saved.map(n => `<div class="ok">saved: ${esc(n)}</div>`)
+        .concat(d.skipped.map(n => `<div class="bad">skipped (unexpected name): ${esc(n)}</div>`)).join('');
+      refreshRecordings();
+    } catch (e) { list.innerHTML = '<div class="bad">upload failed</div>'; }
   };
-  xhr.onerror = () => { track.classList.remove('active'); list.innerHTML = `<div class="bad">upload failed</div>`; };
+  xhr.onerror = () => { track.classList.remove('active'); list.innerHTML = '<div class="bad">upload failed</div>'; };
   xhr.send(fd);
-}
-setupDropzone('rec-drop', 'rec-file-input', uploadRecordings);
-
-function formatBytes(n) {
-  if (!n) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let u = 0;
-  while (n >= 1024 && u < units.length - 1) { n /= 1024; u++; }
-  return (u === 0 ? n : n.toFixed(1)) + ' ' + units[u];
-}
-
-async function refreshRecordingsList() {
-  const badge = document.getElementById('recordings-usage-badge');
-  const tbody = document.getElementById('recordings-table-body');
-  if (!badge || !tbody) return;
-  try {
-    const d = await apiFetch('/api/recordings');
-    const capBytes = d.max_gb > 0 ? d.max_gb * 1024 ** 3 : null;
-    badge.textContent = formatBytes(d.total_bytes) + (capBytes ? ` / ${d.max_gb}GB cap` : ' (no cap set)');
-    badge.className = 'badge ' + (capBytes && d.total_bytes > capBytes * 0.9 ? 'badge-warn' : 'badge-muted');
-
-    if (!d.items.length) {
-      tbody.innerHTML = `<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:1.5rem">none uploaded yet</td></tr>`;
-      return;
-    }
-    tbody.innerHTML = d.items.map(it => `
-      <tr>
-        <td>${it.name}</td>
-        <td>${formatBytes(it.bytes)}</td>
-        <td><button class="btn btn-outline" style="padding:.3rem .6rem;font-size:.72rem" data-delete-recording="${it.base}">Delete</button></td>
-      </tr>
-    `).join('');
-  } catch (e) { /* backend not reachable yet */ }
-}
+});
 
 document.getElementById('recordings-table-body').addEventListener('click', async e => {
   const btn = e.target.closest('[data-delete-recording]');
   if (!btn) return;
   const base = btn.dataset.deleteRecording;
-  if (!confirm(`Delete recording "${base}"? This removes the raw TimeTagger files from disk (not reversible).`)) return;
+  if (!confirm(`Delete recording "${base}"? This removes the raw TimeTagger files from disk and cannot be undone.`)) return;
   btn.disabled = true;
   try {
     await apiFetch(`/api/recordings/${encodeURIComponent(base)}`, { method: 'DELETE' });
-    refreshRecordingsList();
-  } catch (err) {
-    alert('Delete failed: ' + err.message);
-    btn.disabled = false;
-  }
+    refreshRecordings();
+  } catch (err) { alert('Delete failed: ' + err.message); btn.disabled = false; }
 });
 
 document.getElementById('recordings-delete-all-btn').addEventListener('click', async () => {
-  const btn = document.getElementById('recordings-delete-all-btn');
-  if (!confirm('Delete ALL stored recordings? This removes every raw TimeTagger file from disk (not reversible).')) return;
-  btn.disabled = true;
+  if (!confirm('Delete ALL stored recordings? This removes every raw TimeTagger file from disk and cannot be undone.')) return;
   try {
     await apiFetch('/api/recordings', { method: 'DELETE' });
-    refreshRecordingsList();
-  } catch (err) {
-    alert('Delete all failed: ' + err.message);
-  } finally {
-    btn.disabled = false;
-  }
+    refreshRecordings();
+  } catch (err) { alert('Delete all failed: ' + err.message); }
 });
 
-// Live alignment: same 4 diagnostic panels coincidence_peak.py's save_plot()
-// draws (coarse correlation, best constant-shift peak, clock-rate drift,
-// clock-corrected peak), redrawn fresh on every recheck --> these are
-// snapshots of one analysis, not a metric evolving over time, so no history
+// Alignment: the four panels coincidence_peak.py's save_plot() draws, for the chosen pair
 let alignInFlight = false;
 let lastAlignData = null;
 
@@ -738,229 +834,290 @@ function redrawAlignPlots() {
 }
 
 async function refreshAlignment() {
-  if (alignInFlight) return;  // full analysis can take a while; don't stack polls
+  if (alignInFlight) return;
   alignInFlight = true;
-  const badge = document.getElementById('align-badge');
-  const chips = document.getElementById('align-chips');
-  badge.textContent = 'Checking...';
-  badge.className = 'badge badge-muted';
+  const a = document.getElementById('align-a').value, b = document.getElementById('align-b').value;
+  setBadge('align-badge', 'Checking...');
   try {
-    const d = await apiFetch('/api/align/live');
+    const d = await apiFetch(`/api/align/live?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
     if (!d.ready) {
-      badge.textContent = 'Waiting for data';
-      badge.className = 'badge badge-muted';
-      chips.innerHTML = `<div class="chip"><span class="chip-k">Status</span><span class="chip-v">${d.reason}</span></div>`;
-      document.getElementById('align-run-btn').disabled = true;
+      setBadge('align-badge', 'Waiting for data');
+      document.getElementById('align-chips').innerHTML = chipsHTML([['Status', d.reason]]);
       return;
     }
-    badge.textContent = d.detected ? 'PEAK' : 'No peak yet';
-    badge.className = 'badge ' + (d.detected ? 'badge-success' : 'badge-warn');
-    chips.innerHTML = [
-      ['Lag', d.lag_ns.toFixed(1) + ' ns'],
-      ['Window', d.window_ns.toFixed(1) + ' ns'],
-      ['Score', d.score.toFixed(2)],
-      ['Skew', d.skew_ppb.toFixed(2) + ' ppb'],
-      ['Skew method', d.skew_method],
+    setBadge('align-badge', d.detected ? 'PEAK' : 'No peak', d.detected ? 'success' : 'warn');
+    document.getElementById('align-chips').innerHTML = chipsHTML([
+      ['Lag', d.lag_ns.toFixed(1) + ' ns'], ['Window', d.window_ns.toFixed(1) + ' ns'], ['Score', d.score.toFixed(2)],
+      ['Skew', d.skew_ppb.toFixed(2) + ' ppb'], ['Skew method', d.skew_method],
       ['Corrected window', d.corrected_window_ns.toFixed(2) + ' ns'],
-      ['A', `${d.a} (${d.n_a.toLocaleString()})`],
-      ['B', `${d.b} (${d.n_b.toLocaleString()})`],
-    ].map(([k, v]) => `<div class="chip"><span class="chip-k">${k}</span><span class="chip-v">${v}</span></div>`).join('');
-
+      ['A events', d.n_a.toLocaleString()], ['B events', d.n_b.toLocaleString()],
+    ]);
+    if (!lastAlignData || lastAlignData.a !== d.a || lastAlignData.b !== d.b) {
+      for (const k of Object.keys(_zoomState)) _zoomState[k] = null;
+    }
     lastAlignData = d;
     redrawAlignPlots();
-    // Only a confirmed peak makes the real recording's clock alignment
-    // trustworthy enough to run the real chain on, same guard the backend
-    // (analyze_arrays(strict=True)) and cmd/importtt's findRecording() apply
-    document.getElementById('align-run-btn').disabled = !d.detected;
   } catch (e) {
-    badge.textContent = 'Error';
-    badge.className = 'badge badge-danger';
+    setBadge('align-badge', 'Error', 'danger');
   } finally {
     alignInFlight = false;
   }
 }
+for (const id of ['align-a', 'align-b']) document.getElementById(id).addEventListener('change', refreshAlignment);
 
-// Run the real chain (sift, error-correct, privacy-amplify) on the same
-// recording pair once a peak is confirmed above, and save the distilled key
-document.getElementById('align-run-btn').addEventListener('click', async () => {
-  const btn = document.getElementById('align-run-btn');
-  const badge = document.getElementById('align-run-badge');
-  const chips = document.getElementById('align-run-chips');
-  const errEl = document.getElementById('align-run-error');
-  errEl.textContent = '';
-  btn.disabled = true;
-  badge.textContent = 'Running...';
-  badge.className = 'badge badge-muted';
+// Key extraction and calibration jobs
+let shownJob = null;
+
+function extractParams() {
+  const method = document.getElementById('extract-method').value;
+  const p = {
+    pairs: extractPairs.filter(q => q.checked).map(q => ({ a: q.a, b: q.b })),
+    method,
+    filter: document.getElementById('extract-filter').checked,
+    asymptotic: document.getElementById('extract-asymptotic').checked,
+    delays: document.getElementById('extract-delays').checked,
+    link: document.getElementById('extract-link').value,
+  };
+  if (document.getElementById('extract-soft').checked && ['ldpc5g', 'polar', 'ldpc'].includes(method)) p.soft_bins = 16;
+  if (p.asymptotic) p.link = '';  // an asymptotic length certifies nothing, so it never becomes key
+  return p;
+}
+
+async function startJob(kind) {
+  const err = document.getElementById('extract-error');
+  err.textContent = '';
+  const params = extractParams();
+  if (!params.pairs.length) { err.textContent = 'tick at least one recording pair'; return; }
   try {
-    const method = document.getElementById('align-run-method').value;
-    const body = {
-      method,
-      filter: document.getElementById('align-run-filter').checked,
-      asymptotic: document.getElementById('align-run-asymptotic').checked,
-    };
-    if (document.getElementById('align-run-soft').checked && (method === 'polar' || method === 'ldpc')) {
-      body.soft_bins = 16;
-    }
-    const m = await apiFetch('/api/align/run', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-    });
-    const items = [...metricItems(m), ['Keys in store', m.keys_in_store], ['Elapsed', m.elapsed_ms + ' ms']];
-    // final_key_bits is what the pipeline distilled; keys_saved*256 is what
-    // actually got written --> a gap between them means -keystore-max held
-    // some of it back (the keystore is at its cap), see cmd/importtt's
-    // saveToKeystore(). Real key bits, so nothing here silently drops them
-    // they just never leave the process
-    const heldBackBits = m.final_key_bits - m.keys_saved * 256;
-    if (heldBackBits > 0) {
-      items.push(['Held back (keystore cap)', heldBackBits + ' bits']);
-    }
-    chips.innerHTML = chipsHTML(items);
-    if (heldBackBits > 0) {
-      badge.textContent = 'Keystore at cap';
-      badge.className = 'badge badge-warn';
-    } else if (m.final_key_bits > 0) {
-      badge.textContent = 'Key saved';
-      badge.className = 'badge badge-success';
-    } else {
-      badge.textContent = 'No key (too few pairs or QBER too high for the finite-key bound)';
-      badge.className = 'badge badge-warn';
-    }
-    if (m.keys_in_store != null) lastKeysSaved = m.keys_in_store;
-    redrawHomeGauge();
-  } catch (e) {
-    errEl.textContent = e.message;
-    badge.textContent = 'Error';
-    badge.className = 'badge badge-danger';
-  } finally {
-    btn.disabled = !(lastAlignData && lastAlignData.detected);
+    const job = await postJSON('/api/jobs', { kind, params });
+    shownJob = job.id;
+    renderJob(job);
+    refreshJobs();
+  } catch (e) { err.textContent = e.message; }
+}
+document.getElementById('extract-run-btn').addEventListener('click', () => startJob('extract'));
+
+// Two-party extraction: this node's own recordings, announced to one neighbor
+const tpChosen = new Set();
+function renderTwoPartyRecordings() {
+  const tb = document.getElementById('tp-recordings');
+  tb.innerHTML = recordings.files.length ? recordings.files.map(f => `<tr>
+      <td><input type="checkbox" data-tp="${esc(f)}" ${tpChosen.has(f) ? 'checked' : ''}></td>
+      <td class="mono">${esc(f.replace('_timestamp_sequence.npy', ''))}</td></tr>`).join('') : emptyRow(2, 'no recordings yet');
+}
+document.getElementById('tp-recordings').addEventListener('change', e => {
+  const f = e.target.dataset.tp;
+  if (f) { if (e.target.checked) tpChosen.add(f); else tpChosen.delete(f); }
+});
+document.getElementById('tp-start-btn').addEventListener('click', async () => {
+  const err = document.getElementById('tp-error');
+  err.textContent = '';
+  const p = extractParams();
+  const params = { peer: document.getElementById('tp-peer').value, recordings: [...tpChosen], filter: p.filter, asymptotic: p.asymptotic, delays: p.delays };
+  if (p.soft_bins) params.soft_bins = p.soft_bins;
+  params.method = p.method === 'polar' ? 'polar' : 'ldpc5g';
+  if (p.method !== params.method) { err.textContent = 'two-party extraction runs 5G NR LDPC or polar codes'; return; }
+  if (!params.peer) { err.textContent = 'this node has no QKD link'; return; }
+  if (!params.recordings.length) { err.textContent = "tick this node's own recordings"; return; }
+  try {
+    const job = await postJSON('/api/jobs', { kind: 'twoparty-alice', params });
+    shownJob = job.id;
+    renderJob(job);
+    refreshJobs();
+  } catch (e) { err.textContent = e.message; }
+});
+document.getElementById('extract-calibrate-btn').addEventListener('click', () => startJob('calibrate'));
+
+function renderJob(job) {
+  setEl('job-title', job.id);
+  const kinds = { queued: 'muted', running: 'warn', done: 'success', failed: 'danger' };
+  let status = job.status;
+  if (job.status === 'done' && (job.kind === 'extract' || job.kind.startsWith('twoparty')) && job.result) {
+    status = job.result.final_key_bits > 0 ? (job.result.link ? `key handed to link ${NODE()}-${job.result.link}` : 'key extracted, not saved') : 'no key (too few pairs or QBER too high)';
   }
+  setBadge('job-badge', status, kinds[job.status]);
+  const items = [['Kind', job.kind], ['Started', fmtTime(job.started)]];
+  if (job.kind.startsWith('twoparty')) items.push(['Neighbor', job.params.peer], ['Session', job.params.session || '-'], ['Recordings', (job.params.recordings || []).length]);
+  else items.push(['Pairs', (job.params.pairs || []).length]);
+  if (job.result && (job.kind === 'extract' || job.kind.startsWith('twoparty'))) items.push(...metricItems(job.result));
+  if (job.error) items.push(['Error', job.error]);
+  document.getElementById('job-chips').innerHTML = chipsHTML(items);
+  const log = document.getElementById('job-log');
+  log.textContent = (job.log || []).join('\n');
+  log.scrollTop = log.scrollHeight;
+}
+
+function NODE() { return lastNode ? lastNode.node_id : ''; }
+
+async function refreshJobs() {
+  try {
+    const d = await apiFetch('/api/jobs');
+    setEl('extract-delays-state', d.delays_calibrated ? '(calibrated)' : '(not calibrated yet)');
+    document.getElementById('jobs-table').innerHTML = d.jobs.length ? d.jobs.map(j => `<tr data-job="${esc(j.id)}" style="cursor:pointer">
+        <td>${esc(j.id)}</td><td>${esc(j.kind)}</td><td>${esc(j.status)}</td><td>${(j.params.pairs || j.params.recordings || []).length}</td>
+        <td>${j.result && j.result.qber != null ? (j.result.qber * 100).toFixed(2) + '%' : '-'}</td>
+        <td>${j.result && j.result.final_key_bits != null ? j.result.final_key_bits + ' bits' : '-'}</td>
+        <td>${esc(j.result && j.result.link ? j.result.link : '-')}</td><td>${fmtTime(j.finished)}</td>
+      </tr>`).join('') : emptyRow(8, 'no jobs yet');
+    const target = shownJob || (d.jobs[0] && d.jobs[0].id);
+    if (target) renderJob(await apiFetch('/api/jobs/' + encodeURIComponent(target)));
+  } catch (e) { /* backend not reachable yet */ }
+}
+document.getElementById('jobs-table').addEventListener('click', e => {
+  const row = e.target.closest('[data-job]');
+  if (row) { shownJob = row.dataset.job; refreshJobs(); }
 });
 
-// CHSH/Bell diagnostic: per-block singles + ROI1/ROI2 coincidence counts per
-// channel pair over the same two recordings, see acquisition/chsh_diagnostic.py
+// CHSH diagnostic for the chosen pair
 document.getElementById('chsh-run-btn').addEventListener('click', async () => {
   const btn = document.getElementById('chsh-run-btn');
-  const badge = document.getElementById('chsh-badge');
   const errEl = document.getElementById('chsh-error');
-  const chips = document.getElementById('chsh-chips');
-  const tbody = document.getElementById('chsh-table-body');
-  const downloadBtn = document.getElementById('chsh-download-btn');
   errEl.textContent = '';
   btn.disabled = true;
-  badge.textContent = 'Running...';
-  badge.className = 'badge badge-muted';
+  setBadge('chsh-badge', 'Running...');
+  const num = id => { const v = document.getElementById(id).value; return v === '' ? null : Number(v); };
   try {
-    const numOrNull = id => {
-      const v = document.getElementById(id).value;
-      return v === '' ? null : Number(v);
-    };
-    const body = {
-      block_s: numOrNull('chsh-block-s'),
-      roi1_width_ns: numOrNull('chsh-roi1-width'),
-      roi1_center_ns: numOrNull('chsh-roi1-center'),
-      roi2_offset_ns: numOrNull('chsh-roi2-offset'),
-      roi2_width_ns: numOrNull('chsh-roi2-width'),
-    };
-    const d = await apiFetch('/api/chsh/run', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    const d = await postJSON('/api/chsh/run', {
+      a: document.getElementById('chsh-a').value, b: document.getElementById('chsh-b').value,
+      block_s: num('chsh-block-s'), roi1_width_ns: num('chsh-roi1-width'), roi1_center_ns: num('chsh-roi1-center'),
+      roi2_offset_ns: num('chsh-roi2-offset'), roi2_width_ns: num('chsh-roi2-width'),
     });
-    badge.textContent = `${d.metadata.n_blocks} blocks`;
-    badge.className = 'badge badge-success';
-    chips.innerHTML = [
-      ['A', d.a], ['B', d.b],
-      ['Blocks', `${d.metadata.n_blocks} x ${d.metadata.block_s}s`],
+    setBadge('chsh-badge', `${d.metadata.n_blocks} blocks`, 'success');
+    document.getElementById('chsh-chips').innerHTML = chipsHTML([
+      ['A', d.a], ['B', d.b], ['Blocks', `${d.metadata.n_blocks} x ${d.metadata.block_s}s`],
       ['ROI1', `${(d.metadata.roi1.center_ps / 1000).toFixed(2)} ns ± ${(d.metadata.roi1.width_ps / 2000).toFixed(2)} ns`],
       ['ROI2', `${(d.metadata.roi2.center_ps / 1000).toFixed(2)} ns ± ${(d.metadata.roi2.width_ps / 2000).toFixed(2)} ns` + (d.roi2_offset_auto ? ' (auto)' : '')],
       ['Clock skew', d.metadata.clock_skew_ppb.toFixed(2) + ' ppb'],
-    ].map(([k, v]) => `<div class="chip"><span class="chip-k">${k}</span><span class="chip-v">${v}</span></div>`).join('');
-
-    tbody.innerHTML = d.pairs.map(p => `<tr>
-      <td>${p.pair}</td><td>${p.roi1_total.toLocaleString()}</td><td>${p.roi2_total.toLocaleString()}</td>
-      <td class="${p.subtracted > 0 ? 'positive' : ''}">${p.subtracted.toLocaleString()}</td>
-    </tr>`).join('');
-
-    downloadBtn.style.display = '';
+    ]);
+    document.getElementById('chsh-table-body').innerHTML = d.pairs.map(p => `<tr>
+        <td>${esc(p.pair)}</td><td>${p.roi1_total.toLocaleString()}</td><td>${p.roi2_total.toLocaleString()}</td>
+        <td class="${p.subtracted > 0 ? 'positive' : ''}">${p.subtracted.toLocaleString()}</td></tr>`).join('');
+    document.getElementById('chsh-download-btn').style.display = '';
   } catch (e) {
     errEl.textContent = e.message;
-    badge.textContent = 'Error';
-    badge.className = 'badge badge-danger';
+    setBadge('chsh-badge', 'Error', 'danger');
   } finally {
     btn.disabled = false;
   }
 });
 
-// Config load + acquisition start/stop
-let loadedLinks = [];
-
+// Acquisition: config upload, start and stop
 async function refreshConfig() {
   try {
     const d = await apiFetch('/api/config');
     const sel = document.getElementById('acq-link');
-    const status = document.getElementById('config-status');
-    if (!d.loaded) {
-      status.textContent = 'No config loaded yet';
-      status.className = 'badge badge-muted';
-      sel.innerHTML = '';
-      return;
-    }
-    loadedLinks = d.links;
-    status.textContent = `${d.sites.length} sites, ${d.links.length} links`;
-    status.className = 'badge badge-success';
-    sel.innerHTML = d.links.map(l => `<option value="${l.name}">${l.name} (${l.site_a} + ${l.site_b})</option>`).join('');
+    if (!d.loaded) { setBadge('config-status', 'No config loaded yet'); sel.innerHTML = ''; return; }
+    setBadge('config-status', `${d.sites.length} sites, ${d.links.length} links`, 'success');
+    sel.innerHTML = d.links.map(l => `<option value="${esc(l.name)}">${esc(l.name)} (${esc(l.site_a)} + ${esc(l.site_b)})</option>`).join('');
     if (d.default_link) sel.value = d.default_link;
   } catch (e) { /* backend not reachable yet */ }
 }
 refreshConfig();
 
-function uploadConfigFile(files) {
-  const f = files[0];
+setupDropzone('config-drop', 'config-file-input', files => {
   const status = document.getElementById('config-error');
   status.textContent = '';
   const fd = new FormData();
-  fd.append('file', f);
-  fetch('/api/config', { method: 'POST', body: fd })
-    .then(r => r.json().then(d => ({ ok: r.ok, d })))
-    .then(({ ok, d }) => { if (!ok) throw new Error(d.error); refreshConfig(); })
-    .catch(err => { status.textContent = err.message; });
-}
-setupDropzone('config-drop', 'config-file-input', uploadConfigFile);
+  fd.append('file', files[0]);
+  apiFetch('/api/config', { method: 'POST', body: fd }).then(refreshConfig).catch(err => { status.textContent = err.message; });
+});
 
 document.getElementById('acq-start').addEventListener('click', async () => {
   const errEl = document.getElementById('acq-error');
   errEl.textContent = '';
   try {
-    await apiFetch('/api/acquire/start', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        link: document.getElementById('acq-link').value,
-        duration_s: Number(document.getElementById('acq-duration').value) || 60,
-      }),
+    await postJSON('/api/acquire/start', {
+      link: document.getElementById('acq-link').value,
+      duration_s: Number(document.getElementById('acq-duration').value) || 60,
     });
+    refreshAcquireStatus();
   } catch (e) { errEl.textContent = e.message; }
 });
 
 document.getElementById('acq-stop').addEventListener('click', async () => {
   const errEl = document.getElementById('acq-error');
   errEl.textContent = '';
-  try { await apiFetch('/api/acquire/stop', { method: 'POST' }); }
-  catch (e) { errEl.textContent = e.message; }
+  try { await apiFetch('/api/acquire/stop', { method: 'POST' }); } catch (e) { errEl.textContent = e.message; }
 });
 
+let wasRecording = false;
 async function refreshAcquireStatus() {
   try {
     const d = await apiFetch('/api/acquire/status');
-    const badge = document.getElementById('acq-badge');
-    badge.textContent = d.running ? 'Recording' : 'Idle';
-    badge.className = 'badge ' + (d.running ? 'badge-success' : 'badge-muted');
+    setBadge('acq-badge', d.running ? (d.kind === 'replay' ? 'Replaying' : 'Recording') : 'Idle', d.running ? 'success' : 'muted');
+    document.getElementById('live-replay').disabled = d.running;
     document.getElementById('acq-start').disabled = d.running;
     document.getElementById('acq-stop').disabled = !d.running;
-    document.getElementById('acq-log').textContent = d.log.join('\n');
     const logEl = document.getElementById('acq-log');
+    logEl.textContent = d.log.join('\n');
     logEl.scrollTop = logEl.scrollHeight;
-    if (!d.running) refreshAlignment();
+    if (wasRecording && !d.running) refreshRecordings();
+    wasRecording = d.running;
   } catch (e) { /* backend not reachable yet */ }
 }
 
-// Land on Home; per-section polling (alignment, acquire status) starts
-// only once the user actually opens that section, see navigate() above
+// Live coincidence peak: the tracker's latest status, drawn once a second
+let liveLast = null;
+const fmtNum = (v, digits) => (v == null || !isFinite(v)) ? '-' : Number(v).toFixed(digits);
+
+function drawLive() {
+  const st = liveLast;
+  if (!st || st.state !== 'locked') {
+    const coarse = st && st.search && st.search.coarse;
+    document.getElementById('live-plot-t0').textContent = 'Coarse correlation while searching';
+    drawSeriesPlot('live-plot-c0', coarse ? coarse.x_ms : [], coarse ? coarse.y : [], '#2BBDE8', { xUnit: 'ms' });
+    ['live-plot-c1', 'live-plot-c2', 'live-plot-c3'].forEach(id => drawSeriesPlot(id, [], []));
+    return;
+  }
+  const h = st.histogram, hi = st.history;
+  document.getElementById('live-plot-t0').textContent = 'Clock-corrected peak, recent chunks';
+  drawSeriesPlot('live-plot-c0', h.x_ns, h.y, '#22C55E', { band: { center: 0, width: 2 * h.hwhm_ns }, markerX: 0, xUnit: 'ns', yMin: 0 });
+  drawDriftPlot('live-plot-c1', hi.t_s, hi.residual_ps, hi.t_s.map(() => 0), '#F59E0B');
+  drawSeriesPlot('live-plot-c2', hi.t_s, hi.rate, '#9B5CF5', { xUnit: 's', yMin: 0 });
+  drawSeriesPlot('live-plot-c3', hi.t_s, hi.score, '#2BBDE8', { xUnit: 's', yMin: 0 });
+}
+
+async function refreshLive() {
+  let d;
+  try { d = await apiFetch('/api/acquire/live'); } catch (e) { return; }
+  const st = d.status;
+  liveLast = st;
+  const state = st ? st.state : 'idle';
+  const kind = { locked: 'success', searching: 'warn', waiting: 'muted', idle: 'muted' }[state] || 'muted';
+  setBadge('live-badge', { locked: 'LOCKED', searching: 'Searching', waiting: 'Waiting for data', idle: d.running ? 'Starting' : 'Idle' }[state] || state, kind);
+  const chips = [];
+  if (st) {
+    chips.push(['Data', fmtNum(st.elapsed_s, 1) + ' s'], ['Rate A', fmtNum(st.rate_a / 1e3, 1) + ' kHz'], ['Rate B', fmtNum(st.rate_b / 1e3, 1) + ' kHz']);
+    if (state === 'locked') {
+      chips.push(['Lag B-A', fmtNum(st.lag_ns / 1e6, 6) + ' ms'], ['Skew', `${fmtNum(st.skew_ppb, 2)} ± ${fmtNum(st.skew_err_ppb, 2)} ppb`],
+        ['HWHM', fmtNum(st.hwhm_ps, 0) + ' ps'], ['True pairs', fmtNum(st.pair_rate, 0) + ' /s'],
+        ['Accidentals in ±HWHM', st.accidental_share == null ? '-' : fmtNum(100 * st.accidental_share, 1) + '%'],
+        ['Last chunk score', fmtNum(st.chunk_score, 1)]);
+      setEl('live-plot-v0', '±' + fmtNum(st.hwhm_ps, 0) + ' ps');
+      setEl('live-plot-v1', fmtNum(st.skew_ppb, 2) + ' ppb removed');
+      setEl('live-plot-v2', fmtNum(st.pair_rate, 0) + ' /s');
+      setEl('live-plot-v3', fmtNum(st.chunk_score, 1));
+    } else if (st.search && st.search.best_score != null) {
+      chips.push(['Best score', `${fmtNum(st.search.best_score, 1)} (locks at ${st.search.lock_score})`], ['Searched', fmtNum(st.search.span_s, 1) + ' s']);
+      setEl('live-plot-v0', 'best ' + fmtNum(st.search.best_score, 1));
+    }
+    document.getElementById('live-events').textContent = (st.events || []).join('\n');
+  }
+  document.getElementById('live-chips').innerHTML = chipsHTML(chips);
+  drawLive();
+}
+
+document.getElementById('live-replay').addEventListener('click', async () => {
+  const errEl = document.getElementById('live-error');
+  errEl.textContent = '';
+  try {
+    await postJSON('/api/acquire/replay', {
+      a: document.getElementById('live-a').value, b: document.getElementById('live-b').value,
+      speed: Number(document.getElementById('live-speed').value),
+    });
+    refreshAcquireStatus();
+  } catch (e) { errEl.textContent = e.message; }
+});
+window.addEventListener('resize', drawLive);
+
 navigate('home');

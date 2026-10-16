@@ -206,3 +206,103 @@ func TestKMSStatusCounts(t *testing.T) {
 	}
 	_ = avail
 }
+
+// TestKMSReservedKeyOnlyForItsPair: a reserved key is invisible to the pool and goes only to its pair
+func TestKMSReservedKeyOnlyForItsPair(t *testing.T) {
+	k := newTestKMS(t)
+	key := bytes.Repeat([]byte{5}, 32)
+	if err := k.PutReserved("k1", key, "alice", "bob", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := k.GetNext(5); len(got) != 0 {
+		t.Fatal("a reserved key was handed out by GetNext")
+	}
+	for _, pair := range [][2]string{{"", ""}, {"eve", "bob"}, {"alice", "eve"}, {"bob", "alice"}} {
+		if _, err := k.GetReserved("k1", pair[0], pair[1]); err != ErrKeyReserved {
+			t.Fatalf("pair %v: got %v, want ErrKeyReserved", pair, err)
+		}
+	}
+	got, err := k.GetReserved("k1", "alice", "bob")
+	if err != nil || !bytes.Equal(got, key) {
+		t.Fatalf("got %x, %v", got, err)
+	}
+	if _, err := k.GetReserved("k1", "alice", "bob"); err != ErrKeyConsumed {
+		t.Fatalf("second delivery: got %v", err)
+	}
+}
+
+// TestKMSDeliveredAndExpiredKeysAreWiped: no ciphertext survives delivery or a sweep, and the
+// tombstone keeps the key_ID from ever being stored again
+func TestKMSDeliveredAndExpiredKeysAreWiped(t *testing.T) {
+	k := newTestKMS(t)
+	k.PutWithID("used", bytes.Repeat([]byte{1}, 32), time.Hour)
+	k.PutWithID("old", bytes.Repeat([]byte{2}, 32), -time.Second)
+	k.Get("used")
+	if n, err := k.Sweep(); err != nil || n != 1 {
+		t.Fatalf("sweep wiped %d, %v", n, err)
+	}
+	for _, id := range []string{"used", "old"} {
+		data, _ := os.ReadFile(filepath.Join(k.dir, id+".json"))
+		if bytes.Contains(data, []byte("ciphertext")) {
+			t.Fatalf("%s still holds ciphertext: %s", id, data)
+		}
+		if err := k.PutWithID(id, []byte("again"), time.Hour); err == nil {
+			t.Fatalf("%s could be stored a second time", id)
+		}
+	}
+}
+
+// TestKMSGetBytesAllOrNothing: one bad key_ID in the list consumes none of the others
+func TestKMSGetBytesAllOrNothing(t *testing.T) {
+	k := newTestKMS(t)
+	k.PutWithID("a", bytes.Repeat([]byte{1}, 32), time.Hour)
+	k.PutWithID("b", bytes.Repeat([]byte{2}, 32), time.Hour)
+	if _, err := k.GetBytes([]string{"a", "missing"}, 64); err == nil {
+		t.Fatal("expected an error")
+	}
+	if _, err := k.GetBytes([]string{"a", "a"}, 64); err == nil {
+		t.Fatal("a repeated key_ID must be refused")
+	}
+	got, err := k.GetBytes([]string{"a", "b"}, 64)
+	if err != nil || len(got) != 64 {
+		t.Fatalf("a was consumed by the failed call: %v", err)
+	}
+}
+
+// TestKMSIndexSurvivesReopen: a restarted store knows what was delivered and what is reserved
+func TestKMSIndexSurvivesReopen(t *testing.T) {
+	k := newTestKMS(t)
+	k.PutWithID("free", bytes.Repeat([]byte{1}, 32), time.Hour)
+	k.PutWithID("gone", bytes.Repeat([]byte{2}, 32), time.Hour)
+	k.PutReserved("held", bytes.Repeat([]byte{3}, 32), "m", "s", time.Hour)
+	k.Get("gone")
+	k2, err := NewKMS(k.dir, k.masterKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, _ := k2.Status()
+	if st.StoredKeyCount != 1 || st.ConsumedKeyCount != 1 || st.ReservedKeyCount != 1 {
+		t.Fatalf("got %+v", st)
+	}
+	if _, err := k2.GetReserved("held", "m", "s"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestOriginatorOfSplitsThePool: for any key_ID exactly one end of a link may originate with it
+func TestOriginatorOfSplitsThePool(t *testing.T) {
+	a, b := OriginatorOf("A", "B"), OriginatorOf("B", "A")
+	nA := 0
+	for i := 0; i < 1000; i++ {
+		id, _ := newKeyID()
+		if a(id) == b(id) {
+			t.Fatalf("%s: both or neither end may use it", id)
+		}
+		if a(id) {
+			nA++
+		}
+	}
+	if nA < 400 || nA > 600 {
+		t.Fatalf("A owns %d of 1000, want about half", nA)
+	}
+}

@@ -7,6 +7,7 @@ import os
 import json
 import time
 import argparse
+import queue
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -112,9 +113,9 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
     parser.add_argument('--output-dir', metavar='DIR', help='override record_dual.output_dir')
     live_group = parser.add_mutually_exclusive_group()
     live_group.add_argument('--live', dest='live', action='store_true', default=None,
-                             help='override live_coincidence.enabled: show a periodic coincidence-peak estimate while recording')
+                             help='override live_coincidence.enabled: lock onto and track the coincidence peak while recording')
     live_group.add_argument('--no-live', dest='live', action='store_false',
-                             help='override live_coincidence.enabled: disable the periodic estimate')
+                             help='override live_coincidence.enabled: disable live tracking')
     parser.add_argument('--live-interval-s', type=float, metavar='SECONDS',
                          help='override live_coincidence.interval_s')
     parser.add_argument('--live-window-s', type=float, metavar='SECONDS',
@@ -153,10 +154,11 @@ class TTContext:
     wall_end_s: Optional[float] = None     # time.monotonic() right after the loop exits
     scratch_ch_path: Optional[str] = None  # set on first flush, see _flush_overflow/write_outputs
     scratch_ts_path: Optional[str] = None
+    live_queue: Optional[queue.Queue] = None  # every new frame's timestamps, for the live tracker
 
     @property
     def tag(self) -> str:
-        '''Short identifier for log lines and thread names, e.g. 192.168.101.3:49404'''
+        '''Short identifier for log lines and thread names, e.g. 192.0.2.10:40404'''
         return f'{self.cfg["tt_ip"]}:{self.cfg["tt_port"]}'
 
 
@@ -173,32 +175,10 @@ def build_stream(cfg: dict, settings: dict) -> TimeTaggerStream:
 
 
 def make_file_basename(ip: str, port: int, started_at: datetime) -> str:
-    '''e.g. 20260605_153012_192_168_101_3_p49404, dots in the IP become underscores'''
+    '''e.g. 20260605_153012_192_0_2_10_p40404, dots in the IP become underscores'''
     ip_safe = ip.replace('.', '_')
     ts = started_at.strftime('%Y%m%d_%H%M%S')
     return f'{ts}_{ip_safe}_p{port}'
-
-
-_PS_PER_S = 1_000_000_000_000
-
-
-def _snapshot_timestamps(ctx: TTContext) -> np.ndarray:
-    '''Concatenates whatever this TimeTagger has buffered so far, safe to
-    call while reader_thread keeps appending frames concurrently'''
-    with ctx.lock:
-        parts = list(ctx.timestamps)
-    if not parts:
-        return np.empty(0, dtype=np.int64)
-    return np.concatenate(parts)
-
-
-def _trim_to_window(ts: np.ndarray, window_ps: int) -> np.ndarray:
-    '''Keeps only the trailing window_ps of an already-sorted array, so a periodic live
-    check costs the same no matter how long the recording has run'''
-    if window_ps <= 0 or ts.size == 0:
-        return ts
-    left = int(np.searchsorted(ts, int(ts[-1]) - window_ps, side='left'))
-    return ts[left:]
 
 
 # Without this, ctx.channels/ctx.timestamps buffer the WHOLE recording in RAM (never
@@ -237,52 +217,38 @@ def _flush_overflow(ctx: 'TTContext', base: str, outdir: str) -> None:
             f.write(a.tobytes())
 
 
-def _coincidence_kwargs_from_config(cfg: dict) -> dict:
-    '''Maps config.json's ms/ns-named CLI-style keys into analyze_arrays's ps-named kwargs,
-    reused by the live monitor so it tracks the same algorithm settings as the final report'''
-    cp = cfg.get('coincidence_peak', {})
-    return {
-        'max_lag_ps': int(round(cp.get('max_lag_ms', 1000.0) * 1_000_000_000)),
-        'coarse_bin_ps': int(round(cp.get('coarse_bin_ns', 100.0) * 1_000)),
-        'fine_bin_ps': int(cp.get('fine_bin_ps', 100)),
-        'candidate_count': int(cp.get('candidates', 16)),
-        'segments': int(cp.get('segments', 6)),
-        'refine_radius_ps': int(round(cp.get('refine_radius_ns', 2000.0) * 1_000)),
-        'max_memory_gib': float(cp.get('max_memory_gib', 4.0)),
-        'slope_range_ppb': float(cp.get('slope_range_ppb', 200.0)),
-    }
+def _drain(q: queue.Queue) -> list:
+    parts = []
+    while True:
+        try:
+            parts.append(q.get_nowait())
+        except queue.Empty:
+            return parts
 
 
 def live_coincidence_thread(ctx_a: TTContext, ctx_b: TTContext, stop_event: threading.Event,
-                             interval_s: float, window_s: float, analyze_kwargs: dict) -> None:
-    '''Periodically reruns coincidence_peak's search over a trailing window so lag/skew are
-    visible mid-recording. Deferred import keeps numba/scipy off the path when disabled'''
-    from coincidence_peak import analyze_arrays
+                             interval_s: float, tracker_kwargs: dict) -> None:
+    '''Feeds every new frame to live_peak.LiveTracker, which locks onto the peak and then follows its lag and
+    skew; one LIVE status line per update for the dashboard, a readable line every interval_s'''
+    from live_peak import LiveTracker, emit, summary
 
-    window_ps = int(window_s * _PS_PER_S)
-    while not stop_event.wait(interval_s):
-        a = _trim_to_window(_snapshot_timestamps(ctx_a), window_ps)
-        b = _trim_to_window(_snapshot_timestamps(ctx_b), window_ps)
-        if a.size < 2 or b.size < 2:
-            log('INFO', 'live', f'not enough data buffered yet to check for a coincidence peak (A={a.size}, B={b.size} detections so far)')
-            continue
+    tracker = LiveTracker(**tracker_kwargs)
+    seen, last_log = 0, 0.0
+    while not stop_event.wait(0.5):
+        tracker.feed(_drain(ctx_a.live_queue), _drain(ctx_b.live_queue))
         try:
-            report, _ = analyze_arrays(a, b, strict=False, fit_skew=False, **analyze_kwargs)
+            tracker.step()
         except Exception as exc:
-            log('WARN', 'live', f'coincidence check on the trailing window failed, will retry next interval: {exc}')
+            log('WARN', 'live', f'live tracker update failed, will retry with the next data: {exc}')
             continue
-        shift = report['constant_shift']
-        # clock skew isn't fit live (fit_skew=False, see above), only the
-        # constant-lag search; the final report (after recording ends) fits it properly
-        if report['detected']:
-            log('INFO', 'live',
-                f'[OK] coincidence peak visible: lag={shift["relative_lag_ps"] / 1_000:.1f}ns, '
-                f'window={shift["window"]["width_ps"] / 1_000:g}ns, score={shift["window"]["local_score"]:.2f} '
-                f'(sample sizes A={a.size}, B={b.size})')
-        else:
-            log('INFO', 'live',
-                f'no peak detected yet (sample sizes A={a.size}, B={b.size}); '
-                f'this is normal early in a recording and should resolve as more data accumulates')
+        status = tracker.status()
+        emit(status)
+        for event in tracker.events[seen:]:
+            log('INFO', 'live', event)
+        seen = len(tracker.events)
+        if time.monotonic() - last_log >= interval_s:
+            last_log = time.monotonic()
+            log('INFO', 'live', summary(status))
 
 
 def reader_thread(ctx: TTContext,
@@ -331,6 +297,8 @@ def reader_thread(ctx: TTContext,
             ctx.channels.append(ch)
             ctx.timestamps.append(ts)
             _flush_overflow(ctx, base, outdir)
+        if ctx.live_queue is not None and ts.size:
+            ctx.live_queue.put(ts)
         total += ch.size
 
         meta = {
@@ -548,16 +516,23 @@ def main(argv: Optional[list] = None) -> int:
         # same ordering *_timestamp_sequence.npy files will sort into once written,
         # so the live A/B assignment (and lag sign) matches the final batch report
         ctx_a, ctx_b = sorted(live, key=lambda c: make_file_basename(c.cfg['tt_ip'], c.cfg['tt_port'], started_at))
-        interval_s = args.live_interval_s if args.live_interval_s is not None else live_cfg.get('interval_s', 5.0)
-        window_s = args.live_window_s if args.live_window_s is not None else live_cfg.get('window_s', 30.0)
+        from live_peak import tracker_kwargs
+        if args.live_interval_s is not None:
+            live_cfg = {**live_cfg, 'interval_s': args.live_interval_s}
+        if args.live_window_s is not None:
+            live_cfg = {**live_cfg, 'window_s': args.live_window_s}
+        interval_s, window_s = live_cfg.get('interval_s', 5.0), live_cfg.get('window_s', 30.0)
+        for ctx in (ctx_a, ctx_b):
+            ctx.live_queue = queue.Queue()
         live_thread = threading.Thread(
             target=live_coincidence_thread,
-            args=(ctx_a, ctx_b, stop_event, interval_s, window_s, _coincidence_kwargs_from_config(cfg)),
+            args=(ctx_a, ctx_b, stop_event, interval_s, tracker_kwargs({**cfg, 'live_coincidence': live_cfg})),
             name='live-coincidence',
             daemon=True,
         )
         live_thread.start()
-        log('INFO', None, f'[CONF] live coincidence preview enabled: checking every {interval_s:.1f}s over the trailing {window_s:.1f}s of buffered data')
+        log('INFO', None, f'[CONF] live coincidence tracking enabled: searching the trailing {window_s:.1f}s until the peak locks, '
+                          f'then following it chunk by chunk; a summary every {interval_s:.1f}s')
 
     # duration mode: timeout on stop_event, then set it. detection_count mode: wait for
     # threads to finish on their own (they stop at the target); Ctrl+C still sets stop_event

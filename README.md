@@ -1,8 +1,6 @@
-## qkd_post_processing
+### qkd_post_processing
 
-Classical post-processing for entanglement-based (BBM92) quantum key distribution,
-from raw TimeTagger timestamps to a finite-key-certified secret key, plus a key
-management server and a multi-hop key relay.
+Classical post-processing for entanglement-based (BBM92) quantum key distribution, from raw TimeTagger timestamps to finite-key-certified secret keys, and the key management system that stores them per QKD link and delivers them to applications across a network of trusted nodes. Every node runs in Docker and is operated entirely from its web dashboard.
 
 ```mermaid
 flowchart TB
@@ -23,9 +21,11 @@ flowchart TB
         AB(["abort, no key"])
     end
 
-    subgraph KD["Key delivery"]
-        KMS[("<b>KMS</b> · kms/<br/>ETSI GS QKD 014")]
-        RL["<b>Relay</b> · relay/<br/>one-time pad + Poly1305 per hop"]
+    subgraph KD["Key management system · cmd/kms, one per node"]
+        POOL[("<b>Link pool</b><br/>encrypted, split between the two ends")]
+        NB["<b>Neighbor delivery</b><br/>pool key reserved at both ends"]
+        RL["<b>Relay</b><br/>one-time pad + Poly1305 per hop"]
+        APP[/"Applications<br/>ETSI GS QKD 014, mutual TLS"/]
     end
 
     AT -- timestamps --> CF
@@ -41,8 +41,11 @@ flowchart TB
     PE -.-> FK
     LK -.-> FK
     FK -. "output length" .-> PA
-    PA -- "secret key" --> KMS
-    KMS -- "key pool per link" --> RL
+    PA -- "secret key" --> POOL
+    POOL --> NB
+    POOL --> RL
+    NB --> APP
+    RL --> APP
 
     classDef hw fill:#eef0f3,stroke:#6b7280,color:#111827
     classDef stage fill:#e3ecfd,stroke:#2f62c9,color:#0b1a33,stroke-width:1.5px
@@ -53,43 +56,37 @@ flowchart TB
     class CF,SI,EC,VE,PA stage
     class PE,LK,FK acct
     class AB stop
-    class KMS,RL deliver
+    class POOL,NB,RL deliver
+    class APP hw
     style ACQ fill:none,stroke:#9ca3af,stroke-dasharray:5 4
     style PP fill:none,stroke:#2f62c9,stroke-dasharray:5 4
     style KD fill:none,stroke:#2f9e5a,stroke-dasharray:5 4
 ```
 
-Solid arrows carry key material; dotted arrows carry public information that only
-sets the final key length.
+Solid arrows carry key material; dotted arrows carry public information that only sets the final key length.
 
-## Repository layout
+### Repository layout
 
 | Path | Contents |
 |---|---|
-| `qkd/` | the post-processing library (package `qkd`), one file per stage, see below |
-| `kms/` | key store: ETSI GS QKD 014 records, single delivery, encryption at rest |
-| `relay/` | trusted-node relay: one-time pad + Poly1305, both keyed from QKD output, per hop |
-| `cmd/importtt/` | runs the chain on a real dual-TimeTagger recording |
-| `cmd/qkd_post_processing/` | runs the chain on simulated click streams |
-| `cmd/kms-server/` | ETSI GS QKD 014 key delivery and relay endpoints, over mutual TLS |
+| `qkd/` | the post-processing library (package `qkd`), one file per stage |
+| `kms/` | the encrypted key store: single delivery, reservation for one application pair, wiping, pool split |
+| `relay/` | hop-by-hop key relay: one-time pad and Poly1305, both keyed from QKD output |
+| `cmd/kms/` | the key management system, one instance per node: ETSI GS QKD 014, node-to-node coordination, relay, audit |
+| `cmd/qkdpki/` | the network CA, node credential bundles, application certificates, the shared network description |
+| `cmd/importtt/` | the chain on a real dual-TimeTagger recording |
+| `cmd/qkd_post_processing/` | the chain on simulated click streams |
 | `cmd/tuneblock/` | compares block-discard generator matrices |
 | `acquisition/` | Python: TimeTagger recording, clock alignment, CHSH diagnostic ([`acquisition/README.md`](acquisition/README.md)) |
-| `ui/` | Flask dashboard, separate Docker + Caddy deployment ([`ui/deploy.md`](ui/deploy.md)) |
-| `doc/` | formal procedures, security analysis, code reference; `doc/references/` holds the vendor PDFs |
-| `scripts/` | `test.sh`, `tune-blocksize.sh`, `cross_check_toeplitz.py` (NumPy cross-check of the Toeplitz hash) |
+| `evaluation/` | evaluates any recordings through the whole chain, one report with figures per pair and a pooled summary per link ([`evaluation/README.md`](evaluation/README.md)); the example recording's report is [`evaluation/results_report.md`](evaluation/results_report.md) |
+| `ec/`, `pyec/` | 5G NR LDPC, the default error correction: matrices from `py3gpp`, belief propagation from `ldpc`, run as a Python service the Go pipeline drives (`doc/ec_comparison.md`) |
+| `ui/` | the node dashboard (Flask) |
+| `deploy/` | one node's containers, `setup.sh`, `trust-ca.sh` ([`doc/deployment.md`](doc/deployment.md)) |
+| `doc/` | procedures, security analysis, key management, deployment, code reference |
+| `scripts/` | `test.sh`, `tune-blocksize.sh`, `cross_check_toeplitz.py`, `ec_compare.py` |
+| `references/` | vendor documents, local only: ignored by git and Docker and refused by the pre-commit hook |
 
-Inside `qkd/`, by stage:
-
-| Stage | Files |
-|---|---|
-| Events and sifting | `events.go`, `sifting.go` |
-| Coincidence filtering | `coincfilter.go` (drift removal, Gaussian-fit HWHM window), `detdelay.go` (detector delays) |
-| Error correction | `polar.go`, `ldpc.go`, `winnow.go`, `softrecon.go` (timing-aware), `blockdetect.go`, `bch.go`, `matrixsearch.go` |
-| Verification and QBER | `crcverify.go`, `universalhash.go`, `qber.go`, `windowreport.go` |
-| Privacy amplification | `finitekey.go` (finite-key length), `privacyamp.go`, `toeplitz.go`, `toeplitz_clmul_amd64.*` |
-| Orchestration | `pipeline.go` (`Run`), `pipeline_winnow.go`, `pipeline_ldpc.go`, `pipeline_polar.go`, `epoch.go` |
-
-## Quick start
+### Quick start
 
 ```bash
 go build ./...
@@ -97,63 +94,59 @@ go test ./...
 go run ./cmd/qkd_post_processing -n 1200000 -err 0.02 -polar
 ```
 
-Requires Go 1.24. The only external dependency is `golang.org/x/crypto` (Poly1305).
+Requires Go 1.24 for local builds; the only Go dependency is `golang.org/x/crypto` (Poly1305). 5G NR LDPC also needs Python with `pip install -r ec/requirements.txt` (`QKD_EC_PYTHON` names the interpreter); the Docker images include it. Run `git config core.hooksPath .githooks` once per clone to enable the hook that keeps vendor documents out of every commit.
 
-## Real detector data
+### Running the network
+
+```bash
+cd deploy
+./setup.sh ca                                   # once, on the administration machine
+./setup.sh node A a.example.org,192.0.2.1         # credentials, login and settings for node A
+./setup.sh node B b.example.org,192.0.2.2
+./setup.sh link A B                             # a QKD link between A and B
+./setup.sh bundle A                             # nodes/A.tar.gz, to copy to node A
+# on node A, inside a clone of this repository:
+./setup.sh install A.tar.gz && ./setup.sh up A
+```
+
+Each node runs three hardened containers: `kms` (the key management system, a 13 MB distroless image, the only holder of the node's key and master key), `app` (the dashboard and the post-processing) and `ui` (HTTPS with a certificate from the network CA, behind a login). Trust the CA once with `./trust-ca.sh`, then every node's dashboard opens without warnings. Images build for amd64 and arm64 from the same `Dockerfile`. [`doc/deployment.md`](doc/deployment.md) is the full guide.
+
+### What a node does from its dashboard
+
+- **Acquisition**: load the TimeTagger config, record from both sites, and watch the coincidence peak live while the TimeTaggers stream: the tracker locks onto the lag and clock skew within seconds, then shows the clock-corrected peak, its HWHM, the true-pair rate and the accidentals as they evolve. Stored recordings can be replayed through the same tracker.
+- **Recordings**: upload recordings copied off remote boxes; pairs are recognized by their shared start time.
+- **Alignment**: coincidence-peak lag, window, score and clock skew for any pair, with zoomable plots.
+- **Two-party key extraction**: the production mode; this node announces its own recordings' timing to a neighbor, which aligns, matches and decodes with its own, and both pools receive the same certified key under the same key_IDs.
+- **Key extraction**: the chain on one pair or several pooled at one site, as a background job with a live log; detector delay calibration.
+- **Network and KMS**: links and their reachability, each end's half of every pool, routes, applications, an end-to-end ETSI key exchange between two dashboards (key IDs and fingerprints only), the audit trail.
+- **CHSH diagnostic** and the **simulator**, whose demo keys never reach the KMS.
+
+### Real detector data from the command line
 
 ```bash
 cd acquisition
-python3 tt_record_dual.py                       # record from both TimeTaggers
+python3 tt_record_dual.py                       # record from both TimeTaggers, tracking the peak live
 python3 coincidence_peak.py <recording dir>     # coarse clock offset and skew
 cd ..
-go run ./cmd/importtt -dir acquisition/<recording dir> -polar
+go run ./cmd/importtt -dir acquisition/<recording dir> -ldpc5g
 ```
 
-`importtt` then runs, with these defaults:
+`importtt` filters coincidences (drift removal, window from the half width at half maximum of a Gaussian fit to the peak, [`doc/coincidence_filtering.md`](doc/coincidence_filtering.md)), corrects errors (`-ldpc5g`, 5G NR LDPC, the most efficient; `-polar`, `-ldpc`, `-winnow`, or block discard; `-soft-bins 16` adds timing-aware decoding, [`doc/timing_aware_reconciliation.md`](doc/timing_aware_reconciliation.md)), verifies with CRC-16 and a universal hash, and sizes the key by the finite-key bound at $\varepsilon_\mathrm{sec} = 10^{-10}$, $\varepsilon_\mathrm{cor} = 10^{-15}$ ([`doc/finite_key_procedure.md`](doc/finite_key_procedure.md)). `-dir a,b,c` pools recordings into one block, `-keystore dir` writes the key as ETSI 014 records, `-json` prints one report.
 
-1. **Coincidence filtering** (`-filter`): removes the residual clock drift between
-   the sites and sets the window to the half width at half maximum of a Gaussian
-   fit to the coincidence peak, from public timing only
-   ([`doc/coincidence_filtering.md`](doc/coincidence_filtering.md)).
-2. **Error correction**: `-polar` (rate-adaptive SC/SCL polar codes, recommended),
-   `-ldpc`, `-winnow`, or block discard if none is given. `-soft-bins 16` adds
-   timing-aware decoding ([`doc/timing_aware_reconciliation.md`](doc/timing_aware_reconciliation.md)).
-3. **Finite-key privacy amplification** at $\varepsilon_\mathrm{sec} = 10^{-10}$,
-   $\varepsilon_\mathrm{cor} = 10^{-15}$, with an automatically sized QBER sample
-   ([`doc/finite_key_procedure.md`](doc/finite_key_procedure.md)).
-   `-asymptotic` prints the asymptotic figure for comparison only.
+A single 3-second recording is too short for a finite key: the example in `acquisition/example` (Nitra-Bratislava) certifies none ([`evaluation/results_report.md`](evaluation/results_report.md), which follows that recording through every stage with figures). Fine timestamps must be announced in one direction only (Alice to Bob), see Per-detector delays and the timing side channel in [`doc/coincidence_filtering.md`](doc/coincidence_filtering.md).
 
-Useful options:
+### Applications
 
-| Option | Effect |
-|---|---|
-| `-dir a,b,c` | pool several recordings into one privacy-amplification block (all are used) |
-| `-calibrate-delays file.json` | measure per-detector delays on a calibration recording, never used for key |
-| `-detector-delays file.json` | apply those delays before sifting |
-| `-keystore dir` | save the key as 256-bit ETSI 014 records |
-| `-json` | one machine-readable report on stdout |
-
-A single 10-second recording is too short for a finite key; on the
-Bratislava-Trnava link the first certified bits appear at about one minute of
-data (`doc/finite_key_procedure.md` §2.2). Fine timestamps must be announced in one
-direction only (Alice to Bob), see `doc/coincidence_filtering.md` §4.
-
-## Key management and relay
+An application gets a certificate from `./setup.sh sae <SAE_ID> <NODE_ID>` and calls its node's KMS with ETSI GS QKD 014:
 
 ```bash
-go run ./cmd/kms-server -generate-master-key master.key
-go run ./cmd/kms-server -dir keys/ -master-key-file master.key \
-    -tls-cert node.pem -tls-key node.key -tls-ca ca.pem
+curl --cert sae.pem --key sae.key --cacert ca.pem \
+    "https://a.example.org:8443/api/v1/keys/bob/enc_keys?number=2"
 ```
 
-Serves ETSI GS QKD 014 `enc_keys`, `dec_keys` and `status`, each key delivered
-once. With `-tls-ca`, clients must present a certificate signed by that CA. Adding
-`-node-id`, `-relay-routes`, `-relay-peers` and `-relay-pools` enables multi-hop
-relay: each hop re-encrypts with a fresh one-time pad and authenticates with a
-fresh Poly1305 key, both drawn from that link's QKD key pool
-([`doc/security_proof.md`](doc/security_proof.md)).
+The answer's key_IDs go to the peer application, which fetches the same keys once from its own node at `/api/v1/keys/<master>/dec_keys`. Between neighbors the key is QKD pool material reserved at both ends; for distant nodes it is relayed hop by hop. [`doc/key_management.md`](doc/key_management.md) specifies the system.
 
-## Library usage
+### Library usage
 
 ```go
 import (
@@ -173,20 +166,22 @@ res, err := qkd.RunPolar(alice, filtered, qkd.PolarRunConfig{
 saved, discarded, err := kms.SaveKeys256("keys/", res.FinalKeyBytes)
 ```
 
-Every stage also has a one-sided form (for example `ComputeChunkCRC` /
-`ReconcileChunks`) for running Alice and Bob as separate processes.
+Every stage also has a one-sided form (for example `ComputeChunkCRC` and `ReconcileChunks`) for running Alice and Bob as separate processes.
 
-## Documentation
+### Documentation
 
 | Document | Contents |
 |---|---|
 | [`doc/finite_key_procedure.md`](doc/finite_key_procedure.md) | the finite-key procedure, stage by stage, with parameters and measured results |
 | [`doc/coincidence_filtering.md`](doc/coincidence_filtering.md) | drift removal, HWHM window, detector delays, timing side channel |
 | [`doc/timing_aware_reconciliation.md`](doc/timing_aware_reconciliation.md) | per-bit reliabilities from public timing |
-| [`doc/security_proof.md`](doc/security_proof.md) | security analysis of the privacy amplification, KMS and relay |
+| [`doc/key_management.md`](doc/key_management.md) | the key management system: entities, protocols, lifecycle, limits |
+| [`doc/security_proof.md`](doc/security_proof.md) | security of privacy amplification, pool use, relay, key delivery and storage |
+| [`doc/deployment.md`](doc/deployment.md) | running the network: CA, nodes, links, applications, updates |
 | [`doc/architecture.md`](doc/architecture.md) | code reference: every package, type and command |
+| [`doc/ec_comparison.md`](doc/ec_comparison.md) | polar, regular LDPC and 5G NR LDPC measured side by side |
 
-## Make, test, Docker
+### Make and test
 
 ```bash
 make build      # go build ./...
@@ -194,11 +189,5 @@ make test       # go test ./... -v
 make test-all   # build, vet, fmt, race tests, cross-architecture build (scripts/test.sh)
 make bench      # benchmarks only
 make check      # fmt, vet, build, test, demo run
-
-docker build -t qkd-post-processing .
-docker run --rm -v "$(pwd)/acquisition:/app/acquisition" qkd-post-processing \
-    importtt -dir acquisition/example/20260909
+docker build --target tools -t qkd-tools .      # every command, for offline analysis
 ```
-
-The image has Python 3.12, Go 1.24 and the `qkd_post_processing`, `importtt` and
-`tuneblock` binaries; it runs no server.

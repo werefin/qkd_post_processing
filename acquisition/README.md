@@ -6,11 +6,11 @@ Gets real detector clicks from a pair of Swabian TimeTaggers into `qkd_post_proc
 
 A BBM92 source emits entangled photon pairs and sends one photon from each pair to two separate sites. At each site a TimeTagger timestamps every detector click to picosecond resolution. Two clicks (one recorded at each site) came from the same photon pair if their timestamps line up once the fixed transmission delay between the sites is accounted for; which clicks line up (and, later, which basis/bit each one represents) is the raw material the rest of this repo's post-processing chain runs on.
 
-The catch: two TimeTaggers run on independent local clocks, and there's no wire between the two sites carrying a "start now" signal, so nothing ties one side's timestamps to the other's a priori. This pipeline solves that in three steps: **record** both sides' raw clicks independently (`tt_record_dual.py`, talking to each TimeTagger through Jena's `tt_stream_external.py` client), **find** the unknown clock offset and drift between the two recordings from the data itself (`coincidence_peak.py`, by correlating the two streams and locating the coincidence peak the shared photon pairs create), then **feed** the now-aligned, per-channel-labeled clicks into the Go pipeline (`cmd/importtt`) that does the actual sifting, error correction, and privacy amplification. Recording and coincidence-finding run as one process: `tt_record_dual.py` reruns `coincidence_peak`'s search live on a trailing window of whatever's been captured so far, so lag/window/score are visible while the TimeTaggers are still streaming, not only after the recording ends (see "Live coincidence monitoring" below). Sifting, error correction, and privacy amplification stay offline/batch, run once after the recording finishes.
+The catch: two TimeTaggers run on independent local clocks, and there's no wire between the two sites carrying a "start now" signal, so nothing ties one side's timestamps to the other's a priori. This pipeline solves that in three steps: **record** both sides' raw clicks independently (`tt_record_dual.py`, talking to each TimeTagger through Jena's `tt_stream_external.py` client), **find** the unknown clock offset and drift between the two recordings from the data itself (`coincidence_peak.py`, by correlating the two streams and locating the coincidence peak the shared photon pairs create), then **feed** the now-aligned, per-channel-labeled clicks into the Go pipeline (`cmd/importtt`) that does the actual sifting, error correction, and privacy amplification. Recording and coincidence-finding run as one process: `tt_record_dual.py` locks onto the coincidence peak and follows its lag and clock skew while the TimeTaggers are still streaming, not only after the recording ends (see "Live coincidence-peak tracking while recording" below). Sifting, error correction, and privacy amplification stay offline/batch, run once after the recording finishes.
 
 | stage | tool | does |
 |---|---|---|
-| record + live align | `tt_record_dual.py` (uses `tt_stream_external.py`, `coincidence_peak.py`) | connects to two TimeTaggers over the network, records a fixed duration, prints a periodic live coincidence-peak estimate while recording, writes per-TT `.npy` + `.json` |
+| record + live align | `tt_record_dual.py` (uses `tt_stream_external.py`, `live_peak.py`) | connects to two TimeTaggers over the network, records a fixed duration, prints a periodic live coincidence-peak estimate while recording, writes per-TT `.npy` + `.json` |
 | align (final) | `coincidence_peak.py` | full, precise pass over the complete recording: finds the clock offset and drift between the two recordings |
 | post-process (QKD) | `cmd/importtt` (Go, repo root) | maps detector channels to BBM92 (basis, bit), aligns the clocks, runs the full sifting-to-privacy-amplification chain, offline/batch |
 | post-process (CHSH diagnostic) | `chsh_diagnostic.py` | standalone alternative to post-process: per-block singles + per-channel-pair ROI coincidence counts for a CHSH/Bell self-testing analysis (see below) |
@@ -22,10 +22,11 @@ The catch: two TimeTaggers run on independent local clocks, and there's no wire 
 | file | key pieces |
 |---|---|
 | `tt_stream_external.py` | One class, `TimeTaggerStream`: `connect()` (3 retries, custom SHA-256 challenge in place of `multiprocessing.connection`'s default MD5), `start_stream()` (puts the TT into continuous recording), `read_stream()` (drains whatever accumulated since the last call, less than 4M detections). Vendor code, see Provenance. |
-| `tt_record_dual.py` | `load_config`/`resolve_link`/`site_connection_and_settings` turn `config.json` + CLI flags into two `(connection, settings)` pairs. `TTContext` is one TimeTagger's mutable state (buffered frames, error, timing), shared between `main`, its own `reader_thread`, and the live monitor, guarded by `TTContext.lock`. Both `reader_thread`s wait on one `threading.Barrier` so `start_stream()` fires on both TTs at the same moment, then each loops `read_stream()` independently until told to stop. `live_coincidence_thread` periodically calls `coincidence_peak.analyze_arrays` on a trailing `_trim_to_window` slice of `_snapshot_timestamps(ctx)`, skipping clock-skew fitting (`fit_skew=False`) to stay fast. `write_outputs` concatenates the buffered frames into the two `.npy` arrays + the `.json` sidecar. |
+| `tt_record_dual.py` | `load_config`/`resolve_link`/`site_connection_and_settings` turn `config.json` + CLI flags into two `(connection, settings)` pairs. `TTContext` is one TimeTagger's mutable state (buffered frames, error, timing), shared between `main`, its own `reader_thread`, and the live monitor, guarded by `TTContext.lock`. Both `reader_thread`s wait on one `threading.Barrier` so `start_stream()` fires on both TTs at the same moment, then each loops `read_stream()` independently until told to stop. `live_coincidence_thread` drains each TimeTagger's `live_queue` of new frames into `live_peak.LiveTracker` twice a second and prints its status. `write_outputs` concatenates the buffered frames into the two `.npy` arrays + the `.json` sidecar. |
 | `coincidence_peak.py` | `_coarse_search` (FFT cross-correlation over binned counts, `numba`-jitted `_bin_timestamps`), then `_refine_candidate`/`_best_window` (exact timestamp differences, finds the best coincidence-window width), then `_fit_clock_skew` (segment-wise linear fit of lag vs. elapsed time, `_grid_search_clock_skew` as a fallback). `analyze_arrays` runs all three over two in-memory timestamp arrays and builds the JSON report (`fit_skew=False` skips the skew stage, for a fast live check); `analyze_files` wraps it with file loading, validation, and wall-overlap slicing. `save_plot` renders the diagnostic figure; `main` is the CLI (stdlib `argparse`; `--config` loads this section's JSON as defaults, no third-party dependency needed). |
+| `live_peak.py` | `LiveTracker`: `feed` appends each stream's new timestamps (relative to its first one, since raw TimeTagger timestamps exceed float64's exact range), `step` runs the lock (`_coarse_search` candidates, then `_pair_residuals` and the parallel `_skew_scan` over trial skews) or the per-chunk tracking (`_chunk_point`, `_refit`), `status` builds the JSON the dashboard draws. `tracker_kwargs` maps `config.json` onto it; `main` replays two recordings through it. |
 | `chsh_diagnostic.py` | Standalone CHSH/Bell diagnostic, unrelated to the QKD chain; see "Optional: CHSH self-testing diagnostic" below. |
-| `config.json` | `"sites"` (per-TT connection + detector settings), `"links"` (named site pairs), `"record_dual"` (which link + recording-mode defaults), `"live_coincidence"` (live-monitor defaults while recording), `"coincidence_peak"` (final-analysis defaults, also reused by the live monitor's algorithm settings). |
+| `config.json` | `"sites"` (per-TT connection + detector settings), `"links"` (named site pairs), `"record_dual"` (which link + recording-mode defaults), `"live_coincidence"` (live tracker settings while recording), `"coincidence_peak"` (final-analysis defaults, also reused by the live monitor's algorithm settings). |
 
 ### How it actually works
 
@@ -33,7 +34,7 @@ The catch: two TimeTaggers run on independent local clocks, and there's no wire 
 
 **Finding the coincidence peak** (`coincidence_peak.py`) is the computational core, in three stages:
 
-1. **Coarse search, FFT cross-correlation**: bin each stream's timestamps into `coarse_bin_ps`-wide bins (a histogram of click counts per bin), subtract each histogram's mean, then compute:
+- **Coarse search, FFT cross-correlation**: bin each stream's timestamps into `coarse_bin_ps`-wide bins (a histogram of click counts per bin), subtract each histogram's mean, then compute:
 
 $$\text{corr} = \mathrm{IFFT}\!\left(\mathrm{FFT}(\text{counts}_A) \cdot \overline{\mathrm{FFT}(\text{counts}_B)}\right)$$
 
@@ -43,13 +44,13 @@ $$\text{score} = \frac{\text{value} - \text{median}}{1.4826 \times \text{MAD}}$$
 
 rather than mean/stdev --> a real coincidence peak would otherwise drag the mean and stdev along with it and hide itself. The handful of highest-scoring, well-separated lags go on to refinement.
 
-2. **Refinement, exact timestamp differences**: for each coarse candidate, `_difference_histogram` builds an exact fine-grained histogram of $(B_i - A_j - \text{lag})$ for every pair within `radius_ps` of the candidate, using a two-pointer sliding window over the (already-sorted) timestamp arrays --> $O(N)$, not $O(N^2)$. `_best_window` then picks whichever trial window width (0.5 ns ... 1 μs) maximizes a Poisson significance score:
+- **Refinement, exact timestamp differences**: for each coarse candidate, `_difference_histogram` builds an exact fine-grained histogram of $(B_i - A_j - \text{lag})$ for every pair within `radius_ps` of the candidate, using a two-pointer sliding window over the (already-sorted) timestamp arrays --> $O(N)$, not $O(N^2)$. `_best_window` then picks whichever trial window width (0.5 ns ... 1 μs) maximizes a Poisson significance score:
 
 $$\text{score} = \frac{N_{\text{window}} - B}{\sqrt{B}}$$
 
 where $B$ (`background`) is the sideband count rate, estimated from histogram bins far from the candidate center via the sideband *mean* (fine bins hold small integer counts, so the median would just quantize and distort it).
 
-3. **Clock skew, segmented, background-subtracted linear fit**: stream is split into `segments` time chunks; in each, the true-coincidence pairs' mean arrival time is estimated by subtracting two symmetric sideband windows from the central one:
+- **Clock skew, segmented, background-subtracted linear fit**: stream is split into `segments` time chunks; in each, the true-coincidence pairs' mean arrival time is estimated by subtracting two symmetric sideband windows from the central one:
 
 $$\bar{t}_{\text{pair}} = \frac{\sum t_{\text{central}} - \tfrac{1}{2}\left(\sum t_{\text{left}} + \sum t_{\text{right}}\right)}{N_{\text{central}} - \tfrac{1}{2}\left(N_{\text{left}} + N_{\text{right}}\right)}$$
 
@@ -93,24 +94,34 @@ Notes from the field:
 - A link involving the slow site most likely drops detections in `'duration'` mode (the script warns you: `!! LIKELY LOST DATA` / `!! CAPPED`). If that happens, copy `tt_record_dual.py` + `tt_stream_external.py` to `/tmp` on that TimeTagger's own box and run the recording locally there instead.
 - The TT connection occasionally fails for reasons not yet root-caused; it retries 3 times internally (`tt_stream_external.py`) before giving up --> just rerun the script if it does.
 
-### Live coincidence monitoring while recording
+### Live coincidence-peak tracking while recording
 
-`tt_record_dual.py` runs a background thread, `live_coincidence_thread`, that periodically reruns `coincidence_peak.analyze_arrays` over a trailing window of whatever both TimeTaggers have buffered so far, printing a line like:
+`tt_record_dual.py` hands every frame both TimeTaggers deliver to `live_peak.LiveTracker`, in a background thread, so the peak is found and followed while the recording is still running:
+
+- **Lock:** a coarse FFT correlation over the trailing `window_s` of data proposes candidate lags within `max_lag_ms`. For each candidate, a joint search over the clock skew (within `slope_range_ppb`) and the lag counts the pairs that line up, first in 2 ns bins, then in 100 ps bins. The best candidate locks once its score reaches 8. Without the skew search the peak smears by the skew times the window (19 ns per second at 19 ppb), and the coarse correlation alone cannot tell the true peak from a spurious one for several seconds.
+- **Track:** every `chunk_s` (0.5 s) of data gives one background-subtracted centroid of the pairs around the current lag model. A weighted line through the centroids of the last `fit_span_s` refits the lag and skew, and the recent pairs are rebinned against the corrected clocks, so the peak width (a Gaussian fit, reported as HWHM), the true-pair rate and the accidental share are always current. Six chunks in a row without a significant peak return the tracker to searching.
+
+Each update prints one `LIVE {json}` line, which the dashboard reads and draws on its Acquisition page, and every `interval_s` a readable summary:
 
 ```
-[live] n=(46323,24974) lag=25997511.1ns window=200ns score=6.02 [PEAK]
+[INFO] [live] locked after 3.0s of data: lag 13544093.579 ns, skew 19.09 ppb, score 77.1
+[INFO] [live] locked: lag 13544112.784 ns, skew 19.08 +- 0.01 ppb, HWHM 289 ps, 363 pairs/s, chunk score 35.9
 ```
 
-This is a fast, lower-fidelity check meant to show alignment quality while the recording is still running, not a substitute for the final analysis: it skips clock-skew fitting (`fit_skew=False`) since that stage's segment fit / grid-search fallback is too slow to rerun every few seconds, and it only sees a trailing `window_s` slice, not the whole recording. `coincidence_peak.py` still runs its full analysis once over the complete recording after `tt_record_dual.py` writes its output files (see below); that JSON report, not the live line, is what `cmd/importtt` reads.
+The live HWHM is measured on all channels together, before per-channel delay calibration, so it reads slightly wider than the final filter's. `coincidence_peak.py` still runs its full analysis once over the complete recording after `tt_record_dual.py` writes its output files (see below), and that JSON report, not the live line, is what `cmd/importtt` reads.
 
-Controlled by `config.json`'s `"live_coincidence"` section (`enabled`, `interval_s` between checks, `window_s` trailing window --> larger windows or higher detection rates cost more per check, tune both to your link) or by CLI flag:
+The search takes `max_lag_ms`, `coarse_bin_ns`, `slope_range_ppb` and `max_memory_gib` from the `"coincidence_peak"` section of `config.json`. `"live_coincidence"` sets `enabled`, `interval_s` (how often the summary is printed), `window_s` (how much trailing data the search looks at) and, optionally, `chunk_s`, `search_every_s`, `acquire_min_s`, `fit_span_s`, `lost_after`, `candidate_count` and `track_radius_ns`. CLI flags override the first three:
 
 ```bash
 python3 tt_record_dual.py --no-live                               # disable live monitoring for this run
-python3 tt_record_dual.py --live-interval-s 10 --live-window-s 60  # override the cadence/window
+python3 tt_record_dual.py --live-interval-s 1 --live-window-s 10   # summary every second, search the trailing 10 s
 ```
 
-The live monitor's algorithm settings (bin widths, candidate count, etc.) come from the same `"coincidence_peak"` config section the final analysis uses, so its numbers track the same tuning.
+To try the tracker without TimeTaggers, replay two recordings through it at stream speed (`--speed 0` for as fast as possible), or use the replay button on the dashboard:
+
+```bash
+python3 live_peak.py example/20260909/*_timestamp_sequence.npy --speed 1   # the two files, A first in sorted order
+```
 
 ### Finding the coincidence peak
 
@@ -131,13 +142,13 @@ From the repo root:
 go run ./cmd/importtt -dir acquisition/example/20260909
 ```
 
-`cmd/importtt` reads the two recordings and the `*_coincidence.json` report from step 2, then:
+`cmd/importtt` reads the two recordings and the `*_coincidence.json` report written by the alignment above, then:
 
 - maps each channel to a basis/bit: channels 1-2 are one polarization basis (bits 0/1), channels 3-4 are the other --> adjust `channelToBasisBit` in `cmd/importtt/main.go` if your detector wiring differs
 - shifts the second recording's timestamps onto the first's clock using the report's fitted lag *and* clock skew (not just the constant offset), so drift over a long recording doesn't smear the coincidence window
-- calls `qkd_post_processing.Run` with the aligned, labeled clicks and prints the same per-stage report as `cmd/qkd_post_processing`
+- filters the coincidences (drift removal, window from the HWHM of a Gaussian fit to the peak), then runs the chosen error correction (`-polar` recommended, `-ldpc`, `-winnow`, or block discard by default) and finite-key privacy amplification, printing the same per-stage report as `cmd/qkd_post_processing`
 
-`-window` overrides the coincidence window (defaults to the report's clock-skew-corrected window); `-matrix` and `-chunk` are the same step 2/3 knobs `cmd/qkd_post_processing` takes. Requires `coincidence_peak.py`'s default `--strict` (peak actually detected) --> report with `"detected": false` is refused, since its clock alignment isn't trustworthy.
+`-window` overrides the coincidence window, which otherwise comes from the coincidence filter; `-chunk` and the error-correction flags are the same ones `cmd/qkd_post_processing` takes. The dashboard runs all of this from the browser: Key extraction in `doc/deployment.md`. Requires `coincidence_peak.py`'s default `--strict` (peak actually detected) --> report with `"detected": false` is refused, since its clock alignment isn't trustworthy.
 
 ### Optional: CHSH self-testing diagnostic
 

@@ -30,4 +30,11 @@ for pair in "linux/arm64" "linux/386" "linux/amd64" "darwin/amd64" "darwin/arm64
 	GOOS="$os" GOARCH="$arch" go build -o /dev/null ./...
 done
 
+echo "(6) python tests (live coincidence-peak tracker)"
+if python3 -c "import numba, scipy" 2>/dev/null; then
+	python3 -m unittest acquisition/test_live_peak.py
+else
+	echo "  skipped: numba and scipy not installed (acquisition/requirements.txt)"
+fi
+
 echo "all green"

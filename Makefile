@@ -1,14 +1,18 @@
-.PHONY: build test test-all bench tune run vet fmt clean check
+.PHONY: hooks build test test-all bench tune run vet fmt clean check
 
 check: fmt vet build test run
 
-build:
+# keeps vendor references out of every commit; git never enables a repository hook on its own
+hooks:
+	@git config core.hooksPath .githooks 2>/dev/null || true
+
+build: hooks
 	go build ./...
 
-test:
+test: hooks
 	go test ./... -v
 
-test-all:
+test-all: hooks
 	./scripts/test.sh
 
 bench:

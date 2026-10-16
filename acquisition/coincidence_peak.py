@@ -336,6 +336,7 @@ def _coarse_search(
     max_lag_ps: int,
     candidate_count: int,
     max_memory_gib: float = 4.0,
+    quiet: bool = False,
 ) -> dict[str, Any]:
     a_origin = int(a[0])
     b_origin = int(b[0])
@@ -352,10 +353,11 @@ def _coarse_search(
         ):
             break
         coarse_bin_ps *= 2
-        log('WARN',
-            f"the coarse search at this bin width would need about {estimated_gib:.1f} GiB of memory "
-            f"(over the --max-memory-gib budget); widening the bin to {coarse_bin_ps / PS_PER_NS:g} ns to fit, "
-            f"which trades timing resolution for a smaller search")
+        if not quiet:
+            log('WARN',
+                f"the coarse search at this bin width would need about {estimated_gib:.1f} GiB of memory "
+                f"(over the --max-memory-gib budget); widening the bin to {coarse_bin_ps / PS_PER_NS:g} ns to fit, "
+                f"which trades timing resolution for a smaller search")
     n_bins = duration_ps // coarse_bin_ps + 2
     max_lag_bins = min(max_lag_ps // coarse_bin_ps, n_bins - 1)
     if max_lag_bins < 1:
@@ -363,9 +365,10 @@ def _coarse_search(
 
     n_fft = fft.next_fast_len(2 * n_bins - 1)
     estimated_gib = (2 * n_bins * 4 + 3 * (n_fft // 2 + 1) * 8) / (1024**3)
-    log('INFO',
-        f"coarse search: {n_bins} bins at {coarse_bin_ps / PS_PER_NS:g} ns/bin, "
-        f"about {estimated_gib:.2f} GiB of working memory")
+    if not quiet:
+        log('INFO',
+            f"coarse search: {n_bins} bins at {coarse_bin_ps / PS_PER_NS:g} ns/bin, "
+            f"about {estimated_gib:.2f} GiB of working memory")
 
     counts_a = _bin_timestamps(a, a_origin, coarse_bin_ps, n_bins)
     counts_b = _bin_timestamps(b, b_origin, coarse_bin_ps, n_bins)

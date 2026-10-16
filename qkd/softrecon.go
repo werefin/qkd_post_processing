@@ -12,7 +12,7 @@ import (
 // estimated from the sacrificed QBER sample only, so it is public like dt itself
 type TimingErrorModel struct {
 	WindowPS  int64
-	ErrorRate []float64 // per bin, Laplace-smoothed, clamped to [qMin, 0.5]
+	ErrorRate []float64 // per bin, shrunk toward the pooled sample rate, clamped to [qMin, 0.5]
 	Counts    []int     // sample bits per bin
 	Errors    []int     // sample errors per bin
 }
@@ -20,8 +20,11 @@ type TimingErrorModel struct {
 // qMinTiming floors a bin's rate so a clean-looking bin never claims certainty it can't back up
 const qMinTiming = 1e-4
 
-// EstimateTimingErrorModel bins the sample by dt; (errors+1)/(count+2) keeps a sparse bin
-// near 0.5 (no information) instead of a confident 0 or 1
+// timingPriorCounts is how many pseudo-samples at the pooled rate each bin starts with
+const timingPriorCounts = 10
+
+// EstimateTimingErrorModel bins the sample by dt and shrinks each bin toward the pooled rate, so a
+// sparse bin falls back to the sample QBER instead of a confident 0 or an uninformative 0.5
 func EstimateTimingErrorModel(sampleAlice, sampleBob []byte, sampleDt []int64, windowPS int64, bins int) (TimingErrorModel, error) {
 	if bins < 1 || windowPS <= 0 {
 		return TimingErrorModel{}, fmt.Errorf("timing model: need bins>=1 and windowPS>0, got %d, %d", bins, windowPS)
@@ -37,8 +40,13 @@ func EstimateTimingErrorModel(sampleAlice, sampleBob []byte, sampleDt []int64, w
 			m.Errors[b]++
 		}
 	}
+	errs, n := 0, 0
 	for b := range bins {
-		q := (float64(m.Errors[b]) + 1) / (float64(m.Counts[b]) + 2)
+		errs, n = errs+m.Errors[b], n+m.Counts[b]
+	}
+	pooled := (float64(errs) + 1) / (float64(n) + 2)
+	for b := range bins {
+		q := (float64(m.Errors[b]) + timingPriorCounts*pooled) / (float64(m.Counts[b]) + timingPriorCounts)
 		m.ErrorRate[b] = math.Min(0.5, math.Max(qMinTiming, q))
 	}
 	return m, nil
@@ -161,7 +169,7 @@ func PolarReconcileSoft(alice, bob []byte, q []float64, blockLength int, margin 
 				return nil, 0, 0, 0, derr
 			}
 			fixed, _ = PolarTransform(bobU)
-			leakedBits += polarAdaptiveTagBits
+			leakedBits += polarAdaptiveTagBits + 1 // the tag, and Bob's verdict on it
 			seed, serr := UniversalHashSeed(polarAdaptiveTagBits, blen)
 			if serr != nil {
 				return nil, 0, 0, 0, serr

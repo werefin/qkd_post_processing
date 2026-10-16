@@ -1,13 +1,22 @@
+# Only source goes into the build context: never credentials, recordings or keys
 .git
+.githooks
 .venv
 venv
 **/__pycache__
 **/*.pyc
-doc/references
 *.test
+doc
+references
+deploy
+scripts
 /keys
 /ui/keys
 /ui/recordings
 /ui/config
 /acquisition/config.json
 /acquisition/example
+/importtt
+/qkd_post_processing
+/tuneblock
+/qkdpki

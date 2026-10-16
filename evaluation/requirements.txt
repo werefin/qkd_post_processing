@@ -1,0 +1,2 @@
+-r ../acquisition/requirements.txt
+-r ../ec/requirements.txt

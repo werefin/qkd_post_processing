@@ -1,0 +1,27 @@
+# HTTPS front end of one node's dashboard: the certificate comes from the network CA (trust ca.pem
+# once and every node's dashboard is trusted), and every request needs the node's login
+
+{
+	admin off
+	persist_config off
+	auto_https disable_redirects
+	servers {
+		timeouts {
+			read_header 10s
+		}
+	}
+}
+
+https://:8443 {
+	tls /etc/qkd/ui/ui.pem /etc/qkd/ui/ui.key
+	basic_auth {
+		{$UI_USER} {$UI_PASSWORD_HASH}
+	}
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	# no body size limit here: recordings are large, the app enforces UPLOAD_MAX_MB itself
+	reverse_proxy app:9823
+}

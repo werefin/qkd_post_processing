@@ -1,7 +1,7 @@
 {
   "sites": {
     "site_a": {
-      "tt_ip": "10.0.0.1",
+      "tt_ip": "192.0.2.1",
       "tt_port": 40404,
       "auth_key_hex": "REPLACE_ME",
       "tt_serial": "any",
@@ -12,7 +12,7 @@
       "loop_period_s": 0.5
     },
     "site_b": {
-      "tt_ip": "10.0.0.2",
+      "tt_ip": "192.0.2.2",
       "tt_port": 40404,
       "auth_key_hex": "REPLACE_ME",
       "tt_serial": "any",

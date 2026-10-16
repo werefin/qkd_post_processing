@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"qkd_post_processing/kms"
+	"qkd_post_processing/pyec"
 	"qkd_post_processing/qkd"
 )
 
@@ -175,6 +176,12 @@ type jsonReport struct {
 	PolarBlocks        int                `json:"polar_blocks,omitempty"`
 	PolarBitsCorrected int                `json:"polar_bits_corrected,omitempty"`
 	PolarLeakedBits    int                `json:"polar_leaked_bits,omitempty"`
+	LDPC5GRows         int                `json:"ldpc5g_rows,omitempty"`
+	LDPC5GFrames       int                `json:"ldpc5g_frames,omitempty"`
+	LDPC5GFailed       int                `json:"ldpc5g_failed,omitempty"`
+	LDPC5GAttempts     int                `json:"ldpc5g_attempts,omitempty"`
+	LDPC5GCorrected    int                `json:"ldpc5g_bits_corrected,omitempty"`
+	LDPC5GLeakedBits   int                `json:"ldpc5g_leaked_bits,omitempty"`
 	FilterWindowPS     int64              `json:"filter_window_ps,omitempty"`
 	FilterAccidental   float64            `json:"filter_predicted_accidental_fraction,omitempty"`
 	FilterDriftSlices  int                `json:"filter_drift_slices_trusted,omitempty"`
@@ -515,8 +522,9 @@ func main() {
 	ldpcWr := flag.Int("ldpc-wr", 10, "LDPC row weight (check node degree); tune rate=1-wc/wr comfortably below 1-h2(QBER), not just barely under it; a regular code's real decoding threshold runs below the Shannon bound, see ldpc_test.go")
 	ldpcIterations := flag.Int("ldpc-iterations", 0, "belief propagation iteration cap per block, 0 = default 50")
 	ldpcSample := flag.Float64("ldpc-sample", 0.05, "fraction of sifted bits sacrificed to measure QBER directly before LDPC correction")
+	ldpc5g := flag.Bool("ldpc5g", false, "correct errors with 5G NR LDPC (TS 38.212 matrices from py3gpp, belief propagation from the ldpc library, blind reconciliation), the most efficient method; needs ec/requirements.txt")
 	polar := flag.Bool("polar", false, "correct errors with polar codes (successive cancellation list decoding) instead of discarding blocks (see polar.go/pipeline_polar.go)")
-	polarN := flag.Int("polar-n", 0, "polar codeword length in bits, must be a power of two; 0 = largest power of two covering the whole remaining sifted key")
+	polarN := flag.Int("polar-n", 0, "polar codeword length in bits, must be a power of two; 0 = largest power of two covering the remaining sifted key, at most 2^16")
 	polarMargin := flag.Float64("polar-margin", 0.02, "starting rate margin below the per-block capacity; on a failed block hash the margin rises by 0.02 and only the extra frozen values are revealed (rate-adaptive)")
 	polarSample := flag.Float64("polar-sample", 0.05, "fraction of sifted bits sacrificed to measure QBER directly before polar correction")
 	polarList := flag.Int("polar-list", 8, "SCL decoder list size (path count L); 1 = plain successive cancellation, larger L trades decode time for a lower block failure rate")
@@ -537,6 +545,11 @@ func main() {
 	expectedQBER := flag.Float64("expected-qber", 0, "declared QBER prior for -sample-auto; 0 = the coincidence filter's timing-based prediction, or 0.05 without the filter")
 	epsCor := flag.Float64("eps-cor", 1e-15, "finite-key correctness failure probability per block, sets the universal-hash tag length")
 	jsonOut := flag.Bool("json", false, "print one JSON metrics object to stdout instead of the human-readable report")
+	role := flag.String("role", "", "two-party mode, alice or bob: run one site's half on its own recording, exchanging public messages with -peer through the KMS (-ldpc5g or -polar, see twoparty.go)")
+	peer := flag.String("peer", "", "two-party: the neighbor node running the other half")
+	session := flag.String("session", "", "two-party: the session name both halves use")
+	exportPublic := flag.String("export-public", "", "two-party, alice: write the announcement (timing, basis and multi-photon flag, never bits) into this directory and exit")
+	peerTimeout := flag.Duration("peer-timeout", 15*time.Minute, "two-party: how long to wait for each message from the peer")
 	flag.Parse()
 	keyOpts = keyOptions{asymptotic: *asymptotic, finite: qkd.FiniteKeyConfig{EpsSec: *epsSec, EpsCor: *epsCor}}
 
@@ -548,15 +561,20 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
-	if (*winnow && *ldpc) || (*winnow && *searchMatrix) || (*ldpc && *searchMatrix) ||
-		(*polar && *winnow) || (*polar && *ldpc) || (*polar && *searchMatrix) {
-		fail(*jsonOut, "-winnow, -ldpc, -polar, and -search-matrix are mutually exclusive")
+	methods := 0
+	for _, m := range []bool{*winnow, *ldpc, *polar, *searchMatrix, *ldpc5g} {
+		if m {
+			methods++
+		}
+	}
+	if methods > 1 {
+		fail(*jsonOut, "-winnow, -ldpc, -polar, -ldpc5g and -search-matrix are mutually exclusive")
 	}
 	if *epochS > 0 && (*winnow || *ldpc || *polar || *searchMatrix) {
 		fail(*jsonOut, "-epoch-s only applies to the default block-discard method, not -winnow/-ldpc/-polar/-search-matrix")
 	}
-	if *softBins < 0 || (*softBins > 0 && !*ldpc && !*polar) {
-		fail(*jsonOut, "-soft-bins must be >= 0 and only applies to -ldpc or -polar")
+	if *softBins < 0 || (*softBins > 0 && !*ldpc && !*polar && !*ldpc5g) {
+		fail(*jsonOut, "-soft-bins must be >= 0 and only applies to -ldpc, -polar or -ldpc5g")
 	}
 
 	g, ok := generatorMatrices[*matrixName]
@@ -577,6 +595,40 @@ func main() {
 			fail(*jsonOut, "-detector-delays: %v", err)
 		}
 	}
+	if *role != "" {
+		if *winnow || *ldpc || *searchMatrix || *epochS > 0 || *calibrateDelays != "" {
+			fail(*jsonOut, "two-party mode runs polar or 5G NR LDPC correction only")
+		}
+		method := "polar"
+		var backend qkd.LDPC5GBackend
+		if *ldpc5g && *exportPublic == "" {
+			pool, err := pyec.Start(0)
+			if err != nil {
+				fail(*jsonOut, "%v", err)
+			}
+			defer pool.Close()
+			method, backend = "ldpc5g", pool
+		}
+		alignBits := 0
+		if *keystoreDir != "" {
+			alignBits = kms.ETSI014KeySizeBits
+		}
+		var dirs []string
+		for _, d := range strings.Split(*dir, ",") {
+			dirs = append(dirs, strings.TrimSpace(d))
+		}
+		runTwoParty(twoPartyOptions{
+			role: *role, peer: *peer, session: *session, exportDir: *exportPublic, keystore: *keystoreDir,
+			dirs: dirs, jsonOut: *jsonOut, mpWindowPS: *multiPhotonWindowPS, windowPS: *windowPS,
+			filter: *filter, driftCfg: driftCfg, winCfg: winCfg, delays: delays, expectedQBER: *expectedQBER,
+			timeout: *peerTimeout,
+			cfg: qkd.TwoPartyConfig{RateMargin: *polarMargin, ListSize: *polarList, BlockLength: *polarN,
+				ChunkSize: *chunkSize, KeyAlignBits: alignBits, TimingBins: *softBins, SampleShare: *polarSample,
+				Asymptotic: keyOpts.asymptotic, FiniteKey: keyOpts.finite, Method: method, LDPC: backend},
+		})
+		return
+	}
+
 	var recs []loadedRecording
 	for _, d := range strings.Split(*dir, ",") {
 		r, err := loadRecording(strings.TrimSpace(d), *multiPhotonWindowPS, *windowPS, *filter, driftCfg, winCfg, delays)
@@ -720,6 +772,12 @@ func main() {
 		}
 		finalKeyBytes, rep = runPolarPipeline(aliceEv, bobEv, window, *polarN, *polarMargin, *polarList, *polarSeed, *polarSample, *chunkSize, alignBits, *softBins, *jsonOut)
 		rep.Method = "polar"
+	} else if *ldpc5g {
+		if !*jsonOut {
+			field("Method (step 2/3)", "5G NR LDPC, blind (sample=%.2f, chunk=%d)", *polarSample, *chunkSize)
+		}
+		finalKeyBytes, rep = runLDPC5GPipeline(aliceEv, bobEv, window, *polarSeed, *polarSample, *chunkSize, alignBits, *softBins, *jsonOut)
+		rep.Method = "ldpc5g"
 	} else if *searchMatrix {
 		// Designed on simulated proxy data only, never the real events above, or
 		// the matrix choice itself would leak secret-bit info outside the leaked-bits budget
@@ -1484,4 +1542,49 @@ func toFiniteKeyJSON(r *qkd.FiniteKeyReport) *finiteKeyJSON {
 		return nil
 	}
 	return &finiteKeyJSON{PhaseErrorPoint: r.PhiPoint, PhaseErrorBound: r.Phi, TagBits: r.TagBits, Verified: r.Verified, SurvivingBits: r.Bits, ChargedBits: r.LeakedBits}
+}
+
+func runLDPC5GPipeline(aliceEv, bobEv []qkd.DetectionEvent, window, seed int64, sampleFraction float64, chunkSize, alignBits, timingBins int, jsonOut bool) ([]byte, jsonReport) {
+	pool, err := pyec.Start(0)
+	if err != nil {
+		fail(jsonOut, "%v", err)
+	}
+	defer pool.Close()
+	res, err := qkd.RunLDPC5G(aliceEv, bobEv, qkd.LDPC5GRunConfig{
+		Backend: pool, CoincidenceWindowPS: window, SampleFraction: sampleFraction, Seed: seed, ChunkSize: chunkSize,
+		KeyAlignBits: alignBits, TimingBins: timingBins, Asymptotic: keyOpts.asymptotic, FiniteKey: keyOpts.finite,
+		ExpectedQBER: keyOpts.expectedQBER,
+	})
+	if err != nil {
+		fail(jsonOut, "pipeline error: %v", err)
+	}
+	cv := res.CRCVerify
+	rate := 0.0
+	if len(cv.SurvivingAlice) > 0 {
+		rate = float64(len(res.FinalKeyBits)) / float64(len(cv.SurvivingAlice))
+	}
+	if !jsonOut {
+		section("(1): sifting")
+		field("Sifted bits", "%d", res.SiftedBits)
+		section("(4 before 2/3): QBER from a sacrificed public sample")
+		field("Sample bits", "%d", res.QBER.SampleBits)
+		field("QBER estimate", "%.4f", res.QBER.QBER)
+		section("(2): 5G NR LDPC, blind reconciliation")
+		field("Code", "base graph 1, %d rows, Z=384, %d key bits per frame, puncturing credit %v", res.LDPC.M, res.LDPC.FrameKeyBits, res.LDPC.Credit)
+		field("Frames", "%d (%d failed), %d attempts, %d punctured values revealed", res.LDPC.Frames, res.LDPC.Failed, res.LDPC.Attempts, res.LDPC.Revealed)
+		field("Bits corrected toward Alice", "%d", res.LDPC.BitsCorrected)
+		field("Bits leaked", "%d", res.LDPC.LeakedBits)
+		printTimingReport(res.Timing)
+		section(fmt.Sprintf("(3): error verification (chunk=%d bits, CRC-16)", chunkSize))
+		field("Chunks kept", "%d / %d", cv.ChunksKept, cv.ChunksTotal)
+		printFiniteKey(res.FiniteKey)
+		printSanityAndKey(cv.SurvivingAlice, cv.SurvivingBob, res.LeakedBits, res.FinalKeyBits, res.FinalKeyBytes)
+	}
+	return res.FinalKeyBytes, jsonReport{
+		SiftedBits: res.SiftedBits, LDPC5GRows: res.LDPC.M, LDPC5GFrames: res.LDPC.Frames, LDPC5GFailed: res.LDPC.Failed,
+		LDPC5GAttempts: res.LDPC.Attempts, LDPC5GCorrected: res.LDPC.BitsCorrected, LDPC5GLeakedBits: res.LDPC.LeakedBits,
+		TimingFlatBound: timingFlat(res.Timing), TimingSoftBound: timingSoft(res.Timing), FiniteKey: toFiniteKeyJSON(res.FiniteKey),
+		ChunksTotal: cv.ChunksTotal, ChunksKept: cv.ChunksKept, ChunksDropped: cv.ChunksDropped, BitsLeakedCRC: cv.LeakedBits,
+		QBER: res.QBER.QBER, LeakedBitsTotal: res.LeakedBits, FinalKeyBits: len(res.FinalKeyBits), CompressionRate: rate,
+	}
 }

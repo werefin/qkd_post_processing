@@ -1,0 +1,80 @@
+# One node of the QKD network: kms (key management system), app (dashboard and post-processing)
+# and ui (HTTPS front end) --> run through ./setup.sh up <NODE_ID>, which passes nodes/<NODE_ID>/.env
+
+x-hardened: &hardened
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  user: "${APP_UID:?}:${APP_GID:?}"
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "5" }
+
+services:
+  kms:
+    <<: *hardened
+    build: { context: .., target: kms }
+    image: qkd_post_processing/kms:${IMAGE_TAG:-local}
+    command:
+      - -node-id=${NODE_ID:?}
+      - -network=/etc/qkd/network.json
+      - -data=/data/kms
+      - -master-key-file=/etc/qkd/kms/master.key
+      - -tls-cert=/etc/qkd/kms/node.pem
+      - -tls-key=/etc/qkd/kms/node.key
+      - -tls-ca=/etc/qkd/kms/ca.pem
+      - -import-root=/data/import
+    volumes:
+      - ${NODE_DIR:?}/network.json:/etc/qkd/network.json:ro
+      - ${NODE_DIR}/pki/kms:/etc/qkd/kms:ro
+      - ${NODE_DIR}/data/kms:/data/kms
+      - ${NODE_DIR}/data/import:/data/import
+    ports: ["${KMS_PORT:-8443}:8443"]
+    # lets nodes that share one host (tests, demos) reach each other through published ports
+    extra_hosts: ["host.docker.internal:host-gateway"]
+
+  app:
+    <<: *hardened
+    build: { context: .., target: app }
+    image: qkd_post_processing/app:${IMAGE_TAG:-local}
+    depends_on: [kms]
+    environment:
+      NODE_ID: ${NODE_ID}
+      KMS_URL: https://kms:8443
+      KMS_CA: /etc/qkd/app/ca.pem
+      KMS_ADMIN_CERT: /etc/qkd/app/admin.pem
+      KMS_ADMIN_KEY: /etc/qkd/app/admin.key
+      KMS_SAE_CERT: /etc/qkd/app/sae.pem
+      KMS_SAE_KEY: /etc/qkd/app/sae.key
+      UPLOAD_MAX_MB: ${UPLOAD_MAX_MB:-102400}
+      # uploads and job scratch space are spooled to disk: recordings are far larger than memory
+      TMPDIR: /data/tmp
+      TWO_PARTY_AUTO_ACCEPT: ${TWO_PARTY_AUTO_ACCEPT:-1}
+      RECORDINGS_MAX_GB: ${RECORDINGS_MAX_GB:-0}
+    volumes:
+      - ${NODE_DIR}/pki/app:/etc/qkd/app:ro
+      - ${NODE_DIR}/data/recordings:/data/recordings
+      - ${NODE_DIR}/data/config:/data/config
+      - ${NODE_DIR}/data/import:/data/import
+      - ${NODE_DIR}/data/sim-keys:/data/sim-keys
+      - ${NODE_DIR}/data/cache:/data/cache
+      - ${NODE_DIR}/data/tmp:/data/tmp
+    tmpfs: ["/tmp:size=512m"]
+    expose: ["9823"]
+
+  ui:
+    <<: *hardened
+    image: caddy:2.8
+    # the caddy binary carries this file capability, and exec fails without it in the bounding set
+    cap_add: [NET_BIND_SERVICE]
+    depends_on: [app]
+    environment:
+      UI_USER: ${UI_USER:?}
+      UI_PASSWORD_HASH: ${UI_PASSWORD_HASH:?}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${NODE_DIR}/pki/ui:/etc/qkd/ui:ro
+      - ${NODE_DIR}/data/caddy:/data
+    tmpfs: ["/config"]
+    ports: ["${UI_PORT:-443}:8443"]

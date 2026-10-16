@@ -3,6 +3,8 @@ package relay
 import (
 	"bytes"
 	"crypto/rand"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -126,8 +128,8 @@ func buildTestNetwork(t *testing.T) (a, b, c *RelayNode) {
 
 	// 20 keys of 32 bytes (640 bytes) per link comfortably covers one
 	// relay op's pad + MAC-seed draw for the small test messages here
-	abAtA, abAtB := seedLink(20)
-	bcAtB, bcAtC := seedLink(20)
+	abAtA, abAtB := seedLink(40)
+	bcAtB, bcAtC := seedLink(40)
 
 	a = NewRelayNode("A", newKMS(), map[string]*kms.KMS{"B": abAtA}, map[string]string{"C": "B", "B": "B"})
 	b = NewRelayNode("B", newKMS(), map[string]*kms.KMS{"A": abAtB, "C": bcAtB}, map[string]string{"C": "C"})
@@ -139,9 +141,9 @@ func buildTestNetwork(t *testing.T) (a, b, c *RelayNode) {
 // key beyond the moment it re-encrypts, C recovers exactly what A sent
 func TestRelayNodeTwoHopDeliversOriginalKey(t *testing.T) {
 	a, b, c := buildTestNetwork(t)
-	original := []byte{0xAA, 0xBB, 0xCC, 0xDD}
+	original := bytes.Repeat([]byte{0xAA, 0xBB, 0xCC, 0xDD}, 8)
 
-	pkt, err := a.Originate("C", original)
+	pkt, err := a.Originate("C", "k-1", "alice", "carol", original)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +167,13 @@ func TestRelayNodeTwoHopDeliversOriginalKey(t *testing.T) {
 		t.Fatal("C is the destination, should deliver locally")
 	}
 
-	got, err := c.Local.Get(keyID)
+	if keyID != "k-1" {
+		t.Fatalf("delivered as %s, want the originator's key_ID", keyID)
+	}
+	if _, err := c.Local.Get(keyID); err != kms.ErrKeyReserved {
+		t.Fatalf("an unreserved caller got the key: %v", err)
+	}
+	got, err := c.Local.GetReserved(keyID, "alice", "carol")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +186,7 @@ func TestRelayNodeTwoHopDeliversOriginalKey(t *testing.T) {
 // flipped ciphertext bit must be rejected outright, never silently decrypted
 func TestRelayNodeDetectsCiphertextTampering(t *testing.T) {
 	a, b, _ := buildTestNetwork(t)
-	pkt, err := a.Originate("C", []byte{0xAA, 0xBB, 0xCC, 0xDD})
+	pkt, err := a.Originate("C", "k-1", "alice", "carol", make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,20 +200,50 @@ func TestRelayNodeDetectsCiphertextTampering(t *testing.T) {
 	}
 }
 
-// TestRelayNodeDetectsRoutingMetadataTampering: the MAC must also cover
-// Dest/FromHop/PadKeyIDs, not just the ciphertext, or routing is forgeable
+// TestRelayNodeDetectsRoutingMetadataTampering: the MAC covers the route, the end-to-end key_ID
+// and the SAE pair, not just the ciphertext, so none of them can be rewritten in transit
 func TestRelayNodeDetectsRoutingMetadataTampering(t *testing.T) {
+	for name, tamper := range map[string]func(p *RelayedPacket){
+		"dest":   func(p *RelayedPacket) { p.Dest = "Z" },
+		"key_ID": func(p *RelayedPacket) { p.KeyID = "k-2" },
+		"slave":  func(p *RelayedPacket) { p.SlaveSAE = "eve" },
+		"master": func(p *RelayedPacket) { p.MasterSAE = "eve" },
+		"origin": func(p *RelayedPacket) { p.Origin = "Z" },
+	} {
+		a, b, _ := buildTestNetwork(t)
+		pkt, err := a.Originate("C", "k-1", "alice", "carol", make([]byte, 32))
+		if err != nil {
+			t.Fatal(err)
+		}
+		tamper(&pkt)
+		if _, err := b.Receive(pkt); err == nil || !strings.Contains(err.Error(), "authentication failed") {
+			t.Fatalf("%s: tampered packet not rejected by the MAC: %v", name, err)
+		}
+	}
+}
+
+// TestRelayNodeRefusesKeysFromItsOwnHalf: a sender spending the receiver's half of the pool
+// could reuse a pad, so the receiver refuses before consuming anything
+func TestRelayNodeRefusesKeysFromItsOwnHalf(t *testing.T) {
 	a, b, _ := buildTestNetwork(t)
-	pkt, err := a.Originate("C", []byte{0xAA, 0xBB, 0xCC, 0xDD})
+	pkt, err := a.Originate("C", "k-1", "alice", "carol", make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	tampered := pkt
-	tampered.Dest = "Z" // redirect, ciphertext and tag left untouched
-
-	if _, err := b.Receive(tampered); err == nil {
-		t.Fatal("expected authentication to reject a packet with tampered routing metadata")
+	mineAtB := kms.OriginatorOf("B", "A")
+	before := b.HopPools["A"].CountAvailable(nil)
+	for _, id := range append(pkt.PadKeyIDs, pkt.MACKeyIDs...) {
+		if mineAtB(id) {
+			t.Fatalf("A spent %s from B's half", id)
+		}
+	}
+	// pretend A used one of B's keys
+	pkt.PadKeyIDs = b.HopPools["A"].AvailableIDs(mineAtB)[:1]
+	if _, err := b.Receive(pkt); err == nil || !strings.Contains(err.Error(), "this node's half") {
+		t.Fatalf("got %v", err)
+	}
+	if after := b.HopPools["A"].CountAvailable(nil); after != before {
+		t.Fatalf("refusal consumed keys: %d -> %d", before, after)
 	}
 }
 
@@ -213,7 +251,7 @@ func TestRelayNodeDetectsRoutingMetadataTampering(t *testing.T) {
 // the ciphertext and metadata are untouched
 func TestRelayNodeDetectsTagTampering(t *testing.T) {
 	a, b, _ := buildTestNetwork(t)
-	pkt, err := a.Originate("C", []byte{0xAA, 0xBB, 0xCC, 0xDD})
+	pkt, err := a.Originate("C", "k-1", "alice", "carol", make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +268,7 @@ func TestRelayNodeDetectsTagTampering(t *testing.T) {
 // TestRelayNodeRejectsUnknownRoute
 func TestRelayNodeRejectsUnknownRoute(t *testing.T) {
 	a, _, _ := buildTestNetwork(t)
-	if _, err := a.Originate("Z", []byte{1, 2, 3, 4}); err == nil {
+	if _, err := a.Originate("Z", "k-1", "alice", "carol", make([]byte, 32)); err == nil {
 		t.Fatal("expected an error for a destination with no route")
 	}
 }
@@ -242,7 +280,7 @@ func TestRelayNodePoolExhaustionIsAnErrorNotAPanic(t *testing.T) {
 	ok := 0
 	var lastErr error
 	for i := 0; i < 50; i++ {
-		if _, err := a.Originate("C", []byte{1, 2, 3, 4}); err != nil {
+		if _, err := a.Originate("C", fmt.Sprintf("k-%d", i), "alice", "carol", make([]byte, 32)); err != nil {
 			lastErr = err
 			break
 		}
@@ -252,4 +290,72 @@ func TestRelayNodePoolExhaustionIsAnErrorNotAPanic(t *testing.T) {
 		t.Fatal("expected the seeded pool to eventually run out and return an error")
 	}
 	t.Logf("relayed %d packets before exhaustion: %v", ok, lastErr)
+}
+
+// TestRelayFromPoolIsQKDEndToEnd: the relayed key is pool material of the first link, reaches
+// C intact, and is spent at both ends of A-B
+func TestRelayFromPoolIsQKDEndToEnd(t *testing.T) {
+	a, b, c := buildTestNetwork(t)
+	pkt, key, err := a.OriginateFromPool("C", "k-1", "alice", "carol", 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pkt.Cipher) != 0 || len(pkt.PayloadKeyIDs) != 2 {
+		t.Fatalf("first hop should carry two key IDs and no ciphertext: %+v", pkt)
+	}
+	_, _, next, err := b.Handle(pkt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(next.PayloadKeyIDs) != 0 || len(next.Cipher) != 64 {
+		t.Fatalf("second hop must be padded: %+v", next)
+	}
+	if _, _, _, err := c.Handle(next); err != nil {
+		t.Fatal(err)
+	}
+	got, err := c.Local.GetReserved("k-1", "alice", "carol")
+	if err != nil || !bytes.Equal(got, key) {
+		t.Fatalf("C has %x (%v), A handed out %x", got, err, key)
+	}
+	for _, id := range pkt.PayloadKeyIDs {
+		if _, err := a.HopPools["B"].Get(id); err != kms.ErrKeyConsumed {
+			t.Fatalf("A still holds %s: %v", id, err)
+		}
+		if _, err := b.HopPools["A"].Get(id); err != kms.ErrKeyConsumed {
+			t.Fatalf("B still holds %s: %v", id, err)
+		}
+	}
+}
+
+// TestRelayFromPoolRefusals: payload IDs are authenticated, must be the sender's half, and only
+// the origin itself may send a key by IDs
+func TestRelayFromPoolRefusals(t *testing.T) {
+	a, b, _ := buildTestNetwork(t)
+	pkt, _, err := a.OriginateFromPool("C", "k-1", "alice", "carol", 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	swapped := pkt
+	swapped.PayloadKeyIDs = a.HopPools["B"].AvailableIDs(kms.OriginatorOf("A", "B"))[:1]
+	if _, err := b.Receive(swapped); err == nil || !strings.Contains(err.Error(), "authentication failed") {
+		t.Fatalf("swapped payload IDs: %v", err)
+	}
+	theirs := pkt
+	theirs.PayloadKeyIDs = b.HopPools["A"].AvailableIDs(kms.OriginatorOf("B", "A"))[:1]
+	if _, err := b.Receive(theirs); err == nil || !strings.Contains(err.Error(), "this node's half") {
+		t.Fatalf("receiver's own half: %v", err)
+	}
+	relayed := pkt
+	relayed.Origin = "Z"
+	if _, err := b.Receive(relayed); err == nil || !strings.Contains(err.Error(), "straight from its origin") {
+		t.Fatalf("key IDs from a non-origin: %v", err)
+	}
+	// a refused forgery has spent its MAC key (fail closed), so the honest check uses a new packet
+	fresh, _, err := a.OriginateFromPool("C", "k-2", "alice", "carol", 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Receive(fresh); err != nil {
+		t.Fatalf("an untouched packet: %v", err)
+	}
 }

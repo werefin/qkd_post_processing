@@ -271,3 +271,9 @@ input, select { font-family: inherit; }
   .sidebar { display: none; }
   .main { margin-left: 0; padding: 1.4rem; }
 }
+
+/* Key management and job views */
+.data-table td.empty { text-align: center; color: var(--text3); padding: 1.5rem; }
+.data-table td.mono, .mono { font-family: 'JetBrains Mono', monospace; font-size: .78rem; word-break: break-all; }
+textarea.input { resize: vertical; min-height: 4.5rem; }
+.sidebar-title .mono { font-size: .8rem; opacity: .8; }
