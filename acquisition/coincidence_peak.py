@@ -23,6 +23,10 @@ PS_PER_MS = 1_000_000_000
 PS_PER_S = 1_000_000_000_000
 MIN_PEAK_SCORE = 6.0
 MIN_SEGMENT_SCORE = 5.0
+# the short coarse search is trusted only above this: on a weak link a spurious lag from a few
+# seconds can still refine to just past MIN_PEAK_SCORE on the whole recording
+CONFIDENT_PEAK_SCORE = 15.0
+JOINT_SPAN_PS = 6 * PS_PER_S  # how much of a long recording the joint lag and skew search looks at
 
 
 class AnalysisError(Exception):
@@ -55,7 +59,7 @@ class HistogramResult:
     window: WindowResult
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _bin_timestamps(
     timestamps: np.ndarray, origin_ps: int, bin_ps: int, n_bins: int
 ) -> np.ndarray:
@@ -67,7 +71,7 @@ def _bin_timestamps(
     return counts
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _difference_histogram(
     a: np.ndarray,
     b: np.ndarray,
@@ -105,7 +109,7 @@ def _difference_histogram(
     return histogram
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _drift_corrected_histogram(
     a: np.ndarray,
     b: np.ndarray,
@@ -148,7 +152,7 @@ def _drift_corrected_histogram(
     return histogram
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _pair_elapsed_moments(
     a: np.ndarray,
     b: np.ndarray,
@@ -453,8 +457,10 @@ def _best_window(
     background_per_bin = float(np.mean(side_counts))
 
     best: WindowResult | None = None
+    cumulative = np.concatenate(([0], np.cumsum(counts, dtype=np.int64)))
     for width_bins in _window_widths(bin_ps, radius_ps):
-        rolling = np.convolve(counts, np.ones(width_bins, dtype=np.int64), mode="valid")
+        # running sum, the same integers as a convolution with ones but linear in the histogram length
+        rolling = cumulative[width_bins:] - cumulative[:-width_bins]
         width_ps = width_bins * bin_ps
         background = background_per_bin * width_bins
         window_centers = -radius_ps + (
@@ -506,26 +512,30 @@ def calibrate_channel_delays(
     '''Per-channel residual delay on top of the fitted lag+skew; best-effort match to the
     vendor's delay_ch0..3_ps. Matched only against the same-numbered channel on the other side'''
     ts_b_aligned = shift_b_to_a(ts_b)
-    results: dict[str, Any] = {}
-    for label, ts_side, ch_side, other_ts, other_ch in (
-        ('a', ts_a, ch_a, ts_b_aligned, ch_b),
-        ('b', ts_b_aligned, ch_b, ts_a, ch_a),
-    ):
-        per_channel = {}
-        for ch in (1, 2, 3, 4):
-            subset = np.sort(ts_side[ch_side == ch].astype(np.int64))
-            other_sorted = np.sort(other_ts[other_ch == ch].astype(np.int64))
-            if subset.size < 2 or other_sorted.size < 2:
-                per_channel[str(ch)] = {'offset_ps': 0, 'score': 0.0, 'n': int(subset.size)}
-                continue
-            lag_ps = int(subset[0]) - int(other_sorted[0])
-            hist = _refine_candidate(subset, other_sorted, lag_ps, radius_ps, fine_bin_ps, center_limit_ps)
-            per_channel[str(ch)] = {
-                'offset_ps': int(round(hist.window.center_ps)),
-                'score': float(hist.window.score),
-                'n': int(subset.size),
-            }
-        results[label] = per_channel
+
+    def one(job):
+        label, ch, ts_side, ch_side, other_ts, other_ch = job
+        subset = ts_side[ch_side == ch].astype(np.int64)
+        other_sorted = other_ts[other_ch == ch].astype(np.int64)
+        # recordings are time-ordered, so the sorts are nearly always skipped
+        if subset.size > 1 and np.any(subset[1:] < subset[:-1]):
+            subset.sort()
+        if other_sorted.size > 1 and np.any(other_sorted[1:] < other_sorted[:-1]):
+            other_sorted.sort()
+        if subset.size < 2 or other_sorted.size < 2:
+            return label, ch, {'offset_ps': 0, 'score': 0.0, 'n': int(subset.size)}
+        lag_ps = int(subset[0]) - int(other_sorted[0])
+        hist = _refine_candidate(subset, other_sorted, lag_ps, radius_ps, fine_bin_ps, center_limit_ps)
+        return label, ch, {'offset_ps': int(round(hist.window.center_ps)), 'score': float(hist.window.score), 'n': int(subset.size)}
+
+    jobs = [(label, ch, ts_side, ch_side, other_ts, other_ch)
+            for label, ts_side, ch_side, other_ts, other_ch in (('a', ts_a, ch_a, ts_b_aligned, ch_b), ('b', ts_b_aligned, ch_b, ts_a, ch_a))
+            for ch in (1, 2, 3, 4)]
+    results: dict[str, Any] = {'a': {}, 'b': {}}
+    # the histogram kernel releases the GIL, so the eight channel jobs run in parallel
+    with ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 4)) as pool:
+        for label, ch, res in pool.map(one, jobs):
+            results[label][str(ch)] = res
     return results
 
 
@@ -746,9 +756,17 @@ def analyze_arrays(
     slope_range_ppb: float = 200.0,
     fit_skew: bool = True,
     strict: bool = True,
+    coarse_span_ps: int | None = 2 * PS_PER_S,
+    lag_hint_ps: int | None = None,
+    lag_hint_slope_ps_per_s: float = 0.0,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Core search; analyze_files wraps this with file loading, but a live monitor can call
-    it directly on an in-memory snapshot. fit_skew=False skips the slow segment fit"""
+    it directly on an in-memory snapshot. fit_skew=False skips the slow segment fit.
+    coarse_span_ps: the coarse FFT only proposes candidates, so it runs on this much of the start
+    (at least twice max_lag_ps) and falls back to everything if no candidate refines to a peak.
+    lag_hint_ps, lag_hint_slope_ps_per_s: a predicted relative lag at the first click and its drift, from a
+    previous recording of the same link; checked on the clock-corrected peak and refined without any coarse
+    search, or, if it gives no unambiguous peak, ignored for the usual search"""
     if fine_bin_ps > refine_radius_ps:
         raise AnalysisError(
             "fine bin width must not exceed the refinement radius"
@@ -758,28 +776,67 @@ def analyze_arrays(
             "twice the refinement radius must be divisible by the fine bin width"
         )
 
-    coarse = _coarse_search(
-        a,
-        b,
-        coarse_bin_ps,
-        max_lag_ps,
-        candidate_count=candidate_count,
-        max_memory_gib=max_memory_gib,
-    )
-    log('INFO', "refining the coarse search's top candidate lags using exact (not binned) timestamp differences")
-    # 80% of total runtime, measured; candidates are independent and the
-    # @njit scan releases the GIL, so threads give real parallelism here
     center_limit_ps = max(2 * coarse_bin_ps, 200 * PS_PER_NS)
-    with ThreadPoolExecutor(max_workers=min(32, os.cpu_count() or 4)) as pool:
-        refined = list(pool.map(
-            lambda lag: _refine_candidate(a, b, lag, refine_radius_ps, fine_bin_ps, center_limit_ps),
-            coarse["candidate_lags_ps"],
-        ))
-    refined = [
-        item
-        for item in refined
-        if abs(item.lag_ps + item.window.center_ps) <= max_lag_ps
-    ]
+
+    def search(a_coarse, b_coarse):
+        coarse = _coarse_search(a_coarse, b_coarse, coarse_bin_ps, max_lag_ps,
+                                candidate_count=candidate_count, max_memory_gib=max_memory_gib)
+        log('INFO', "refining the coarse search's top candidate lags using exact (not binned) timestamp differences")
+        # candidates are independent and the @njit scan releases the GIL, so threads give real parallelism
+        with ThreadPoolExecutor(max_workers=min(32, os.cpu_count() or 4)) as pool:
+            refined = list(pool.map(
+                lambda lag: _refine_candidate(a, b, lag, refine_radius_ps, fine_bin_ps, center_limit_ps),
+                coarse["candidate_lags_ps"],
+            ))
+        return coarse, [item for item in refined if abs(item.lag_ps + item.window.center_ps) <= max_lag_ps]
+
+    span = max(int(a[-1]) - int(a[0]), int(b[-1]) - int(b[0]))
+    coarse_span = None if not coarse_span_ps else max(int(coarse_span_ps), 2 * max_lag_ps)
+    def try_hint(lag_first, slope, what):
+        # held constant over a long recording, even the right lag smears by skew times duration, so a
+        # predicted lag is judged on the peak corrected with its predicted drift too
+        ref = (int(a[-1]) - int(a[0])) // 2
+        lag_ref = float(lag_first) + slope * ref / PS_PER_S
+        check = _best_window(_drift_corrected_histogram(a, b, int(a[0]), int(b[0]), lag_ref, float(slope),
+                                                         ref, refine_radius_ps, fine_bin_ps),
+                             refine_radius_ps, fine_bin_ps, center_limit_ps)
+        hinted = _refine_candidate(a, b, int(round(lag_ref + check.center_ps)), refine_radius_ps, fine_bin_ps, center_limit_ps)
+        if check.score < CONFIDENT_PEAK_SCORE or abs(hinted.lag_ps + hinted.window.center_ps) > max_lag_ps:
+            log('INFO', f"the {what} gives no unambiguous peak (score {check.score:.1f})")
+            return None, []
+        log('INFO', f"the {what} gives a peak of score {check.score:.1f} once its drift is removed")
+        return {"candidate_lags_ps": [int(lag_first)], "candidate_scores": [float(check.score)],
+                "plot_lags_ps": np.empty(0, np.int64), "plot_scores": np.empty(0), "coarse_bin_ps": int(coarse_bin_ps),
+                "n_bins": 0, "n_fft": 0, "estimated_memory_gib": 0.0, "span_ps": 0}, [hinted]
+
+    refined = []
+    if lag_hint_ps is not None:
+        coarse, refined = try_hint(lag_hint_ps, lag_hint_slope_ps_per_s, "predicted lag and drift")
+    if not refined and coarse_span and span > 2 * coarse_span:  # only when it saves real work
+        coarse, refined = search(a[:np.searchsorted(a, a[0] + coarse_span)], b[:np.searchsorted(b, b[0] + coarse_span)])
+        if not refined or max(item.window.score for item in refined) < CONFIDENT_PEAK_SCORE:
+            log('INFO', f"no candidate from the first {coarse_span / PS_PER_S:g} s refines to an unambiguous peak")
+            refined = []
+        else:
+            coarse["span_ps"] = coarse_span
+    if not refined and span > 2 * JOINT_SPAN_PS:
+        # a weak peak smeared by the skew over a long recording: the live tracker's joint lag and skew search
+        # on the first seconds keeps it sharp
+        from live_peak import LiveTracker
+        head = min(span, JOINT_SPAN_PS)
+        tracker = LiveTracker(max_lag_ps=max_lag_ps, coarse_bin_ps=coarse_bin_ps, slope_range_ppb=slope_range_ppb,
+                              max_memory_gib=max_memory_gib, acquire_min_s=0, search_every_s=0, acquire_max_s=head / PS_PER_S)
+        tracker.feed([np.asarray(a[:np.searchsorted(a, a[0] + head)])], [np.asarray(b[:np.searchsorted(b, b[0] + head)])])
+        tracker.state = 'searching'
+        tracker._acquire()
+        if tracker.state == 'locked':
+            coarse, refined = try_hint(tracker.lag - tracker.slope * tracker.ref / PS_PER_S, tracker.slope,
+                                       f"joint lag and skew search on the first {head / PS_PER_S:g} s")
+        else:
+            log('INFO', f"the joint lag and skew search on the first {head / PS_PER_S:g} s did not lock")
+    if not refined:
+        coarse, refined = search(a, b)
+        coarse["span_ps"] = span
     if not refined:
         raise AnalysisError("no refined candidate remains inside the lag range")
     selected = max(refined, key=lambda item: item.window.score)
@@ -920,6 +977,7 @@ def analyze_arrays(
             "n_bins": coarse["n_bins"],
             "n_fft": coarse["n_fft"],
             "estimated_memory_gib": coarse["estimated_memory_gib"],
+            "span_ps": int(coarse["span_ps"]),
         },
     }
     diagnostics = {
@@ -935,6 +993,22 @@ def analyze_arrays(
             f"{selected.window.score:.2f}, required {MIN_PEAK_SCORE:.2f})"
         )
     return report, diagnostics
+
+
+def kwargs_from_config(cfg: dict) -> dict[str, Any]:
+    """analyze_arrays settings from a config.json's coincidence_peak section, for callers other than the CLI"""
+    c = cfg.get("coincidence_peak", {})
+    return {
+        "max_lag_ps": int(round(c.get("max_lag_ms", 1000.0) * 1e9)),
+        "coarse_bin_ps": int(round(c.get("coarse_bin_ns", 100.0) * 1e3)),
+        "fine_bin_ps": int(c.get("fine_bin_ps", 100)),
+        "candidate_count": int(c.get("candidates", 16)),
+        "segments": int(c.get("segments", 6)),
+        "refine_radius_ps": int(round(c.get("refine_radius_ns", 2000.0) * 1e3)),
+        "max_memory_gib": float(c.get("max_memory_gib", 4.0)),
+        "slope_range_ppb": float(c.get("slope_range_ppb", 200.0)),
+        "coarse_span_ps": int(float(c.get("coarse_span_s", 2.0)) * PS_PER_S),
+    }
 
 
 def analyze_files(
@@ -1120,6 +1194,8 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
     parser.add_argument("--overlap-margin-s", type=float, default=None)
     parser.add_argument("--max-memory-gib", type=float, default=None)
     parser.add_argument("--slope-range-ppb", type=float, default=None)
+    parser.add_argument("--coarse-span-s", type=float, default=None,
+                        help="seconds at the start the coarse search proposes candidates from (0: the whole recording)")
     strict_group = parser.add_mutually_exclusive_group()
     strict_group.add_argument("--strict", dest="strict", action="store_true", default=None,
                                help="Exit nonzero when no peak passes the detection threshold.")
@@ -1162,6 +1238,7 @@ def main(argv: Optional[list] = None) -> int:
     overlap_margin_s = _resolve_option(args.overlap_margin_s, cfg, "overlap_margin_s", 2.0)
     max_memory_gib = _resolve_option(args.max_memory_gib, cfg, "max_memory_gib", 4.0)
     slope_range_ppb = _resolve_option(args.slope_range_ppb, cfg, "slope_range_ppb", 200.0)
+    coarse_span_s = _resolve_option(args.coarse_span_s, cfg, "coarse_span_s", 2.0)
     strict = _resolve_option(args.strict, cfg, "strict", True)
 
     if max_lag_ms <= 0:
@@ -1213,6 +1290,7 @@ def main(argv: Optional[list] = None) -> int:
             overlap_margin_s=overlap_margin_s,
             max_memory_gib=max_memory_gib,
             slope_range_ppb=slope_range_ppb,
+            coarse_span_ps=int(coarse_span_s * PS_PER_S),
             strict=strict,
         )
     except AnalysisError as exc:

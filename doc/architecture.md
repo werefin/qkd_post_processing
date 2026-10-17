@@ -193,12 +193,7 @@ Purpose: correct errors with one disclosure per block and a single-pass, non-ite
 
 **Protocol**: each sifted bit is modelled as passing through a binary symmetric channel with crossover probability equal to the sampled QBER.
 
-Alice applies the polar transform $G_N = F^{\otimes n}$:
-
-$$F = \begin{pmatrix}1 & 0 \\ 1 & 1\end{pmatrix}
-$$
-
-(no bit-reversal permutation, so the transform is its own inverse) to each $N$-bit block and discloses the values at the $N-K$ least reliable positions. Bob decodes from his own bits' channel LLRs plus those disclosed values, then applies the same transform to recover Alice's block. Leaked bits are exactly $N-K$ per block, the same role as LDPC's syndrome.
+Alice applies the polar transform $G_N = F^{\otimes n}$ (no bit-reversal permutation, so the transform is its own inverse) to each $N$-bit block and discloses the values at the $N-K$ least reliable positions. Bob decodes from his own bits' channel LLRs plus those disclosed values, then applies the same transform to recover Alice's block. Leaked bits are exactly $N-K$ per block, the same role as LDPC's syndrome.
 
 **Construction**: positions are ranked by the Gaussian approximation (Trifonov 2012), started from the LLR mean of a BI-AWGN channel whose capacity equals the BSC's ($1-h_2(\mathrm{QBER})$). The simpler Bhattacharyya bound was measured to give a 2.3× x higher block failure rate at $N=1024$ and is not used.
 
@@ -229,7 +224,7 @@ An option on the LDPC and polar strategies (`TimingBins` in `LDPCRunConfig` / `P
 | `LDPCReconcileSoft` | `func LDPCReconcileSoft(h *LDPCMatrix, alice, bob []byte, q []float64, cfg LDPCDecodeConfig) (...)` | `softrecon.go` |
 | `TimingReport` | `struct { Model TimingErrorModel; SoftBound, FlatBound float64 }` | `softrecon.go` |
 
-### Error verification (`crcverify.go`)
+### Error verification
 
 Purpose: a cheap, fast second check over the EC-surviving stream, to catch what error correction itself missed (a block whose decode converged to the wrong codeword, a two-error Winnow block, etc.).
 
@@ -242,7 +237,7 @@ Purpose: a cheap, fast second check over the EC-surviving stream, to catch what 
 
 Inputs: the EC-surviving bit stream, plus `chunkSize` in bits (`-chunk`). Algorithm: CRC-16/CCITT-FALSE (`crc16Poly = 0x1021`, `crcverify.go`) computed per chunk, 16 bits leaked per surviving chunk. Selectable parameter: `-chunk` --> discard's default is 2048 bits; Winnow/LDPC need a much smaller value (the CLIs' help text suggests ~128) since without an upfront discard step, a large CRC chunk containing even one residual error discards far more good bits per catch. Claim (one sentence; the Error verification and correctness section of `doc/finite_key_procedure.md` and `security_proof.md` give the justification): CRC-16 alone bounds correctness only to about `2⁻¹⁶`, which is why `universalhash.go` (see Finite-key sizing) exists as a stronger check immediately before privacy amplification.
 
-### QBER estimation (`qber.go`)
+### QBER estimation
 
 Purpose: produce the single error-rate number that privacy amplification's Devetak-Winter / finite-key rate formula consumes.
 
@@ -254,7 +249,7 @@ Purpose: produce the single error-rate number that privacy amplification's Devet
 
 Two distinct estimators, one per reconciliation family: `CalculateQBER` (used by `Run`) reads the error rate off the blocks block-discard already dropped, over the whole sifted key; `siftAndSampleQBER` (used by `RunWinnow`, `RunLDPC` and `RunPolar`) measures a direct, unbiased rate from a random public sample taken before reconciliation runs, since the residual error rate after correction is exactly what correction just tried to drive to zero and so cannot be used to estimate its own input error rate.
 
-### Privacy amplification (`privacyamp.go`, `toeplitz.go`, `toeplitz_clmul_amd64.go`, `finitekey.go`)
+### Privacy amplification
 
 Purpose: compress the error-free, verified bit stream down to a length short enough that an eavesdropper's information about it is negligible, via a two-universal (Toeplitz) hash family.
 
@@ -270,12 +265,12 @@ Purpose: compress the error-free, verified bit stream down to a length short eno
 
 Two accounting modes, chosen per run:
 
-- **Finite-key (default for Winnow, LDPC and polar).** `distillFiniteKey` bounds the phase error of the kept bits across bases (key bits of each basis from the other basis's sample errors, plus the fluctuation term at $\varepsilon_\text{PE}/2$, scaled up for CRC-dropped chunks), verifies the two surviving strings with a $\log_2(1/\varepsilon_\text{cor})$-bit universal hash (no key on mismatch), and hashes to `FiniteKeySecureKeyLength`'s length. CLI: `-eps-sec` (default $10^{-10}$), `-eps-cor` (default $10^{-15}$).
+- **Finite-key (default for Winnow, LDPC and polar)**: `distillFiniteKey` bounds the phase error of the kept bits across bases (key bits of each basis from the other basis's sample errors, plus the fluctuation term at $\varepsilon_\text{PE}/2$, scaled up for CRC-dropped chunks), verifies the two surviving strings with a $\log_2(1/\varepsilon_\text{cor})$-bit universal hash (no key on mismatch), and hashes to `FiniteKeySecureKeyLength`'s length. CLI: `-eps-sec` (default $10^{-10}$), `-eps-cor` (default $10^{-15}$).
 - **Asymptotic** (`-asymptotic`, and always for block discard, which has no random sample): `SecureKeyLength` = $n(1 - h_2(\mathrm{QBER}))$ minus the bits actually disclosed. The earlier form $n(1 - 2h_2)$ minus disclosure charged error correction twice and was corrected.
 
-A phase-error bound at or above $\tfrac12$ yields no key in both modes; the earlier clamp at 1 would have certified the whole block, since $h_2(1) = 0$. `toeplitzHashFast` dispatches to a hardware-CLMUL implementation (`toeplitzHashCLMUL`, `toeplitz_clmul_amd64.go`) on amd64 CPUs that support `PCLMULQDQ`, falling back to a POPCNT-based implementation (`toeplitzHashPopcount`, `toeplitz.go`) elsewhere; both compute the same function, verified against each other and against a reference `O(l·n)` implementation (`toeplitzHashNaive`, `toeplitz.go`, test-only) in `toeplitz_test.go`/`toeplitz_vectors_test.go`. Selectable parameter: `alignBits` / `-keystore` implies `KeyAlignBits = ETSI014KeySizeBits` (256) so a caller chunking the key into fixed-size records afterward never discards a partial-record remainder.
+A phase-error bound at or above $\tfrac12$ yields no key in both modes; the earlier clamp at 1 would have certified the whole block, since $h_2(1) = 0$. `toeplitzHashFast` dispatches to a hardware-CLMUL implementation (`toeplitzHashCLMUL`, `toeplitz_clmul_amd64.go`) on amd64 CPUs that support `PCLMULQDQ`, falling back to a POPCNT-based implementation (`toeplitzHashPopcount`, `toeplitz.go`) elsewhere; both compute the same function, verified against each other and against a reference `O(ln)` implementation (`toeplitzHashNaive`, `toeplitz.go`, test-only) in `toeplitz_test.go`/`toeplitz_vectors_test.go`. Selectable parameter: `alignBits` / `-keystore` implies `KeyAlignBits = ETSI014KeySizeBits` (256) so a caller chunking the key into fixed-size records afterward never discards a partial-record remainder.
 
-### Window and epoch reporting (`windowreport.go`, `epoch.go`)
+### Window and epoch reporting
 
 Purpose: two read-only / structural diagnostics layered on top of the chain above, neither of which feeds back into which bits become key material except as noted.
 
@@ -290,7 +285,7 @@ Purpose: two read-only / structural diagnostics layered on top of the chain abov
 
 `ReportWindowQuality` (`cmd/importtt -window-report`) buckets already-sifted pairs by elapsed time and reports each bucket's own QBER --> diagnostic only; it never selects which bits become key, precisely because doing so after seeing per-bucket QBER would be the kind of post-selection bias the Phase-error estimation section of `doc/finite_key_procedure.md` and `EstimatePhaseError`'s `conservative` parameter exist to guard against. `RunEpoched` (`cmd/importtt -epoch-s`) is structural, not diagnostic: it reruns the entire discard-only `Run` chain independently once per fixed time epoch instead of pooling a whole recording into one QBER estimate, so a noisy epoch contributes zero key bits on its own account rather than being silently averaged in or excluded after the fact. It is wired to the block-discard path only --> `cmd/importtt` refuses `-epoch-s` together with `-winnow`/`-ldpc`/`-search-matrix` (`cmd/importtt/main.go`).
 
-### Finite-key sizing (`finitekey.go`)
+### Finite-key sizing
 
 `finitekey.go` is the non-asymptotic replacement for `SecureKeyLength` (`privacyamp.go`); `doc/finite_key_procedure.md` is the authoritative, formal procedure this module implements --> this section describes the Go API surface only, not the derivation. Do not treat anything below as re-deriving or superseding that document or `security_proof.md`.
 
@@ -304,7 +299,7 @@ Purpose: two read-only / structural diagnostics layered on top of the chain abov
 
 Use `conservative=true` in `EstimatePhaseError` unless and until bit and phase errors have been confirmed independent for the specific detector/source pair in use --> this is an explicit open item in the Phase-error estimation section of `doc/finite_key_procedure.md`, not something either this module or this document resolves on its own. See `doc/finite_key_procedure.md` for the full procedure, including recommended parameter values, PA block-size guidance, and the universal-hash correctness check (`universalhash.go`, run just before this stage) that this finite-key accounting depends on.
 
-### Key store (package `kms`)
+### Key store
 
 `KMS` is one encrypted store: one JSON record per `key_ID` in a directory, indexed in memory when the store opens, so every lookup, draw and status call reads the index rather than the disk. A node has several: its delivery store (keys reserved for application pairs) and one pool per QKD link.
 
@@ -326,7 +321,7 @@ Use `conservative=true` in `EstimatePhaseError` unless and until bit and phase e
 
 Records are AES-256-GCM under the node's 32-byte master key, written atomically (temporary file, sync, rename) with mode `0o600` in a `0o700` directory. Delivery is single: taking a key wipes its ciphertext from disk and leaves a tombstone, `Sweep` does the same for expired keys, and a tombstoned `key_ID` can never be stored again. A key stored with `PutReserved` is invisible to every draw and goes only to its own master and slave SAE pair. `GetBytes` checks every listed ID before consuming any, so a bad list consumes nothing, and `GetNextBytesMatching` consumes nothing when the pool cannot cover the request. `OriginatorOf` splits a link's pool between its two ends by the parity of the first hex digit of each `key_ID`; the two ends' filters are exact complements, so no pool key is ever drawn by both.
 
-### The key management system (`cmd/kms`)
+### Key management system
 
 One instance per node, the node's KME. It reads the network description every node shares (`network.json`: nodes and their KME URLs, QKD links, and the home node of every application), derives its neighbors and shortest-path routes from it (`nextHops`, breadth-first, ties to the alphabetically first neighbor), and opens `local/` plus `pools/<neighbor>/` under its data directory. `key_management.md` specifies the protocols; this section lists the surface.
 
@@ -364,7 +359,7 @@ sequenceDiagram
 
 For a slave whose home is not a neighbor, `relay.RelayNode.OriginateFromPool` takes the key from the master's half of the first link's pool and sends the first hop only its key_IDs, then `POST /kme/v1/relay` carries it hop by hop; the destination stores it reserved for the pair and answers with the `key_ID` the origin chose, and only then does the origin hand the key out. If the peer does not confirm, the keys already taken are destroyed and logged as burned, never delivered. `importKeys` (`node.go`) moves settled plaintext records from `<import-root>/<neighbor>/` into that link's pool every two seconds and deletes each file once it is stored encrypted; `runSweeper` wipes expired material every ten minutes; `auditLog` (`audit.go`) appends one JSON line per key event, with key and SAE IDs only.
 
-### Relay (package `relay`)
+### Relay
 
 | Identifier | Signature | File |
 |---|---|---|
@@ -379,7 +374,7 @@ Each hop takes the pad and the MAC key in one draw from its own half of the pool
 
 ### Build, test and deployment
 
-### Makefile targets (`Makefile`)
+### Makefile targets
 
 | Target | Command | Purpose |
 |---|---|---|
@@ -402,165 +397,24 @@ Each hop takes the pad and the MAC key in one draw from its own half of the pool
 | `qkd_post_processing` | `cmd/qkd_post_processing/main.go` | simulates correlated click streams (`simulate`) and runs the same chain |
 | `tuneblock` | `cmd/tuneblock/main.go` | runs `Run` once per candidate generator matrix on one simulated batch |
 
-### Images (`Dockerfile`)
+### Images
 
 One multi-stage file. The `build` stage cross-compiles every command with `CGO_ENABLED=0` on the build machine's own architecture for the target's (`--platform=$BUILDPLATFORM`, `GOARCH=$TARGETARCH`), so amd64 and arm64 nodes build from the same file. Target `kms` is the `kms` and `qkdpki` binaries on a distroless static base, about 13 MB, no shell, non-root. Target `app` is Python 3.12 slim with the dashboard, the acquisition scripts and the `importtt` and `qkd_post_processing` binaries, about 550 MB, running gunicorn with one worker (jobs, caches and the acquisition process live in it) and eight threads, with a health check on `/healthz`. Target `tools` adds matplotlib and every binary, for offline analysis. `.dockerignore` keeps credentials, recordings, keys, `deploy/`, `doc/` and `references/` out of the build context.
 
-### One node (`deploy/`)
+### One node
 
 `compose.yml` runs three containers per node, each read-only, without Linux capabilities (the front end keeps only the one its binary carries), with no-new-privileges, as the installing user, and with only its own credentials mounted: `kms` (`pki/kms`: node certificate, node key, master key), `app` (`pki/app`: the admin certificate and the dashboard's SAE certificate, never the node key or the master key) and `ui` (Caddy with `pki/ui`, a server-only certificate from the network CA, and the node's login). `setup.sh` drives everything with Docker alone: `ca`, `node`, `link`, `sae` and `bundle` on the administration machine, `install`, `up`, `down`, `logs` and `status` on a node. `deployment.md` is the operator's guide.
 
-### Dashboard (`ui/`)
+### Dashboard
 
 `ui/app.py` is a Flask application serving one page and a JSON API: `status`, `upload` and `recordings` (pairs detected by shared start time), `config` and `acquire/start|stop|status` (drives `tt_record_dual.py`), `align/live` (any pair, analysis cached per pair and file version), `jobs` (key extraction, two-party extraction with a neighbor and delay calibration as background jobs with live logs and a stored history; a background listener starts this node's half when a neighbor announces; extraction writes the key into `<import>/<neighbor>/`, where the KMS takes it), `chsh/run|download`, `run` (the simulator, whose demo keys stay apart and never reach the KMS), and `node`, `kms/audit`, `kms/status`, `kms/enc`, `kms/dec` (the KMS through the admin certificate and the dashboard's own SAE certificate; key exchange answers carry key IDs and SHA-256 fingerprints, never key material). The page loads no inline script (`script-src 'self'`), and every server string is escaped before display (`esc`, `main.js`).
 
-### Acquisition scripts (`acquisition/*.py`)
+### Acquisition scripts
 
 Three Python scripts, run in sequence, bridge real hardware to `cmd/importtt`:
 
 - `tt_stream_external.py` --> vendor-provided TimeTagger network client (`TimeTaggerStream`: `connect`/`start_stream`/`read_stream`), included as provided.
 - `tt_record_dual.py` --> connects to two TimeTaggers (configured in `acquisition/config.json`), starts both recording behind one `threading.Barrier` so the two capture windows begin at the same instant, and writes per-side `*_timestamp_sequence.npy` (int64 picoseconds) + `*_channel_sequence.npy` (int8 physical channel, 1-4) + `*_meta.json`. It also feeds every frame to the live tracker (`live_peak.py`), which locks onto the coincidence peak with a joint lag and clock-skew search and then follows it chunk by chunk, for the operator and the dashboard; the final alignment still comes from `coincidence_peak.py` over the whole recording.
-- `coincidence_peak.py` --> the computational core of alignment: FFT cross-correlation for a coarse lag estimate, exact-timestamp-difference refinement for picosecond precision, and a segmented linear fit for clock skew (drift). Writes `<dir>_coincidence.json`, which records the fitted affine clock model (`ClockSkew.ReferenceElapsedPS`/`LagAtReferencePS`/ `SkewFraction`) that `cmd/importtt` inverts (`toAliceClock`, `cmd/importtt/main.go`) to map every Bob timestamp onto Alice's clock before sifting. `cmd/importtt` refuses to run against a report whose `"detected"` field is `false` (`findRecording`, `cmd/importtt/main.go`).
+- `coincidence_peak.py` --> computational core of alignment: FFT cross-correlation for a coarse lag estimate, exact-timestamp-difference refinement for picosecond precision, and a segmented linear fit for clock skew (drift). Writes `<dir>_coincidence.json`, which records the fitted affine clock model (`ClockSkew.ReferenceElapsedPS`/`LagAtReferencePS`/ `SkewFraction`) that `cmd/importtt` inverts (`toAliceClock`, `cmd/importtt/main.go`) to map every Bob timestamp onto Alice's clock before sifting. `cmd/importtt` refuses to run against a report whose `"detected"` field is `false` (`findRecording`, `cmd/importtt/main.go`).
 
 `chsh_diagnostic.py` is a separate, standalone diagnostic (CHSH/Bell self-testing statistics) over the same aligned recording; it is not part of the key-generation chain and its output does not feed `cmd/importtt`.
-
-### File-by-file reference
-
-### Package `qkd` (`qkd/`)
-
-| Path | Purpose | Key exported identifiers |
-|---|---|---|
-| `qkd/events.go` | Core event/basis types | `Basis`, `DetectionEvent` |
-| `qkd/coincfilter.go` | Pruning, drift tracking and Gaussian-fit HWHM window from public timing | `PruneToCoincidenceRange`, `DriftConfig`, `DriftModel`, `EstimateDrift`, `ApplyDrift`, `PeakProfile`, `GaussianFit`, `WindowConfig`, `CoincidenceFilter`, `FilterCoincidences` |
-| `qkd/detdelay.go` | Per-detector delay calibration and timing-leak estimate | `DetectorDelays`, `PairPeak`, `CalibrateDetectorDelays`, `ApplyDetectorDelays`, `TimingLeakBits` |
-| `qkd/sifting.go` | Coincidence-window + basis sifting | `SiftedBit`, `PublicEvent`, `StripBit`, `MatchedPair`, `MatchCoincidences`, `Sift` |
-| `qkd/blockdetect.go` | Block parity error detection (discard strategy) | `GeneratorMatrix`, `CascadeGeneratorMatrices`, `ComputeBlockParity`, `BlockReconcileResult`, `ReconcileBlocks`, `BlockDetectResult`, `BlockErrorDetect` |
-| `qkd/bch.go` | BCH generator matrix construction | `BCHGeneratorMatrix`, `GeneratorMatrixBCHt2` |
-| `qkd/matrixsearch.go` | Hill-climbed generator matrix search | `SearchGeneratorMatrix` |
-| `qkd/winnow.go` | Winnow single-error correction primitives | `HammingGeneratorMatrix`, `WinnowCorrect`, `WinnowPassResult`, `WinnowPass`, `WinnowConfig`, `WinnowReconcile`, `GeneratePermutation` |
-| `qkd/pipeline_winnow.go` | Winnow orchestrator | `WinnowRunConfig`, `WinnowRunResult`, `RunWinnow` |
-| `qkd/ldpc.go` | LDPC matrix construction + min-sum decoder | `LDPCMatrix`, `BuildRegularLDPC`, `BuildPEGLDPC`, `(*LDPCMatrix).Syndrome`, `LDPCDecodeConfig`, `LDPCDecode`, `LDPCReconcileResult`, `LDPCPass`, `LDPCReconcile` |
-| `qkd/pipeline_ldpc.go` | LDPC orchestrator | `LDPCRunConfig`, `LDPCRunResult`, `RunLDPC` |
-| `qkd/polar.go` | Polar transform, Gaussian-approximation construction, SC/SCL decoder | `PolarTransform`, `PolarCode`, `BuildPolarCode`, `PolarDecodeConfig`, `PolarSCDecode`, `PolarReconcileResult`, `PolarPass`, `PolarReconcile` |
-| `qkd/pipeline_polar.go` | Polar orchestrator | `PolarRunConfig`, `PolarRunResult`, `RunPolar` |
-| `qkd/softrecon.go` | Timing-aware soft reconciliation for LDPC and polar | `TimingErrorModel`, `EstimateTimingErrorModel`, `SoftLLRs`, `SlepianWolfBounds`, `PolarReconcileSoft`, `LDPCReconcileSoft`, `TimingReport` |
-| `qkd/crcverify.go` | CRC-16 chunk verification | `CRCVerifyResult`, `ComputeChunkCRC`, `ChunkReconcileResult`, `ReconcileChunks`, `CRCVerify` |
-| `qkd/qber.go` | QBER estimation (both estimator families) | `QBERResult`, `CalculateQBER` |
-| `qkd/privacyamp.go` | Asymptotic privacy amplification | `SecureKeyLength`, `PrivacyAmplify` |
-| `qkd/toeplitz.go` | Toeplitz hash (POPCNT path), bit-packing helpers | (mostly unexported; `toeplitzHashFast`, `toeplitzSeed` are the stable internal entry points) |
-| `qkd/toeplitz_clmul_amd64.go` | Toeplitz hash, hardware CLMUL path (amd64) | (unexported; registered into `toeplitzImpl` via `init()`) |
-| `qkd/toeplitz_clmul_amd64.s` | PCLMULQDQ/CPUID assembly backing the above | `clmul64`, `hasCLMUL` (Go-declared, asm-defined) |
-| `qkd/finitekey.go` | Finite-key sizing: exact hypergeometric phase-error bound, sample optimizer, distillation | `PhaseErrorEstimate`, `EstimatePhaseError`, `HypergeomUpperRate`, `OptimalSampleFraction`, `FiniteKeySecureKeyLength`, `SecurityBudget`, `SplitSecurityBudget`, `FiniteKeyConfig`, `FiniteKeyReport` |
-| `qkd/universalhash.go` | Toeplitz-based universal-hash correctness check | `UniversalHashTagBits`, `ComputeUniversalHashTag`, `UniversalHashSeed`, `VerifyUniversalHash` |
-| `qkd/pipeline.go` | Block-discard orchestrator (the original `Run`) | `Config`, `Result`, `Run` |
-| `qkd/ldpc5g.go` | 5G NR LDPC reconciliation: frame plan fitted to the data, Alice's frames, Bob's attempts, accounting, joint pipeline; the matrix work behind `LDPC5GBackend` | `LDPC5GBackend`, `LDPC5GPlan`, `PlanLDPC5G`, `LDPC5GReconcile`, `LDPC5GResult`, `LDPC5GRunConfig`, `RunLDPC5G` |
-| `qkd/twoparty.go` | Two-party protocol: Alice and Bob as separate processes exchanging only public messages | `Conn`, `TwoPartyConfig`, `TwoPartyResult`, `RunAlice`, `RunBob`, `PublicDigest`, `PipeConns`, `DecodeMessage`, `ErrPeerAborted` |
-| `qkd/epoch.go` | Per-time-epoch independent reruns of `Run` | `EpochResult`, `EpochedResult`, `RunEpoched` |
-| `qkd/windowreport.go` | Diagnostic per-time-bucket QBER reporting | `WindowReportConfig`, `WindowBucketReport`, `ReportWindowQuality` |
-
-### Packages `kms` and `relay`
-
-| Path | Purpose | Key exported identifiers |
-|---|---|---|
-| `kms/kms.go` | Encrypted, indexed key store: single delivery, reservation, wiping, pool split | `KMS`, `NewKMS`, `Put`, `PutWithID`, `PutReserved`, `Get`, `GetReserved`, `CheckReserved`, `GetNext`, `GetNextMatching`, `GetNextBytes`, `GetNextBytesMatching`, `GetBytes`, `Status`, `CountAvailable`, `AvailableIDs`, `Sweep`, `OriginatorOf`, `ErrKeyNotFound`, `ErrKeyConsumed`, `ErrKeyExpired`, `ErrKeyReserved` |
-| `kms/keystore.go` | Plaintext ETSI 014 records, the pipeline's output | `StoredKey`, `ETSI014KeySizeBytes`, `ETSI014KeySizeBits`, `SaveKeys256`, `SaveKeys256WithIDs`, `SaveKey`, `LoadKey`, `NewKeyID` |
-| `kms/encryption.go` | AES-256-GCM with an HKDF-derived key | `EncryptWithKey`, `DecryptWithKey` |
-| `relay/relay.go` | Hop-by-hop relay with reserved delivery | `RelayXOR`, `RelayNode`, `NewRelayNode`, `RelayedPacket`, `Originate`, `OriginateFromPool`, `Receive`, `Handle`, `SetDeliveryTTL` |
-| `relay/polymac.go` | Poly1305 under a single-use QKD-derived key | `PolyMACKeyBytes`, `ComputePolyMAC`, `VerifyPolyMAC` |
-
-### Tests and support
-
-| Path | Purpose |
-|---|---|
-| `qkd/bch_test.go` | `BCHGeneratorMatrix` / `GeneratorMatrixBCHt2` correctness |
-| `qkd/blockdetect_test.go` | Block parity detect/reconcile correctness, including parallel-path coverage |
-| `qkd/coincfilter_test.go` | Drift tracking accuracy, QBER restoration on a drifting link, independence from bit values |
-| `qkd/crcverify_test.go` | CRC-16 computation and chunk reconciliation |
-| `kms/encryption_test.go` | AEAD round-trip and key-length-floor behavior |
-| `qkd/epoch_test.go` | `RunEpoched` bucketing and key concatenation |
-| `qkd/finitekey_test.go` | `EstimatePhaseError` / `FiniteKeySecureKeyLength` / `SplitSecurityBudget` |
-| `qkd/fuzz_test.go` | Fuzz targets over sifting/reconciliation/CRC inputs |
-| `kms/keystore_test.go` | `SaveKey(s256)` / `LoadKey` round-trip |
-| `kms/kms_test.go` | Single delivery, TTL, reservation, wiping and tombstones, all-or-nothing batches, index after reopening, pool split |
-| `qkd/ldpc_test.go` | LDPC construction, decode convergence, rate-vs-threshold behavior |
-| `qkd/matrixsearch_test.go` | `SearchGeneratorMatrix` hill-climbing behavior |
-| `qkd/pipeline_test.go` | `Run` end-to-end |
-| `qkd/pipeline_winnow_test.go` | `RunWinnow` end-to-end |
-| `qkd/pipeline_polar_test.go` | `RunPolar` end-to-end, plus a four-strategy key-yield comparison |
-| `qkd/polar_test.go` | Transform self-inverse, brute-force ML cross-check, reliability ordering, SC vs. SCL block failure |
-| `qkd/softrecon_test.go` | Jensen bound, timing-model recovery, timing-aware vs. flat polar and LDPC on a simulated accidental-dominated link |
-| `qkd/property_test.go` | Property-based invariants across stages |
-| `relay/relay_test.go` | Two-hop delivery, tampering with any authenticated field, refusal of the receiver's own half, pool exhaustion |
-| `relay/polymac_test.go` | Poly1305 round trip, tamper detection, forgery-rate check |
-| `qkd/sifting_test.go` | `MatchCoincidences` / `Sift` correctness, including ambiguous-match handling |
-| `qkd/split_e2e_test.go` | End-to-end test using the split, one-sided API (Alice/Bob as independent processes) |
-| `qkd/toeplitz_test.go` | Toeplitz hash correctness (naive vs. fast implementations) |
-| `qkd/toeplitz_vectors_test.go` | Toeplitz hash against `testdata/toeplitz_vectors.json` fixed vectors |
-| `qkd/universalhash_test.go` | Universal-hash tag computation and verification |
-| `qkd/windowreport_test.go` | `ReportWindowQuality` bucketing |
-| `qkd/winnow_test.go` | Winnow correction/reconciliation correctness |
-| `qkd/twoparty_test.go` | Two-party against the joint pipeline (same key length and disclosure), Bob's timing-aware decoding, refused parameter and announcement mismatches, short runs, bad pair lists |
-| `cmd/importtt/twoparty_test.go` | The roles on the Nitra-Bratislava example recording, each site with only its own files; with `QKD_POOL` set, the pooled Bratislava-Trnava recordings giving the same key at both sites |
-| `qkd/bench_test.go` | Benchmarks (`go test -bench`) |
-| `qkd/testdata/toeplitz_vectors.json` | Fixed Toeplitz-hash test vectors |
-| `scripts/test.sh` | `make test-all`: build+vet+fmt+race+cross-arch |
-| `scripts/tune-blocksize.sh` | `make tune`: block-size sweep driver for `cmd/tuneblock` |
-| `scripts/cross_check_toeplitz.py` | Re-derives `qkd/testdata/toeplitz_vectors.json` independently with NumPy |
-| `scripts/ec_compare.py` | Runs `cmd/ecbench` and `ec/ldpc5g.py` on the same data and prints the comparison tables |
-
-| `cmd/kms/node_test.go` | Three KMEs over mutual TLS: neighbor and relayed delivery, caller identity per role, ETSI status, both ends at once, refused reservations, relay sender check, audit without key material, importer |
-| `cmd/kms/relay_test.go` | Route computation and network description validation |
-
-### `cmd/`
-
-| Path | Purpose | Key identifiers |
-|---|---|---|
-| `cmd/kms/main.go` | Server, flags, caller identity, routes, mutual TLS | `server`, `caller`, `who`, `localSAE`, `isAdmin`, `openServer`, `routes`, `mutualTLS` |
-| `cmd/kms/etsi.go` | ETSI GS QKD 014 handlers | `handleStatus`, `handleEncKeys`, `handleDecKeys`, `availableToward`, `slaveRoute` |
-| `cmd/kms/relay.go` | Delivery toward neighbors and distant nodes, KME-to-KME handlers | `deliver`, `deliverDirect`, `kmePost`, `handleReserve`, `handleRelay` |
-| `cmd/kms/node.go` | Node status, probes, management, importer, sweeper | `handleNode`, `probe`, `handleNetwork`, `handleAudit`, `importKeys`, `runImporter`, `runSweeper` |
-| `cmd/kms/network.go` | Shared network description and routes | `networkConfig`, `loadNetwork`, `validate`, `neighbors`, `nextHops`, `homeOf` |
-| `cmd/kms/audit.go` | Audit trail | `auditEvent`, `auditLog`, `openAudit` |
-| `cmd/kms/mailbox.go` | Post-processing messages between neighbors' dashboards | `mailbox`, `handlePPSend`, `handlePPInbox`, `handlePPRecv`, `handlePPSessions` |
-| `cmd/importtt/twoparty.go` | `-role alice` (announcement export and Alice's half) and `-role bob`, the KMS mailbox transport | `runTwoParty`, `runAliceRole`, `runBobRole`, `loadBobRecording`, `mailboxConn`, `writeNpyInt64`, `writeNpyInt8` |
-| `cmd/qkdpki/main.go` | Network CA, node bundles, SAE certificates, network edits | `cmdCA`, `cmdNode`, `cmdSAE`, `cmdNet`, `issue` |
-| `cmd/importtt/main.go` | CLI over a real dual-TimeTagger recording | `main`, `findRecording`, `channelToBasisBit`, `detectMultiPhoton`, `buildEvents`, `runDiscardPipeline`, `runEpochedPipeline`, `runWinnowPipeline`, `runLDPCPipeline`, `runPolarPipeline` |
-| `cmd/importtt/npy.go` | Minimal `.npy` reader | `readNpyHeader`, `loadNpyInt64`, `loadNpyInt8` |
-| `cmd/qkd_post_processing/main.go` | CLI over simulated click streams | `main`, `simulate`, `runDiscardPipeline`, `runWinnowPipeline`, `runLDPCPipeline`, `runPolarPipeline` |
-| `cmd/tuneblock/main.go` | Generator-matrix comparison | `main`, `simulate`, `addRow` |
-| `cmd/ecbench/main.go` | The Go error-correction methods on a simulated channel, per QBER; `scripts/ec_compare.py` adds 5G NR LDPC | `main`, `methods`, `parallelBlocks` |
-
-### `acquisition/`
-
-| Path | Purpose |
-|---|---|
-| `tt_stream_external.py` | Vendor TimeTagger network client (`TimeTaggerStream`) |
-| `tt_record_dual.py` | Dual-TimeTagger synchronized recording, writes `.npy`/`.json` |
-| `coincidence_peak.py` | Clock offset/skew discovery (FFT coarse search, exact refinement, segmented linear fit) |
-| `chsh_diagnostic.py` | Standalone CHSH/Bell self-testing diagnostic, not part of the key chain |
-| `config.json` / `config.example.json` | Site/link/recording configuration (gitignored in the real form) |
-| `requirements.txt` | Python dependencies for this directory |
-| `README.md` | Full acquisition workflow documentation |
-| `example/` | Sample recording for exercising `cmd/importtt` without live hardware |
-
-### `ui/` and `deploy/`
-
-| Path | Purpose |
-|---|---|
-| `ui/app.py` | Flask dashboard and JSON API |
-| `ui/templates/index.html`, `ui/static/` | The page, its script and styles |
-| `ui/requirements.txt` | Flask, gunicorn, NumPy, SciPy, Numba |
-| `deploy/compose.yml` | The kms, app and ui containers of one node |
-| `deploy/Caddyfile` | HTTPS with the network CA's certificate, login on every request |
-| `deploy/setup.sh` | CA, nodes, links, applications, bundles, start and stop, all through Docker |
-| `deploy/trust-ca.sh` | Trusts the network CA on a machine that opens the dashboards |
-
-### `doc/`
-
-| Path | Purpose |
-|---|---|
-| `doc/finite_key_procedure.md` | The finite-key procedure, stage by stage |
-| `doc/coincidence_filtering.md`, `doc/timing_aware_reconciliation.md` | Coincidence filtering and timing-aware reconciliation |
-| `doc/key_management.md` | The key management system: entities, protocols, lifecycle |
-| `doc/security_proof.md` | Security analysis of privacy amplification, the key management system and the relay |
-| `doc/deployment.md` | Operator's guide: CA, nodes, links, applications, updates |

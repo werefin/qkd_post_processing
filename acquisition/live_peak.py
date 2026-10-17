@@ -20,7 +20,8 @@ import coincidence_peak as cp
 
 PS_PER_NS = cp.PS_PER_NS
 PS_PER_S = cp.PS_PER_S
-LOCK_SCORE = 8.0       # lock threshold: the joint lag and skew search tries millions of cells, so 6 is not enough
+LOCK_SCORE = 8.0
+PAIR_BUDGET = 2_000_000  # most pairs per candidate the lock search collects       # lock threshold: the joint lag and skew search tries millions of cells, so 6 is not enough
 CHUNK_SCORE = 3.0      # a chunk below this carries no usable centroid
 LIVE_PREFIX = 'LIVE '  # stdout lines starting with this hold one JSON status for the dashboard
 
@@ -167,6 +168,16 @@ class LiveTracker:
         if self.last_search is not None and end - self.last_search < self.search_every_ps:
             return
         self.last_search = end
+        # only as much trailing data as keeps each candidate's pairs within budget: locking needs seconds,
+        # and a busy link over the whole window would cost millions of pairs per candidate
+        avail = min(int(a[-1] - a[0]), int(b[-1] - b[0]))
+        rate = (a.size / avail) * (b.size / avail) * PS_PER_S  # pairs per s of window per s of data
+        span = avail
+        while span > PS_PER_S and rate * (2 * (2 * self.coarse_bin_ps + self.slope_range * span / PS_PER_S / 2) / PS_PER_S) * (span / PS_PER_S) > PAIR_BUDGET:
+            span = int(span * 0.8)
+        if span < avail:  # trimmed only when the budget demands it: a weak peak's candidate ranking is fragile
+            a = a[np.searchsorted(a, a[-1] - span):]
+            b = b[np.searchsorted(b, b[-1] - span):]
         coarse = cp._coarse_search(a, b, self.coarse_bin_ps, self.max_lag_ps, self.candidate_count,
                                    self.max_memory_gib, quiet=True)
         span = int(a[-1] - a[0])
@@ -176,7 +187,7 @@ class LiveTracker:
         # a 20 ns pass ranks every candidate cheaply; only the best few get the full scan
         ranked = []
         for cand, cscore in zip(coarse['candidate_lags_ps'], coarse['candidate_scores']):
-            lag0 = float(cand)  # relative B minus A, both streams counted from their first timestamp
+            lag0 = float(cand + (b[0] - a[0]))  # the coarse lag counts from the slices' first clicks
             times, res = _pair_residuals(a, b, lag0, 0.0, ref, radius)
             if times.size >= 10:
                 pre = self._scan(times, res, ref, radius, span, passes=((20 * PS_PER_NS, 40 * PS_PER_NS),))
@@ -191,9 +202,9 @@ class LiveTracker:
         self.search = {'span_s': span / PS_PER_S, 'coarse': {'x_ms': xs, 'y': ys},
                        'best_score': None if best is None else best['score'], 'lock_score': LOCK_SCORE}
         if best is None or best['score'] < LOCK_SCORE:
-            if a[-1] - a[0] > self.acquire_max_ps:  # slide: keep the trailing acquisition window
-                self.a = a[np.searchsorted(a, a[-1] - self.acquire_max_ps):]
-                self.b = b[np.searchsorted(b, b[-1] - self.acquire_max_ps):]
+            if self.a[-1] - self.a[0] > self.acquire_max_ps:  # slide: keep the trailing acquisition window
+                self.a = self.a[np.searchsorted(self.a, self.a[-1] - self.acquire_max_ps):]
+                self.b = self.b[np.searchsorted(self.b, self.b[-1] - self.acquire_max_ps):]
             return
         self.lag, self.slope, self.ref = best['lag0'] + best['offset'], best['slope'], ref
         self.sigma = max(best['width'] / 2.355, 2 * self.bin_ps)

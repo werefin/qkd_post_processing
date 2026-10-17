@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
 )
 
 type worker struct {
@@ -23,10 +24,14 @@ type worker struct {
 	out *bufio.Reader
 }
 
-// Pool is safe for concurrent use: each call takes one idle process
+// Pool is safe for concurrent use: each call takes one idle process, and a new one starts only when
+// every process is busy, up to the limit, since each costs about half a second of imports to start
 type Pool struct {
-	idle chan *worker
-	all  []*worker
+	idle           chan *worker
+	mu             sync.Mutex
+	all            []*worker
+	limit          int
+	python, script string
 }
 
 // Script finds ec/ldpc5g.py: QKD_EC_SCRIPT, else next to or above the running binary, else /app/ec
@@ -52,7 +57,8 @@ func Script() (string, error) {
 	return "", errors.New("pyec: ec/ldpc5g.py not found; set QKD_EC_SCRIPT")
 }
 
-// Start launches n service processes (0 = one per core) with QKD_EC_PYTHON, default python3
+// Start prepares up to n service processes (0 = one per core) with QKD_EC_PYTHON, default python3,
+// starting one now; the rest start as concurrent calls need them
 func Start(n int) (*Pool, error) {
 	script, err := Script()
 	if err != nil {
@@ -65,28 +71,12 @@ func Start(n int) (*Pool, error) {
 	if n <= 0 {
 		n = runtime.NumCPU()
 	}
-	p := &Pool{idle: make(chan *worker, n)}
-	for range n {
-		cmd := exec.Command(python, script, "serve")
-		cmd.Stderr = os.Stderr
-		in, err := cmd.StdinPipe()
-		if err != nil {
-			p.Close()
-			return nil, err
-		}
-		out, err := cmd.StdoutPipe()
-		if err != nil {
-			p.Close()
-			return nil, err
-		}
-		if err := cmd.Start(); err != nil {
-			p.Close()
-			return nil, fmt.Errorf("pyec: start %s: %w", python, err)
-		}
-		w := &worker{cmd: cmd, in: in, out: bufio.NewReaderSize(out, 1<<20)}
-		p.all = append(p.all, w)
-		p.idle <- w
+	p := &Pool{idle: make(chan *worker, n), limit: n, python: python, script: script}
+	w, err := p.spawn()
+	if err != nil {
+		return nil, err
 	}
+	p.idle <- w
 	// a first request proves the libraries import, instead of failing in the middle of a run
 	if _, err := p.call(map[string]any{"op": "shape", "m": 4}); err != nil {
 		p.Close()
@@ -95,8 +85,56 @@ func Start(n int) (*Pool, error) {
 	return p, nil
 }
 
+func (p *Pool) spawn() (*worker, error) {
+	cmd := exec.Command(p.python, p.script, "serve")
+	cmd.Stderr = os.Stderr
+	in, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("pyec: start %s: %w", p.python, err)
+	}
+	w := &worker{cmd: cmd, in: in, out: bufio.NewReaderSize(out, 1<<20)}
+	p.mu.Lock()
+	p.all = append(p.all, w)
+	p.mu.Unlock()
+	return w, nil
+}
+
+// acquire takes an idle process, starts another if all are busy and the limit allows, else waits
+func (p *Pool) acquire() (*worker, error) {
+	select {
+	case w := <-p.idle:
+		return w, nil
+	default:
+	}
+	p.mu.Lock()
+	grow := len(p.all) < p.limit
+	if grow {
+		p.limit-- // reserve the slot before starting, so concurrent callers never overshoot
+	}
+	p.mu.Unlock()
+	if grow {
+		w, err := p.spawn()
+		p.mu.Lock()
+		p.limit++
+		p.mu.Unlock()
+		if err == nil {
+			return w, nil
+		}
+	}
+	return <-p.idle, nil
+}
+
 // Close ends every service process
 func (p *Pool) Close() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	for _, w := range p.all {
 		w.in.Close()
 		w.cmd.Wait()
@@ -104,7 +142,10 @@ func (p *Pool) Close() {
 }
 
 func (p *Pool) call(req map[string]any) (map[string]any, error) {
-	w := <-p.idle
+	w, err := p.acquire()
+	if err != nil {
+		return nil, err
+	}
 	defer func() { p.idle <- w }()
 	body, err := json.Marshal(req)
 	if err != nil {

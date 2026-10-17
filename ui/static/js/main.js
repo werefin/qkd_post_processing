@@ -456,6 +456,8 @@ function navigate(section) {
   else if (section === 'align') { refreshRecordings().then(() => { redrawAlignPlots(); poll('align', refreshAlignment, 5000); }); }
   else if (section === 'extract') { refreshRecordings(); refreshNode(); poll('jobs', refreshJobs, 2000); }
   else if (section === 'network') { poll('node', refreshNode, 10000); refreshAudit(); }
+  else if (section === 'continuous') { refreshConfigLinks(); refreshRecordings(); refreshNode(); poll('continuous', refreshContinuous, 1500); }
+  else if (section === 'evaluate') { refreshRecordings().then(renderEvalPairs); refreshEvaluations(); poll('evaljob', refreshEvalJob, 2000); }
   else if (section === 'chsh') refreshRecordings();
   else if (section === 'acquire') { refreshRecordings(); poll('acquire', refreshAcquireStatus, 2000); poll('live', refreshLive, 1000); }
   else if (section === 'recordings') refreshRecordings();
@@ -649,6 +651,11 @@ function renderNode(n) {
   linkSel.innerHTML = links.map(l => `<option value="${esc(l.neighbor)}">${esc(n.node_id)}-${esc(l.neighbor)}</option>`).join('') +
     '<option value="">do not save the key</option>';
   if (keepLink !== undefined && [...linkSel.options].some(o => o.value === keepLink)) linkSel.value = keepLink;
+  const contSel = document.getElementById('cont-neighbor');
+  const keepCont = contSel.value;
+  contSel.innerHTML = links.map(l => `<option value="${esc(l.neighbor)}">${esc(n.node_id)}-${esc(l.neighbor)}</option>`).join('') +
+    '<option value="">do not save the key</option>';
+  if ([...contSel.options].some(o => o.value === keepCont)) contSel.value = keepCont;
 }
 
 document.getElementById('kx-enc-btn').addEventListener('click', async () => {
@@ -1119,5 +1126,199 @@ document.getElementById('live-replay').addEventListener('click', async () => {
   } catch (e) { errEl.textContent = e.message; }
 });
 window.addEventListener('resize', drawLive);
+
+// Continuous QKD: recorder in continuous mode plus the block processor
+async function refreshConfigLinks() {
+  try {
+    const d = await apiFetch('/api/config');
+    const sel = document.getElementById('cont-link');
+    if (!d.loaded) { sel.innerHTML = '<option value="">load a config on the Acquisition page</option>'; return; }
+    const keep = sel.value;
+    sel.innerHTML = d.links.map(l => `<option value="${esc(l.name)}">${esc(l.name)} (${esc(l.site_a)} + ${esc(l.site_b)})</option>`).join('');
+    sel.value = keep || d.default_link || '';
+  } catch (e) { /* backend not reachable yet */ }
+}
+
+document.getElementById('cont-source').addEventListener('change', e => {
+  const replay = e.target.value === 'replay';
+  document.getElementById('cont-replay-row').style.display = replay ? '' : 'none';
+  document.getElementById('cont-link').disabled = replay;
+});
+
+document.getElementById('cont-start').addEventListener('click', async () => {
+  const errEl = document.getElementById('cont-error');
+  errEl.textContent = '';
+  const replay = document.getElementById('cont-source').value === 'replay';
+  const body = {
+    segment_s: Number(document.getElementById('cont-segment').value), block_s: Number(document.getElementById('cont-block').value),
+    method: document.getElementById('cont-method').value, neighbor: document.getElementById('cont-neighbor').value,
+  };
+  if (replay) body.replay = { a: document.getElementById('cont-a').value, b: document.getElementById('cont-b').value, speed: Number(document.getElementById('cont-speed').value) };
+  else body.link = document.getElementById('cont-link').value;
+  try { await postJSON('/api/continuous/start', body); refreshContinuous(); } catch (e) { errEl.textContent = e.message; }
+});
+
+document.getElementById('cont-stop').addEventListener('click', async () => {
+  const errEl = document.getElementById('cont-error');
+  errEl.textContent = '';
+  try { await apiFetch('/api/continuous/stop', { method: 'POST' }); refreshContinuous(); } catch (e) { errEl.textContent = e.message; }
+});
+
+let contLast = null;
+const fmtDur = s => s == null ? '-' : s >= 3600 ? `${(s / 3600).toFixed(1)} h` : s >= 60 ? `${(s / 60).toFixed(1)} min` : `${s.toFixed(0)} s`;
+
+function drawContinuous() {
+  const st = contLast && contLast.status;
+  const h = st ? st.history : null;
+  if (!h || !h.name.length) { ['cont-c0', 'cont-c1', 'cont-c2', 'cont-c3'].forEach(id => drawSeriesPlot(id, [], [])); return; }
+  // x axis: data time at the end of each segment, skipped segments drawn as gaps of zero length
+  const xs = []; let t = 0;
+  h.seconds.forEach(v => { t += v || 0; xs.push(t / 60); });
+  const keep = (ys) => { const px = [], py = []; ys.forEach((v, i) => { if (v != null) { px.push(xs[i]); py.push(v); } }); return [px, py]; };
+  const [qx, qy] = keep(h.qber_vis.map(v => v == null ? null : 100 * v));
+  const [rx, ry] = keep(h.sifted.map((v, i) => v == null || !h.seconds[i] ? null : v / h.seconds[i]));
+  const [kx, ky] = keep(h.skew_ppb);
+  const [px, py] = keep(h.processing_s);
+  drawSeriesPlot('cont-c0', qx, qy, '#F59E0B', { xUnit: ' min', yMin: 0 });
+  drawSeriesPlot('cont-c1', rx, ry, '#2BBDE8', { xUnit: ' min', yMin: 0 });
+  drawSeriesPlot('cont-c2', kx, ky, '#9B5CF5', { xUnit: ' min' });
+  drawSeriesPlot('cont-c3', px, py, '#22C55E', { xUnit: ' min', yMin: 0 });
+  const last = (arr) => arr.length ? arr[arr.length - 1] : null;
+  setEl('cont-v0', qy.length ? fmtNum(last(qy), 2) + '%' : '-');
+  setEl('cont-v1', ry.length ? fmtNum(last(ry), 0) + ' /s' : '-');
+  setEl('cont-v2', ky.length ? fmtNum(last(ky), 2) + ' ppb' : '-');
+  setEl('cont-v3', py.length ? `${fmtNum(last(py), 1)} s per ${fmtNum(last(h.seconds.filter(Boolean)), 0)} s` : '-');
+}
+
+async function refreshContinuous() {
+  let d;
+  try { d = await apiFetch('/api/continuous/status'); } catch (e) { return; }
+  contLast = d;
+  const st = d.status;
+  const running = d.recording || d.processing;
+  setBadge('cont-badge', d.recording ? 'Recording and distilling' : d.processing ? 'Finishing the last block' : st ? 'Finished' : 'Idle',
+    d.recording ? 'success' : d.processing ? 'warn' : 'muted');
+  document.getElementById('cont-start').disabled = running;
+  document.getElementById('cont-stop').disabled = !d.recording;
+  const chips = [];
+  if (st) {
+    const b = st.block;
+    document.getElementById('cont-progress').style.width = `${Math.min(100, 100 * b.seconds / st.block_s).toFixed(1)}%`;
+    chips.push(['Running', fmtDur(st.uptime_s)], ['Data distilled or in hand', fmtDur(st.data_s)],
+      ['Segments', `${st.segments_done} kept, ${st.segments_skipped} skipped`], ['Backlog', `${st.backlog} segment(s)`],
+      [`Block ${b.index}`, `${fmtDur(b.seconds)} of ${fmtDur(st.block_s)}, ${b.sifted} sifted bits` + (b.qber_vis != null ? `, QBER ${fmtNum(100 * b.qber_vis, 2)}%` : '')],
+      ['Distilling', st.distilling ? `block ${st.distilling.index} (${fmtDur(st.distilling.seconds)})` : 'no'],
+      ['Key', `${st.key_bits} bits, ${fmtNum(st.key_rate, 1)} bit/s of data`], ['Keys to the KMS', st.keystore ? st.keys_saved : 'not saved']);
+    const blocks = (st.blocks || []).slice().reverse();
+    setBadge('cont-blocks-badge', blocks.length ? `${blocks.length} block(s), ${st.key_bits} key bits` : 'none yet', blocks.some(x => x.key_bits > 0) ? 'success' : 'muted');
+    document.getElementById('cont-blocks').innerHTML = blocks.length ? blocks.map(x => `<tr>
+        <td>${x.index}</td><td>${fmtDur(x.seconds)} (${x.segments} seg.)</td><td>${x.sifted ?? '-'}</td>
+        <td>${x.qber != null ? fmtNum(100 * x.qber, 2) + '%' : '-'}</td><td>${x.ec_leak ?? '-'}</td><td>${x.f != null ? fmtNum(x.f, 2) : '-'}</td>
+        <td>${x.phase_error_bound != null ? fmtNum(100 * x.phase_error_bound, 1) + '%' : '-'}</td>
+        <td class="${x.key_bits > 0 ? 'positive' : ''}">${x.error ? 'failed: ' + esc(x.error) : x.key_bits + ' bits'}</td>
+        <td>${x.keys_saved || 0}</td><td>${fmtNum(x.processing_s, 1)} s</td></tr>`).join('') : emptyRow(10, 'no block distilled yet');
+  }
+  if (d.params) chips.unshift(['Source', d.params.source + (d.params.speed && d.params.speed !== 1 ? ` x${d.params.speed}` : '')],
+    ['Blocks', `${fmtDur(d.params.block_s)}, ${d.params.method}`], ['Keys to', d.params.neighbor || 'not saved']);
+  document.getElementById('cont-chips').innerHTML = chipsHTML(chips);
+  const logEl = document.getElementById('cont-log');
+  logEl.textContent = (d.log || []).join('\n');
+  logEl.scrollTop = logEl.scrollHeight;
+  try {
+    const live = (await apiFetch('/api/acquire/live')).status;
+    setBadge('cont-live-badge', live && live.state === 'locked' ? `peak locked: skew ${fmtNum(live.skew_ppb, 2)} ppb, HWHM ${fmtNum(live.hwhm_ps, 0)} ps` : `peak: ${live ? live.state : '-'}`,
+      live && live.state === 'locked' ? 'success' : 'muted');
+  } catch (e) { /* no live status */ }
+  drawContinuous();
+}
+window.addEventListener('resize', drawContinuous);
+
+// Evaluation: evaluate.py on ticked pairs, reports kept on this node
+const evalPairs = [];
+let evalJob = null;
+
+function renderEvalPairs() {
+  for (const p of recordings.pairs) {
+    if (!evalPairs.some(q => q.a === p.a && q.b === p.b)) evalPairs.push({ a: p.a, b: p.b, checked: false });
+  }
+  document.getElementById('eval-pairs').innerHTML = evalPairs.length ? evalPairs.map((p, i) => `<tr>
+      <td><input type="checkbox" data-pair="${i}" ${p.checked ? 'checked' : ''}></td>
+      <td class="mono">${esc(p.a.replace('_timestamp_sequence.npy', ''))}</td>
+      <td class="mono">${esc(p.b.replace('_timestamp_sequence.npy', ''))}</td></tr>`).join('') : emptyRow(3, 'no recording pairs yet');
+}
+document.getElementById('eval-pairs').addEventListener('change', e => {
+  const i = e.target.dataset.pair;
+  if (i !== undefined) evalPairs[i].checked = e.target.checked;
+});
+
+document.getElementById('eval-run').addEventListener('click', async () => {
+  const errEl = document.getElementById('eval-error');
+  errEl.textContent = '';
+  const pairs = evalPairs.filter(q => q.checked).map(q => ({ a: q.a, b: q.b }));
+  if (!pairs.length) { errEl.textContent = 'tick at least one pair'; return; }
+  try {
+    const j = await postJSON('/api/jobs', { kind: 'evaluate', params: { pairs, live: document.getElementById('eval-live').checked } });
+    evalJob = j.id;
+    refreshEvalJob();
+  } catch (e) { errEl.textContent = e.message; }
+});
+
+async function refreshEvalJob() {
+  if (!evalJob) return;
+  try {
+    const j = await apiFetch('/api/jobs/' + encodeURIComponent(evalJob));
+    setBadge('eval-badge', j.status === 'running' ? 'Evaluating...' : j.status, j.status === 'done' ? 'success' : j.status === 'failed' ? 'warn' : 'muted');
+    const logEl = document.getElementById('eval-log');
+    logEl.textContent = (j.log || []).join('\n') + (j.error ? '\n' + j.error : '');
+    logEl.scrollTop = logEl.scrollHeight;
+    if (j.status === 'done' || j.status === 'failed') {
+      const done = evalJob;
+      evalJob = null;
+      await refreshEvaluations();
+      if (j.result && j.result.evaluation) showEvaluation(j.result.evaluation);
+    }
+  } catch (e) { /* keep polling */ }
+}
+
+async function refreshEvaluations() {
+  try {
+    const d = await apiFetch('/api/evaluations');
+    document.getElementById('eval-list').innerHTML = d.evaluations.length ? d.evaluations.map(e => `<tr data-eval="${esc(e.name)}" style="cursor:pointer">
+        <td class="mono">${esc(e.name)}</td><td>${e.pairs.length}</td><td>${fmtTime(e.created)}</td></tr>`).join('') : emptyRow(3, 'none yet');
+  } catch (e) { /* backend not reachable yet */ }
+}
+document.getElementById('eval-list').addEventListener('click', e => {
+  const row = e.target.closest('[data-eval]');
+  if (row) showEvaluation(row.dataset.eval);
+});
+
+const EVAL_FIGURES = [['rates.png', 'Detector singles'], ['peak.png', 'Offline peak search'], ['live.png', 'Live tracking'],
+  ['window.png', 'Window choice'], ['ec.png', 'Error correction'], ['budget.png', 'Key budget']];
+
+async function showEvaluation(name) {
+  let d;
+  try { d = await apiFetch('/api/evaluations/' + encodeURIComponent(name)); } catch (e) { return; }
+  document.getElementById('eval-view').style.display = '';
+  setEl('eval-view-title', 'Evaluation ' + name);
+  const pairs = d.pairs || [];
+  document.getElementById('eval-summary').innerHTML = pairs.map(p => {
+    const b = p.base || {}, pk = p.peak || {}, lv = p.live || {};
+    const ec = Object.entries(p.ec || {}).filter(([, v]) => v.ok && v.leak);
+    const best = ec.sort((x, y) => x[1].leak - y[1].leak)[0];
+    const asym = Math.max(0, ...Object.values(p.ec || {}).map(v => v.key || 0));
+    return `<tr><td class="mono">${esc(p.name)}</td><td>${esc(p.link)}</td><td>${fmtNum((p.a || {}).duration_s, 1)} s</td>
+      <td>${pk.skew_ppb != null ? fmtNum(pk.skew_ppb, 2) + ' ppb' : '-'}</td><td>${lv.lock_s != null ? fmtNum(lv.lock_s, 1) + ' s' : '-'}</td>
+      <td>${b.window_ps ? '±' + b.window_ps + ' ps' : '-'}</td><td>${b.sifted_bits ?? '-'}</td><td>${b.qber != null ? fmtNum(100 * b.qber, 2) + '%' : '-'}</td>
+      <td>${best ? esc(best[0]) + ' (' + fmtNum(best[1].leak / p.shannon, 2) + ')' : '-'}</td><td>${asym}</td><td>${b.final_key_bits ?? '-'}</td></tr>`;
+  }).join('') || emptyRow(11, (pairs[0] && pairs[0].notes || []).join('; ') || 'no pairs');
+  const pooled = Object.entries(d.pooled || {});
+  document.getElementById('eval-pooled').innerHTML = chipsHTML(pooled.map(([link, p]) => [`${link} pooled`,
+    p.error ? 'failed: ' + p.error : `${p.n} recordings, ${fmtNum(p.seconds, 0)} s, ${p.sifted} sifted, QBER ${fmtNum(100 * p.qber, 2)}%, phase-error bound ${fmtNum(100 * p.bound, 1)}%, finite key ${p.finite} bits`]));
+  const url = f => `/api/evaluations/${encodeURIComponent(name)}/${f}`;
+  document.getElementById('eval-figures').innerHTML = (d.comparison ? `<h3 class="card-title" style="margin:.4rem 0">Recordings side by side</h3><img class="eval-fig" src="${url('comparison.png')}" alt="comparison">` : '') +
+    pairs.map(p => `<h3 class="card-title" style="margin:1rem 0 .4rem">${esc(p.name)}</h3>` +
+      EVAL_FIGURES.filter(([f]) => (p.figures || []).includes(f)).map(([f, title]) =>
+        `<figure class="eval-figure"><img class="eval-fig" src="${url(encodeURIComponent(p.name) + '/' + f)}" alt="${esc(title)}" loading="lazy"><figcaption>${esc(title)}</figcaption></figure>`).join('')).join('');
+}
 
 navigate('home');

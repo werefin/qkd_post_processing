@@ -25,30 +25,32 @@ Coincidences are found from public metadata only (`MatchCoincidences`: timestamp
 
 A PA block is the unit over which one Toeplitz hash is applied and one set of $\varepsilon$-costs is charged. Each block pays its own $\log_2(2/\varepsilon_\mathrm{cor}) + 2\log_2\!\bigl(1/(2\varepsilon_\mathrm{PA})\bigr)$ plus the statistical fluctuation term of Phase-error estimation; these are not amortized across blocks. The review's finite-size penalty table shows a finite-size penalty of 26-40% at 1-minute blocks and 7-12% at 1-hour blocks for its link. **Use blocks of at least $10^6$-$10^7$ sifted bits** (the review's block-size recommendation).
 
-**Pooling.** Ten-second recordings are far below that. `cmd/importtt` accepts a comma-separated `-dir` list and treats all the recordings as one PA block, each drift-corrected on its own; every recording given is included, never a subset chosen by its QBER (the pooling rule in Procedure, `doc/coincidence_filtering.md`).
+**Pooling**: ten-second recordings are far below that. `cmd/importtt` accepts a comma-separated `-dir` list and treats all the recordings as one PA block, each drift-corrected on its own; every recording given is included, never a subset chosen by its QBER (the pooling rule in Procedure, `doc/coincidence_filtering.md`).
 
-Predicted finite key for the Bratislava-Trnava link after filtering (about 3,300 sifted pairs per 10 s at 6.6% QBER), with the exact bound of Phase-error estimation, the optimal sample share, and error correction at $f = 1.2$:
+Predicted finite key for an illustrative link giving 300 sifted pairs per second at 6% QBER, with the exact bound of Phase-error estimation, the optimal sample share, and error correction at $f = 1.2$; the same planner `OptimalSampleFraction` uses, no recording involved:
 
 | Acquisition | Sifted pairs | Optimal sample | Phase-error bound $\varphi$ | Finite key |
 |---|---|---|---|---|
-| 10 s | 3,300 | --> | 0.500 | 0 bits |
-| 1 min | 19,800 | 34% | 0.106 | 829 bits |
-| 5 min | 99,000 | 17% | 0.087 | 10,978 bits (36.6 bit/s) |
-| 10 min | 198,000 | 13% | 0.083 | 26,010 bits (43.4 bit/s) |
-| 30 min | 594,000 | 10% | 0.077 | 92,600 bits (51.4 bit/s) |
-| 60 min | 1,188,000 | 7% | 0.075 | 198,899 bits (55.2 bit/s) |
+| 10 s | 3,000 | --> | 0.500 | 0 bits |
+| 1 min | 18,000 | 28% | 0.103 | 1,489 bits (24.8 bit/s) |
+| 5 min | 90,000 | 15% | 0.083 | 14,709 bits (49.0 bit/s) |
+| 10 min | 180,000 | 12% | 0.077 | 33,691 bits (56.2 bit/s) |
+| 30 min | 540,000 | 8% | 0.072 | 116,261 bits (64.6 bit/s) |
+| 60 min | 1,080,000 | 6% | 0.069 | 246,703 bits (68.5 bit/s) |
+
+A 5-minute block already reaches about 70% of the 1-hour rate, which is why continuous QKD distils 5-minute blocks by default (`acquisition/continuous_qkd.py`).
 
 ### Error correction
 
 The review's central finding: the deployed detect-and-discard scheme (Hamming [7,4,3] blocks, a whole block dropped on any detected error) has a reconciliation inefficiency $f \approx 3.2$-$4.1$, against $f \approx 1.05$-$1.2$ for actual error correction, because it discards correct bits along with the errors (review Sections 5 and 8).
 
-**Use 5G NR LDPC (`-ldpc5g`), the default, or polar (`-polar`) correction.** 5G NR LDPC uses the TS 38.212 base graph 1 with blind reconciliation: the rows are chosen from the QBER, punctured positions start unknown to Bob and are revealed a fortieth at a time while a frame fails, and a 32-bit tag confirms each decoded frame; the disclosure is the syndrome and the tag, less the punctured values still hidden (credited only when their columns are linearly independent), plus one bit for each of Bob's verdicts (`doc/ec_comparison.md`). Polar reconciliation is rate-adaptive (`PolarReconcileSoft`): each block starts at a margin of 0.02 below its capacity; after decoding, Alice and Bob compare a 32-bit universal hash of the block, and on a mismatch Alice reveals the next least reliable positions (margin +0.02) and Bob retries. The frozen sets are nested, so the disclosure is exactly the final frozen count plus 33 bits per attempt, the tag and Bob's verdict, every attempt charged. A short final block's zero padding is treated as known and costs nothing. LDPC needs its rate chosen comfortably below $1 - h_2(\mathrm{QBER})$. Winnow (`-winnow`) is a simpler fallback. Block discard remains available only as a baseline and is always sized asymptotically (Privacy amplification), because it has no random sample to bound the phase error with. Optionally, per-bit reliabilities from public timing (`-soft-bins`, `doc/timing_aware_reconciliation.md`) lower the disclosure further.
+**Use 5G NR LDPC (`-ldpc5g`), the default, or polar (`-polar`) correction**: 5G NR LDPC uses the TS 38.212 base graph 1 with blind reconciliation: the rows are chosen from the QBER, punctured positions start unknown to Bob and are revealed a fortieth at a time while a frame fails, and a 32-bit tag confirms each decoded frame; the disclosure is the syndrome and the tag, less the punctured values still hidden (credited only when their columns are linearly independent), plus one bit for each of Bob's verdicts (`doc/ec_comparison.md`). Polar reconciliation is rate-adaptive (`PolarReconcileSoft`): each block starts at a margin of 0.02 below its capacity; after decoding, Alice and Bob compare a 32-bit universal hash of the block, and on a mismatch Alice reveals the next least reliable positions (margin +0.02) and Bob retries. The frozen sets are nested, so the disclosure is exactly the final frozen count plus 33 bits per attempt, the tag and Bob's verdict, every attempt charged. A short final block's zero padding is treated as known and costs nothing. LDPC needs its rate chosen comfortably below $1 - h_2(\mathrm{QBER})$. Winnow (`-winnow`) is a simpler fallback. Block discard remains available only as a baseline and is always sized asymptotically (Privacy amplification), because it has no random sample to bound the phase error with. Optionally, per-bit reliabilities from public timing (`-soft-bins`, `doc/timing_aware_reconciliation.md`) lower the disclosure further.
 
 Every strategy reports the bits it actually disclosed (syndromes, frozen values, parities, CRCs), and that exact count is charged as $\mathrm{leakedBits}$ in Privacy amplification.
 
 ### Error verification and correctness
 
-**Finding (the review, on error verification):** CRC-16 alone bounds correctness only to about $2^{-16} \approx 1.5\times10^{-5}$ per frame, because a fixed CRC polynomial is not drawn from a random family.
+**Finding (review, on error verification)**: CRC-16 alone bounds correctness only to about $2^{-16} \approx 1.5\times10^{-5}$ per frame, because a fixed CRC polynomial is not drawn from a random family.
 
 **Implemented** (`distillFiniteKey`, `universalhash.go`): CRC-16 still runs after error correction to localize and drop chunks with residual errors. Then, immediately before privacy amplification, Alice and Bob compare a $t = \lceil \log_2(1/\varepsilon_\mathrm{cor}) \rceil$-bit Toeplitz universal hash (50 bits at $\varepsilon_\mathrm{cor} = 10^{-15}$) of their entire surviving strings, with a freshly drawn seed independent of the PA seed. A match bounds the probability of accepting unequal strings by $2^{-t} \le \varepsilon_\mathrm{cor}$. A mismatch aborts the block: no key, rather than two keys that disagree. The $t$ tag bits are charged to $\mathrm{leakedBits}$.
 
@@ -56,7 +58,7 @@ Every strategy reports the bits it actually disclosed (syndromes, frozen values,
 
 The privacy-amplification bound needs the **phase error** $\varphi$ of the kept bits, not their bit error. In BBM92, the phase error of the key bits measured in one basis is estimated from the bit errors of the sacrificed sample in the **other** basis.
 
-**Implemented** (`crossBasisPhaseError`). Let the sacrificed sample contain $k_\mathrm{HV}, k_\mathrm{DA}$ bits with $e_\mathrm{HV}, e_\mathrm{DA}$ errors, and let the reconciled block contain $n_\mathrm{HV}, n_\mathrm{DA}$ bits, $n = n_\mathrm{HV} + n_\mathrm{DA}$. The review's fluctuation term (Tomamichel et al.),
+**Implemented** (`crossBasisPhaseError`): let the sacrificed sample contain $k_\mathrm{HV}, k_\mathrm{DA}$ bits with $e_\mathrm{HV}, e_\mathrm{DA}$ errors, and let the reconciled block contain $n_\mathrm{HV}, n_\mathrm{DA}$ bits, $n = n_\mathrm{HV} + n_\mathrm{DA}$. The review's fluctuation term (Tomamichel et al.),
 
 $$\mu(n_b, k, \varepsilon) = \sqrt{\frac{n_b + k}{n_b\,k}\cdot\frac{k+1}{k}\cdot\ln\frac1\varepsilon},$$
 
@@ -74,7 +76,7 @@ $$\varphi = \min\!\left(\tfrac12,\ \varphi_0 \cdot \frac{n}{n_\mathrm{surviving}
 
 The two per-basis estimates each fail with probability at most $\varepsilon_\mathrm{PE}/2$, so by a union bound the combined estimate fails with probability at most $\varepsilon_\mathrm{PE}$. A basis with no sample bits gives $\varphi = \tfrac12$, which means no key.
 
-**The cap is $\tfrac12$, not 1.** $h_2$ rises on $[0, \tfrac12]$ and falls on $[\tfrac12, 1]$, so at $\varphi = 1$ the rate $1 - h_2(\varphi)$ would equal 1 and certify the whole block. An earlier version of `EstimatePhaseError` capped at 1 in exactly the case that should yield nothing; it now caps at $\tfrac12$, and `FiniteKeySecureKeyLength` returns 0 for any $\varphi \ge \tfrac12$.
+**Cap is $\tfrac12$, not 1**: $h_2$ rises on $[0, \tfrac12]$ and falls on $[\tfrac12, 1]$, so at $\varphi = 1$ the rate $1 - h_2(\varphi)$ would equal 1 and certify the whole block. An earlier version of `EstimatePhaseError` capped at 1 in exactly the case that should yield nothing; it now caps at $\tfrac12$, and `FiniteKeySecureKeyLength` returns 0 for any $\varphi \ge \tfrac12$.
 
 **Sample size** (`OptimalSampleFraction`, CLI `-sample-auto`, on by default). The share of sifted bits sacrificed is chosen to maximize the predicted finite key, from the sifted count and a declared expected QBER (default: the coincidence filter's timing-based prediction), before any sample bit is examined, so the choice cannot depend on the errors it then measures.
 
@@ -100,7 +102,7 @@ The **asymptotic mode** (CLI `-asymptotic`, and always for block discard) sizes 
 | all 7 recordings pooled (70 s) | 23,408 | 6.7% | 0.111 | **535 bits** |
 | 6 recordings with detector-delay correction (60 s, run_trigger02 used for calibration) | 20,083 | 7.3% | 0.121 | 0 bits |
 
-The 535-bit key is at the edge of the threshold and is certified only under one-way timestamp announcement (Sifting and coincidence filtering). Correcting detector delays removes the timing leak but raises QBER from 6.7% to 7.3%, because off-centre error classes move into the window, and 60 s is then not enough. Several minutes of acquisition are needed for a robust certified key (Choice of PA block size).
+The 535-bit key is at the edge of the threshold and is certified only under one-way timestamp announcement (sifting and coincidence filtering). Correcting detector delays removes the timing leak but raises QBER from 6.7% to 7.3%, because off-centre error classes move into the window, and 60 s is then not enough. Several minutes of acquisition are needed for a robust certified key (choice of PA block size).
 
 ### Key delivery (key management system)
 
@@ -108,7 +110,7 @@ The 535-bit key is at the edge of the threshold and is certified only under one-
 
 ### What this does not resolve
 
-- **Detector assumptions.** Double-click handling, detector dead time and detection-efficiency mismatch (the review's list of detector assumptions) are assumptions of the security proof, not something post-processing parameters can fix. The recordings show a strong efficiency asymmetry between detector pairs (the A1-B1 peak carries roughly eight times the counts of A0-B0), so efficiency mismatch in particular should be assessed against the proof this product relies on (the review, on the proof's applicability).
-- **Classical-channel authentication.** The sifting, reconciliation and verification traffic between the two sites must be authenticated (the review, on classical-channel authentication). The key management system's mutual TLS covers key delivery to applications and the traffic between KMS nodes, not this traffic.
-- **Detector timing side channel.** Measured on these recordings: per-detector delays differ by up to about 35 ps, and announced $\Delta t$ would carry about 0.07 bits of information per sifted bit; calibration (`-calibrate-delays`, `-detector-delays`) lowers this to about 0.01 but not to zero. The procedure therefore requires one-way timestamp announcement, under which $\Delta t$ is never public (Per-detector delays and the timing side channel in `doc/coincidence_filtering.md`).
-- **Protocol adaptation.** The finite-key formula follows the review, which cites Tomamichel, Lim, Gisin, Renner, *Tight finite-key analysis for quantum cryptography*, Nat. Commun. 3, 634 (2012). That proof is for prepare-and-measure BB84; applying it to entanglement-based BBM92 through the source-replacement scheme is standard practice, but it is a protocol-specific step a specialist should sign off on before this is relied on as a certified security claim. This document gives a precise, documented and tested starting point, not a substitute for that review.
+- **Detector assumptions**: double-click handling, detector dead time and detection-efficiency mismatch (the review's list of detector assumptions) are assumptions of the security proof, not something post-processing parameters can fix. Efficiency asymmetry between detector pairs shows directly in the per-channel coincidence counts, so efficiency mismatch in particular should be assessed against the proof this product relies on (the review, on the proof's applicability).
+- **Classical-channel authentication**: sifting, reconciliation and verification traffic between the two sites must be authenticated (the review, on classical-channel authentication). The key management system's mutual TLS covers key delivery to applications and the traffic between KMS nodes, not this traffic.
+- **Detector timing side channel**: per-detector delays of tens of picoseconds make an announced $\Delta t$ carry information about the bit; calibration (`-calibrate-delays`, `-detector-delays`, which reports the estimate for a given setup) lowers it but not to zero. The procedure therefore requires one-way timestamp announcement, under which $\Delta t$ is never public (Per-detector delays and the timing side channel in `doc/coincidence_filtering.md`).
+- **Protocol adaptation**: finite-key formula follows the review, which cites Tomamichel, Lim, Gisin, Renner, *Tight finite-key analysis for quantum cryptography*, Nat. Commun. 3, 634 (2012). That proof is for prepare-and-measure BB84; applying it to entanglement-based BBM92 through the source-replacement scheme is standard practice, but it is a protocol-specific step a specialist should sign off on before this is relied on as a certified security claim. This document gives a precise, documented and tested starting point, not a substitute for that review.

@@ -308,7 +308,7 @@ func TestBuildEventsAgainstBruteForce(t *testing.T) {
 		offset := r.Int63n(2000) - 1000
 		shift := func(ts int64) int64 { return ts*2 + offset } // non-trivial, non-identity
 
-		gotEvents, gotDropped, gotMP := buildEvents(timestamps, channels, multiPhoton, shift)
+		gotEvents, gotDropped, gotMP, _ := buildEvents(timestamps, channels, multiPhoton, nil, shift)
 		wantEvents, wantDropped, wantMP := bruteForceBuildEvents(timestamps, channels, multiPhoton, shift)
 
 		if gotDropped != wantDropped || gotMP != wantMP {

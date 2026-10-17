@@ -21,5 +21,15 @@ venv/
 # Old dashboard deployment leftovers, machine-local
 /ui/caddy-root-ca.crt
 
-# Evaluation: the importtt it builds
+# Results and recordings are never committed: evaluation output, reports and figures made from real data,
+# continuous-QKD segments and keys
 /evaluation/.bin/
+/evaluation/results/
+/evaluation/example/
+/evaluation/results_report.md
+*.npy
+*.npz
+events.cache
+blocks.jsonl
+continuous_state.json
+*_coincidence.json

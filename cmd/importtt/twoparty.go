@@ -145,7 +145,7 @@ func aliceEvents(o twoPartyOptions) (events []qkd.DetectionEvent, perRec [][]qkd
 		if len(t) != len(ch) || len(t) == 0 {
 			return nil, nil, nil, fmt.Errorf("%s: empty recording or timestamp and channel counts differ", d)
 		}
-		ev, _, _ := buildEvents(t, ch, detectMultiPhoton(t, ch, o.mpWindowPS), func(ts int64) int64 { return ts })
+		ev, _, _, _ := buildEvents(t, ch, detectMultiPhoton(t, ch, o.mpWindowPS), nil, func(ts int64) int64 { return ts })
 		if o.delays != nil {
 			ev = qkd.ApplyDetectorDelays(ev, o.delays.Alice)
 		}
@@ -276,7 +276,7 @@ func loadBobRecording(dir string, o twoPartyOptions) (bobRecording, error) {
 		aRel := skew.ReferenceElapsedPS + (bRel-(skew.ReferenceElapsedPS+skew.LagAtReferencePS))/(1+skew.SkewFraction)
 		return a0 + int64(math.Round(aRel))
 	}
-	r.bob, _, _ = buildEvents(bt, bch, detectMultiPhoton(bt, bch, o.mpWindowPS), toAliceClock)
+	r.bob, _, _, _ = buildEvents(bt, bch, detectMultiPhoton(bt, bch, o.mpWindowPS), nil, toAliceClock)
 	if o.delays != nil {
 		r.bob = qkd.ApplyDetectorDelays(r.bob, o.delays.Bob)
 	}

@@ -42,7 +42,7 @@ the standard identity that the cross-correlation at *every* possible lag, all at
 
 $$\text{score} = \frac{\text{value} - \text{median}}{1.4826 \times \text{MAD}}$$
 
-rather than mean/stdev --> a real coincidence peak would otherwise drag the mean and stdev along with it and hide itself. The handful of highest-scoring, well-separated lags go on to refinement.
+rather than mean/stdev --> a real coincidence peak would otherwise drag the mean and stdev along with it and hide itself. The handful of highest-scoring, well-separated lags go on to refinement. The coarse search only proposes candidates, so it runs on the first `coarse_span_s` (2 s by default, at least twice `max_lag_ms`) of a longer recording, which makes it five times faster on a 10 s recording; if none of its candidates refines to a significant peak on the whole recording, it reruns over everything.
 
 - **Refinement, exact timestamp differences**: for each coarse candidate, `_difference_histogram` builds an exact fine-grained histogram of $(B_i - A_j - \text{lag})$ for every pair within `radius_ps` of the candidate, using a two-pointer sliding window over the (already-sorted) timestamp arrays --> $O(N)$, not $O(N^2)$. `_best_window` then picks whichever trial window width (0.5 ns ... 1 μs) maximizes a Poisson significance score:
 
@@ -101,11 +101,11 @@ Notes from the field:
 - **Lock:** a coarse FFT correlation over the trailing `window_s` of data proposes candidate lags within `max_lag_ms`. For each candidate, a joint search over the clock skew (within `slope_range_ppb`) and the lag counts the pairs that line up, first in 2 ns bins, then in 100 ps bins. The best candidate locks once its score reaches 8. Without the skew search the peak smears by the skew times the window (19 ns per second at 19 ppb), and the coarse correlation alone cannot tell the true peak from a spurious one for several seconds.
 - **Track:** every `chunk_s` (0.5 s) of data gives one background-subtracted centroid of the pairs around the current lag model. A weighted line through the centroids of the last `fit_span_s` refits the lag and skew, and the recent pairs are rebinned against the corrected clocks, so the peak width (a Gaussian fit, reported as HWHM), the true-pair rate and the accidental share are always current. Six chunks in a row without a significant peak return the tracker to searching.
 
-Each update prints one `LIVE {json}` line, which the dashboard reads and draws on its Acquisition page, and every `interval_s` a readable summary:
+Each update prints one `LIVE {json}` line, which the dashboard reads and draws on its Acquisition page, and every `interval_s` a readable summary, here on the synthetic streams of `test_live_peak.py` (-42 ppb of skew, 200 ps of jitter):
 
 ```
-[INFO] [live] locked after 3.0s of data: lag 13544093.579 ns, skew 19.09 ppb, score 77.1
-[INFO] [live] locked: lag 13544112.784 ns, skew 19.08 +- 0.01 ppb, HWHM 289 ps, 363 pairs/s, chunk score 35.9
+[INFO] [live] locked after 1.7s of data: lag -2986.499 ns, skew -42.00 ppb, score 81.6
+[INFO] [live] locked: lag -3180.748 ns, skew -42.00 +- 0.00 ppb, HWHM 235 ps, 403 pairs/s, chunk score 49.4
 ```
 
 The live HWHM is measured on all channels together, before per-channel delay calibration, so it reads slightly wider than the final filter's. `coincidence_peak.py` still runs its full analysis once over the complete recording after `tt_record_dual.py` writes its output files (see below), and that JSON report, not the live line, is what `cmd/importtt` reads.

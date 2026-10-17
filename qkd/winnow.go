@@ -1,118 +1,109 @@
 package qkd
 
 import (
-	"fmt"
+	"math"
 	mathbits "math/bits"
 	"math/rand"
 )
 
-// HammingGeneratorMatrix builds the minimal single-error-locating matrix
-// Winnow needs: column j is binary(j+1), decoding a syndrome directly
-func HammingGeneratorMatrix(blockSize int) (GeneratorMatrix, error) {
-	if blockSize <= 0 {
-		return nil, fmt.Errorf("hamming: blockSize must be > 0")
+// winnowErrorsPerBlock is the expected number of errors in a first-pass block: low enough that most
+// mismatched blocks hold exactly one, high enough that the parities are not mostly wasted
+const winnowErrorsPerBlock = 0.65
+
+// winnowMaxFirstBlock caps the first block: larger ones look cheaper but leave errors behind at low QBER
+const winnowMaxFirstBlock = 16
+
+// winnowMaxPasses bounds a run; passes stop earlier once one finds every parity equal
+const winnowMaxPasses = 24
+
+// WinnowSchedule is the block size of each pass for a public QBER estimate: a power of two holding
+// about winnowErrorsPerBlock errors, then doubling, up to a quarter of the bits
+func WinnowSchedule(qber float64, n int) []int {
+	q := math.Max(qber, 1e-4)
+	b := 4
+	for b*2 <= winnowMaxFirstBlock && float64(b*2)*q <= winnowErrorsPerBlock {
+		b *= 2
 	}
-	p := mathbits.Len(uint(blockSize))
-	rows := make([][]byte, p)
-	for i := range rows {
-		rows[i] = make([]byte, blockSize)
+	sizes := []int{b}
+	for len(sizes) < winnowMaxPasses && b*2 <= max(n/4, 8) {
+		b *= 2
+		sizes = append(sizes, b)
 	}
-	for j := 0; j < blockSize; j++ {
-		col := j + 1
-		for i := range p {
-			if col&(1<<uint(i)) != 0 {
-				rows[i][j] = 1
-			}
-		}
-	}
-	return GeneratorMatrix(rows), nil
+	return sizes
 }
 
-// syndromeToPosition reads a p-bit syndrome as an integer and returns the
-// 0-indexed column it names, or -1 for the all-zero (no error) syndrome
-func syndromeToPosition(syndrome []byte) int {
-	v := 0
-	for i, b := range syndrome {
-		v |= int(b&1) << uint(i)
-	}
-	return v - 1
-}
-
-// WinnowCorrect flips at most one bit per block wherever its own syndrome
-// disagrees with referenceSyndrome --> the reference side must stay untouched
-func WinnowCorrect(ownBits []byte, g GeneratorMatrix, referenceSyndrome [][]byte) (corrected []byte, flipped int) {
-	if len(g[0]) == 0 {
-		panic("generator matrix must have at least one column")
-	}
-	blockSize := g.BlockSize()
-	ownSyndrome := ComputeBlockParity(ownBits, g)
-	if len(ownSyndrome) != len(referenceSyndrome) {
-		panic("ownSyndrome and referenceSyndrome must cover the same number of blocks")
-	}
-
-	corrected = append([]byte(nil), ownBits...)
-	n := len(corrected)
-	diff := make([]byte, g.ParityBits())
-	for bi := range ownSyndrome {
-		for i := range diff {
-			diff[i] = ownSyndrome[bi][i] ^ referenceSyndrome[bi][i]
-		}
-		pos := syndromeToPosition(diff)
-		if pos < 0 || pos >= blockSize {
-			continue // no error, or a syndrome outside this shortened block's real columns
-		}
-		idx := bi*blockSize + pos
-		if idx < n {
-			corrected[idx] ^= 1
-			flipped++
-		}
-	}
-	return corrected, flipped
-}
-
-// WinnowPassResult summarizes one single-pass correction attempt
-type WinnowPassResult struct {
-	CorrectedBob []byte
-	Corrections  int
-	LeakedBits   int // classical-channel bits spent announcing Alice's syndrome
-}
-
-// WinnowPass is a convenience wrapper for simulation and testing
-// use ComputeBlockParity + WinnowCorrect directly to run each side apart
-func WinnowPass(alice, bob []byte, g GeneratorMatrix) WinnowPassResult {
-	aliceSyndrome := ComputeBlockParity(alice, g)
-	correctedBob, flipped := WinnowCorrect(bob, g, aliceSyndrome)
-	return WinnowPassResult{
-		CorrectedBob: correctedBob,
-		Corrections:  flipped,
-		LeakedBits:   len(aliceSyndrome) * g.ParityBits(),
-	}
-}
-
-// WinnowConfig is one multi-pass run: one block size and permutation
-// per pass, so each regroups bits differently than the last
+// WinnowConfig is one run: a block size per pass; passes past the schedule repeat its last size while
+// mismatches remain. Permutations, if given, are used per pass, else derived from Seed
 type WinnowConfig struct {
 	BlockSizes   []int
 	Permutations [][]int
+	Seed         int64
 }
 
-// WinnowReconcile runs every configured pass, permuting before and
-// restoring order after each one, correcting Bob's copy toward Alice's
-func WinnowReconcile(alice, bob []byte, cfg WinnowConfig) (correctedBob []byte, totalLeaked, totalCorrections int) {
-	if len(cfg.BlockSizes) != len(cfg.Permutations) {
-		panic("WinnowConfig: one permutation required per pass")
-	}
-	correctedBob = append([]byte(nil), bob...)
-	for p, blockSize := range cfg.BlockSizes {
-		g, err := HammingGeneratorMatrix(blockSize)
-		if err != nil {
-			panic(err)
+// WinnowPassResult summarizes one pass
+type WinnowPassResult struct {
+	CorrectedBob []byte
+	Corrections  int
+	Mismatched   int // blocks whose parities differed
+	LeakedBits   int // parities, plus a syndrome per mismatched block
+}
+
+// blockSyndrome is the XOR of the in-block positions holding a one: the Hamming syndrome of a block of
+// up to 2^m bits, position 0 included, which the block parity covers
+func blockSyndrome(bits []byte) (syndrome int, parity byte) {
+	for j, v := range bits {
+		if v&1 == 1 {
+			syndrome ^= j
+			parity ^= 1
 		}
-		perm := cfg.Permutations[p]
-		res := WinnowPass(permuteBits(alice, perm), permuteBits(correctedBob, perm), g)
+	}
+	return syndrome, parity
+}
+
+// WinnowPass runs one pass on bits already shuffled: parity per block, syndrome where they differ
+func WinnowPass(alice, bob []byte, blockSize int) WinnowPassResult {
+	res := WinnowPassResult{CorrectedBob: append([]byte(nil), bob...)}
+	for start := 0; start < len(alice); start += blockSize {
+		end := min(start+blockSize, len(alice))
+		sa, pa := blockSyndrome(alice[start:end])
+		sb, pb := blockSyndrome(res.CorrectedBob[start:end])
+		res.LeakedBits++ // Alice's parity
+		if pa == pb {
+			continue // no error, or an even number left for a later pass
+		}
+		res.Mismatched++
+		// the syndrome takes as many bits as the block's last position needs
+		res.LeakedBits += mathbits.Len(uint(end - start - 1))
+		if pos := sa ^ sb; pos < end-start {
+			res.CorrectedBob[start+pos] ^= 1
+			res.Corrections++
+		}
+	}
+	return res
+}
+
+// WinnowReconcile runs the passes, shuffling before and restoring order after each, and keeps repeating
+// the last block size while a pass still finds mismatches, up to winnowMaxPasses
+func WinnowReconcile(alice, bob []byte, cfg WinnowConfig) (correctedBob []byte, totalLeaked, totalCorrections int) {
+	correctedBob = append([]byte(nil), bob...)
+	if len(cfg.BlockSizes) == 0 || len(alice) == 0 {
+		return correctedBob, 0, 0
+	}
+	for p := 0; p < winnowMaxPasses; p++ {
+		blockSize := cfg.BlockSizes[min(p, len(cfg.BlockSizes)-1)]
+		var perm []int
+		if p < len(cfg.Permutations) && len(cfg.Permutations[p]) == len(alice) {
+			perm = cfg.Permutations[p]
+		} else {
+			perm = GeneratePermutation(len(alice), cfg.Seed+1+int64(p))
+		}
+		res := WinnowPass(permuteBits(alice, perm), permuteBits(correctedBob, perm), blockSize)
 		correctedBob = unpermuteBits(res.CorrectedBob, perm)
 		totalLeaked += res.LeakedBits
 		totalCorrections += res.Corrections
+		if p >= len(cfg.BlockSizes)-1 && res.Mismatched == 0 {
+			break // the schedule is done and the last pass found every parity equal
+		}
 	}
 	return correctedBob, totalLeaked, totalCorrections
 }

@@ -1,6 +1,6 @@
 ### evaluation
 
-Evaluates TimeTagger recordings through the whole chain and writes, for each recording pair, a report with figures, plus a summary comparing the pairs and pooling each link's recordings. It covers detector rates, offline and live coincidence-peak finding, the choice of the coincidence window, every error-correction method on the same sample, the key budget and the finite key. `results_report.md` in this folder was written from its output on the example recording, with its figures in `example/`.
+Evaluates TimeTagger recordings through the whole chain and writes, for each recording pair, a report with figures, plus a summary comparing the pairs and pooling each link's recordings. It covers detector rates, offline and live coincidence-peak finding, the choice of the coincidence window, every error-correction method on the same sample, the key budget and the finite key. Reports, figures and numbers come from real recordings, so they are written next to the recordings, never into this repository, and the pre-commit hook refuses results and recordings in any case.
 
 ### Setup
 
@@ -21,15 +21,15 @@ evaluation/.venv/bin/python evaluation/evaluate.py <recording dir> [<recording d
 
 - A path can be a recording directory, a parent directory (searched recursively) or a single `*_timestamp_sequence.npy`. Two recordings in one directory with the same start time form a pair, whatever else the directory holds. A is the first in sorted order, as `tt_record_dual.py` and the live tracker use.
 - Site names come from the `"sites"` section of `acquisition/config.json` (`--config` for another file). The search settings come from its `"coincidence_peak"` and `"live_coincidence"` sections, the same the recorder uses.
-- Output goes to `evaluation/results/<date>_<name>/` (`--out` for another directory): `summary.md` with `comparison.png`, then one directory per pair with `report.md`, `rates.png`, `peak.png`, `live.png`, `window.png`, `ec.png` and `budget.png`, and `results.json` with every number.
+- Output goes next to the recordings, to `<first recording directory>/evaluation/<date>/`, never into this repository (`--out` for another directory): `summary.md` with `comparison.png`, then one directory per pair with `report.md`, `rates.png`, `peak.png`, `live.png`, `window.png`, `ec.png` and `budget.png`, and `results.json` with every number.
 
 | Option | Effect |
 |---|---|
 | `--methods ldpc5g,polar` | only these error-correction methods (`ldpc5g`, `ldpc5g-soft`, `polar`, `polar-soft`, `ldpc`, `winnow`) |
 | `--no-live` | skip the live tracker replay, the slowest stage on high-rate recordings |
-| `--no-sweep` | skip the coincidence-window sweep (22 importtt runs) |
+| `--no-sweep` | skip the coincidence-window sweep |
 | `--no-pool` | skip pooling each link's recordings into one block |
-| `--jobs N` | importtt runs in parallel, 2 by default; each holds a whole recording in memory, so keep it at 1 for recordings of several hundred MB on a machine with less than 16 GB |
+| `--jobs N` | importtt runs in parallel, 4 by default; each needs about 0.6 GB on a 300 MB recording |
 
 In Docker, the tools image carries everything, the 5G NR LDPC libraries included; mount the recordings and a config and write to the working directory:
 
@@ -51,4 +51,4 @@ docker run --rm -v "$PWD/recordings:/rec:ro" -v "$PWD/acquisition/config.json:/c
 
 ### Privacy
 
-Reports, figures and `results.json` name sites, never IPs: an address missing from the config is shown as "site A" or "site B", and a last pass masks anything IP-shaped that an error message might quote. The links to the recordings and the coincidence reports, which carry the original file names and so the IPs, live in a temporary directory that is deleted at the end of the run, so `evaluation/results/` holds nothing private but the measurements themselves. The repository's pre-commit hook refuses private IPs in any case.
+Reports, figures and `results.json` name sites, never IPs: an address missing from the config is shown as "site A" or "site B", and a last pass masks anything IP-shaped that an error message might quote. The links to the recordings and the coincidence reports, which carry the original file names and so the IPs, live in a temporary directory that is deleted at the end of the run, so the output holds nothing private but the measurements themselves. The repository's pre-commit hook refuses private IPs in any case.

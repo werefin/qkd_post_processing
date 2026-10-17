@@ -17,3 +17,11 @@ if [ -n "$ips" ]; then
     echo "$ips" | head -20 | sed 's/^/  /' >&2
     exit 1
 fi
+
+# Refuses results and recordings: anything made from real data stays on the machine that made it
+data=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.npy$|\.npz$|events\.cache$|blocks\.jsonl$|continuous_state\.json$|_coincidence\.json$|^evaluation/(results/|example/|results_report\.md)|(^|/)recordings/' || true)
+if [ -n "$data" ]; then
+    echo "pre-commit: results and recordings must never be committed:" >&2
+    echo "$data" | sed 's/^/  /' >&2
+    exit 1
+fi

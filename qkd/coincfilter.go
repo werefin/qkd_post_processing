@@ -1,6 +1,7 @@
 package qkd
 
 import (
+	"cmp"
 	"fmt"
 	"math"
 	"slices"
@@ -179,10 +180,22 @@ func PruneToCoincidenceRange(alice, bob []DetectionEvent, radiusPS int64) []Dete
 	for i, e := range alice {
 		ts[i] = e.TimestampPS
 	}
-	slices.Sort(ts)
-	out := make([]DetectionEvent, 0, len(bob)/64)
+	if !slices.IsSorted(ts) {
+		slices.Sort(ts)
+	}
+	inOrder := slices.IsSortedFunc(bob, func(a, b DetectionEvent) int { return cmp.Compare(a.TimestampPS, b.TimestampPS) })
+	out := make([]DetectionEvent, 0, min(len(bob), len(alice)+len(bob)/64))
+	j := 0
 	for _, e := range bob {
-		i := sort.Search(len(ts), func(i int) bool { return ts[i] >= e.TimestampPS-radiusPS })
+		var i int
+		if inOrder { // one pass over both, the usual case: recordings come time-ordered
+			for j < len(ts) && ts[j] < e.TimestampPS-radiusPS {
+				j++
+			}
+			i = j
+		} else {
+			i = sort.Search(len(ts), func(i int) bool { return ts[i] >= e.TimestampPS-radiusPS })
+		}
 		if i < len(ts) && ts[i] <= e.TimestampPS+radiusPS {
 			out = append(out, e)
 		}

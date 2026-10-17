@@ -5,7 +5,7 @@ package qkd
 type WinnowRunConfig struct {
 	CoincidenceWindowPS int64
 	SampleFraction      float64         // fraction of sifted bits sacrificed to measure QBER directly
-	WinnowBlockSizes    []int           // one Hamming block size per correction pass
+	WinnowBlockSizes    []int           // block size per pass; empty plans them from the sample QBER (WinnowSchedule)
 	Seed                int64           // derives the sample selection and per-pass permutations; must be agreed publicly
 	ChunkSize           int             // step 3 CRC chunk size (bits), applied after Winnow
 	KeyAlignBits        int             // step 5: round the final key down to a multiple of this many bits, 0 = don't
@@ -43,14 +43,11 @@ func RunWinnow(aliceEvents, bobEvents []DetectionEvent, cfg WinnowRunConfig) (Wi
 	res.SiftedBits = siftedBits
 	res.QBER = qberResult
 
-	permutations := make([][]int, len(cfg.WinnowBlockSizes))
-	for i := range permutations {
-		permutations[i] = GeneratePermutation(len(aliceRem), cfg.Seed+1+int64(i))
+	sizes := cfg.WinnowBlockSizes
+	if len(sizes) == 0 {
+		sizes = WinnowSchedule(qberResult.QBER, len(aliceRem)) // from the public sample only
 	}
-	correctedBob, winnowLeaked, corrections := WinnowReconcile(aliceRem, bobRem, WinnowConfig{
-		BlockSizes:   cfg.WinnowBlockSizes,
-		Permutations: permutations,
-	})
+	correctedBob, winnowLeaked, corrections := WinnowReconcile(aliceRem, bobRem, WinnowConfig{BlockSizes: sizes, Seed: cfg.Seed})
 	res.WinnowCorrections = corrections
 	res.WinnowLeakedBits = winnowLeaked
 

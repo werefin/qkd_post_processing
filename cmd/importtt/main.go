@@ -3,6 +3,8 @@
 package main
 
 import (
+	"bufio"
+	"encoding/gob"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -12,9 +14,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/pprof"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"qkd_post_processing/kms"
@@ -200,7 +205,15 @@ type jsonReport struct {
 	KeysSaved          int                `json:"keys_saved"`
 	ElapsedMS          int64              `json:"elapsed_ms"`
 	WindowReport       []windowBucketJSON `json:"window_report,omitempty"`
+	WindowSweep        []windowSweepJSON  `json:"window_sweep,omitempty"`
 	Error              string             `json:"error,omitempty"`
+}
+
+// windowSweepJSON is one -window-sweep width: what sifting and the visibility would give with it
+type windowSweepJSON struct {
+	WindowPS   int64   `json:"window_ps"`
+	SiftedBits int     `json:"sifted_bits"`
+	QBERVis    float64 `json:"qber_vis"`
 }
 
 // windowBucketJSON is one -window-report bucket's diagnostic QBER, for -json
@@ -342,47 +355,105 @@ func basisPartnerChannel(ch int8) int8 {
 // channel within windowPS ps; timestamps must be sorted ascending
 func detectMultiPhoton(timestamps []int64, channels []int8, windowPS int64) []bool {
 	flagged := make([]bool, len(timestamps))
-	byChannel := map[int8][]int{}
-	for i, ch := range channels {
-		byChannel[ch] = append(byChannel[ch], i)
+	// per-channel index lists in two passes over plain arrays: a map append per click costs more than the scan
+	var counts [256]int
+	for _, ch := range channels {
+		counts[uint8(ch)]++
 	}
-	for ch, idxs := range byChannel {
+	var byChannel [256][]int32
+	for c, n := range counts {
+		if n > 0 {
+			byChannel[c] = make([]int32, 0, n)
+		}
+	}
+	for i, ch := range channels {
+		byChannel[uint8(ch)] = append(byChannel[uint8(ch)], int32(i))
+	}
+	// each basis pair once (the relation is symmetric), the pairs in parallel: their clicks never overlap
+	var wg sync.WaitGroup
+	for c := range byChannel {
+		ch := int8(uint8(c))
 		partner := basisPartnerChannel(ch)
-		partnerIdxs, ok := byChannel[partner]
-		if partner == 0 || !ok {
+		idxs, partnerIdxs := byChannel[c], byChannel[uint8(partner)]
+		if partner == 0 || partner < ch || len(idxs) == 0 || len(partnerIdxs) == 0 {
 			continue
 		}
-		pLo := 0
-		for _, i := range idxs {
-			t := timestamps[i]
-			for pLo < len(partnerIdxs) && timestamps[partnerIdxs[pLo]] < t-windowPS {
-				pLo++
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pLo := 0
+			for _, i := range idxs {
+				t := timestamps[i]
+				for pLo < len(partnerIdxs) && timestamps[partnerIdxs[pLo]] < t-windowPS {
+					pLo++
+				}
+				for p := pLo; p < len(partnerIdxs) && timestamps[partnerIdxs[p]] <= t+windowPS; p++ {
+					flagged[i] = true
+					flagged[partnerIdxs[p]] = true
+				}
 			}
-			for p := pLo; p < len(partnerIdxs) && timestamps[partnerIdxs[p]] <= t+windowPS; p++ {
-				flagged[i] = true
-				flagged[partnerIdxs[p]] = true
+		}()
+	}
+	wg.Wait()
+	return flagged
+}
+
+// nearMask marks each x within radius of some ref (with refKeep, of some kept ref), in one pass over
+// both when they are ascending, as recordings are; out of order, every x is kept and nothing is lost
+func nearMask(x, ref []int64, refKeep []bool, radius int64) []bool {
+	keep := make([]bool, len(x))
+	if !slices.IsSorted(x) || !slices.IsSorted(ref) {
+		for i := range keep {
+			keep[i] = true
+		}
+		return keep
+	}
+	j := 0
+	for i, t := range x {
+		for j < len(ref) && ref[j] < t-radius {
+			j++
+		}
+		for k := j; k < len(ref) && ref[k] <= t+radius; k++ {
+			if refKeep == nil || refKeep[k] {
+				keep[i] = true
+				break
 			}
 		}
 	}
-	return flagged
+	return keep
 }
 
 // buildEvents maps a recording's arrays to DetectionEvents, applying
 // shiftPS first; multiPhoton[i] comes from detectMultiPhoton on raw timestamps
-func buildEvents(timestamps []int64, channels []int8, multiPhoton []bool, shiftPS func(int64) int64) (events []qkd.DetectionEvent, dropped, flaggedMP int) {
-	events = make([]qkd.DetectionEvent, 0, len(channels))
+func buildEvents(timestamps []int64, channels []int8, multiPhoton, keep []bool, shiftPS func(int64) int64) (events []qkd.DetectionEvent, dropped, flaggedMP, valid int) {
 	for i, ch := range channels {
-		basis, bit, ok := channelToBasisBit(ch)
-		if !ok {
+		if _, _, ok := channelToBasisBit(ch); !ok {
 			dropped++
-			continue
-		}
-		if multiPhoton[i] {
+		} else if multiPhoton[i] {
 			flaggedMP++
 		}
-		events = append(events, qkd.DetectionEvent{TimestampPS: shiftPS(timestamps[i]), Basis: basis, Bit: bit, MultiPhoton: multiPhoton[i]})
 	}
-	return events, dropped, flaggedMP
+	valid = len(channels) - dropped
+	// events only for the clicks keep allows (nil: all), so a busy side costs no more than it can pair
+	n := valid
+	if keep != nil {
+		n = 0
+		for _, k := range keep {
+			if k {
+				n++
+			}
+		}
+	}
+	events = make([]qkd.DetectionEvent, 0, n)
+	for i, ch := range channels {
+		if keep != nil && !keep[i] {
+			continue
+		}
+		if basis, bit, ok := channelToBasisBit(ch); ok {
+			events = append(events, qkd.DetectionEvent{TimestampPS: shiftPS(timestamps[i]), Basis: basis, Bit: bit, MultiPhoton: multiPhoton[i]})
+		}
+	}
+	return events, dropped, flaggedMP, valid
 }
 
 // visibilityMetrics is a read-only diagnostic matching the vendor API's "qkd"
@@ -505,16 +576,18 @@ func main() {
 	filterSliceMS := flag.Int64("filter-slice-ms", 250, "time slice per drift estimate for -filter, in milliseconds")
 	calibrateDelays := flag.String("calibrate-delays", "", "measure per-detector delays on these recordings, write them to this JSON file and exit without producing key: it reads detector identities (bit values), so use a dedicated calibration recording, never one used for key")
 	detectorDelays := flag.String("detector-delays", "", "JSON file from -calibrate-delays: each party shifts its own clicks by its own detector delay before sifting, so announced timing no longer depends on the bit")
+	eventsCache := flag.Bool("events-cache", false, "keep each recording's aligned, pruned events in <dir>/"+eventsCacheName+" (about 1 MB) and reuse them when the parameters match, so the raw files can be deleted after a first run")
+	windowSweep := flag.String("window-sweep", "", "comma-separated window half-widths in ps: also report sifted bits and QBER over all sifted pairs for each, from this one load (at most 10000 ps, the prune radius)")
 	windowReport := flag.Bool("window-report", false, "print each time-bucket's own measured QBER as a diagnostic; does not select bits for the key (see windowreport.go for why not)")
 	windowReportBucketS := flag.Float64("window-report-bucket-s", 0.5, "time-bucket width for -window-report, in seconds")
 	windowReportMinPairs := flag.Int("window-report-min-pairs", 10, "buckets with fewer sifted pairs than this report as insufficient data rather than a QBER")
 	epochS := flag.Float64("epoch-s", 0, "run the protocol independently once per this many seconds instead of pooling the whole recording into one QBER estimate; each epoch sizes its own privacy amplification from its own measured QBER, so a noisy epoch contributes zero bits rather than being picked after the fact (see epoch.go); 0 disables this; only applies to the default block-discard method, not -winnow/-ldpc/-search-matrix")
 	matrixName := flag.String("matrix", "bch", "step 2 generator matrix: bch")
-	chunkSize := flag.Int("chunk", 2048, "step 3 CRC chunk size (bits); with -winnow this is the post-correction CRC pass, so it wants a much smaller value, e.g. 128")
+	chunkSize := flag.Int("chunk", 2048, "step 3 CRC chunk size (bits); with -winnow too, the CRC pass after correction")
 	keystoreDir := flag.String("keystore", "", "directory to save the final key into (ETSI 014 key_ID/key JSON); empty = don't save")
 	keystoreMax := flag.Int("keystore-max", 0, "maximum keys to keep in -keystore, 0 = unlimited; existing keys are never evicted, only this run's own new keys are held back past the cap")
 	winnow := flag.Bool("winnow", false, "correct errors with Winnow instead of discarding blocks (see winnow.go/pipeline_winnow.go)")
-	winnowBlocks := flag.String("winnow-blocks", "25,50,100", "comma-separated Hamming block size per Winnow pass, one pass each; tune to your QBER (see pipeline_winnow_test.go)")
+	winnowBlocks := flag.String("winnow-blocks", "", "comma-separated block size per Winnow pass; empty plans them from the sample QBER: a power of two holding about 0.45 errors, doubling each pass (qkd.WinnowSchedule)")
 	winnowSample := flag.Float64("winnow-sample", 0.05, "fraction of sifted bits sacrificed to measure QBER directly before Winnow correction")
 	ldpc := flag.Bool("ldpc", false, "correct errors with LDPC belief propagation instead of discarding blocks (see ldpc.go/pipeline_ldpc.go)")
 	ldpcBlock := flag.Int("ldpc-block", 0, "LDPC codeword length in bits, 0 = one block covering the whole remaining sifted key")
@@ -550,7 +623,13 @@ func main() {
 	session := flag.String("session", "", "two-party: the session name both halves use")
 	exportPublic := flag.String("export-public", "", "two-party, alice: write the announcement (timing, basis and multi-photon flag, never bits) into this directory and exit")
 	peerTimeout := flag.Duration("peer-timeout", 15*time.Minute, "two-party: how long to wait for each message from the peer")
+	cpuProfile := flag.String("cpuprofile", "", "write a CPU profile of this run to this file (go tool pprof)")
 	flag.Parse()
+	if *cpuProfile != "" {
+		if f, err := os.Create(*cpuProfile); err == nil && pprof.StartCPUProfile(f) == nil {
+			defer pprof.StopCPUProfile()
+		}
+	}
 	keyOpts = keyOptions{asymptotic: *asymptotic, finite: qkd.FiniteKeyConfig{EpsSec: *epsSec, EpsCor: *epsCor}}
 
 	if *dir == "" {
@@ -629,9 +708,16 @@ func main() {
 		return
 	}
 
+	if *ldpc5g && *calibrateDelays == "" {
+		ecStarted = startECPool()
+	}
 	var recs []loadedRecording
 	for _, d := range strings.Split(*dir, ",") {
-		r, err := loadRecording(strings.TrimSpace(d), *multiPhotonWindowPS, *windowPS, *filter, driftCfg, winCfg, delays)
+		load := loadRecording
+		if *eventsCache {
+			load = loadRecordingCached
+		}
+		r, err := load(strings.TrimSpace(d), *multiPhotonWindowPS, *windowPS, *filter, driftCfg, winCfg, delays)
 		if err != nil {
 			fail(*jsonOut, "%v", err)
 		}
@@ -671,8 +757,9 @@ func main() {
 	first := recs[0]
 	tsPathA, tsPathB, report := first.tsPathA, first.tsPathB, first.report
 	skew := report.ClockSkew
-	var droppedA, droppedB, flaggedMPA, flaggedMPB int
+	var droppedA, droppedB, flaggedMPA, flaggedMPB, rawAlice int
 	for _, r := range recs {
+		rawAlice += r.rawAlice
 		droppedA += r.droppedA
 		droppedB += r.droppedB
 		flaggedMPA += r.flaggedMPA
@@ -697,18 +784,18 @@ func main() {
 		section("importtt run configuration:")
 		if len(recs) == 1 {
 			field("Recording directory", "%s", *dir)
-			field("A recording", "%s (%d clicks, %d dropped)", filepath.Base(tsPathA), len(aliceEv), droppedA)
+			field("A recording", "%s (%d clicks, %d dropped, %d within coincidence range kept)", filepath.Base(tsPathA), rawAlice, droppedA, len(aliceEv))
 			field("B recording", "%s (%d clicks, %d dropped, %d within coincidence range kept)", filepath.Base(tsPathB), first.rawBob, droppedB, len(bobEv))
 			field("Clock skew (B vs A)", "%.3f ppb", skew.SkewPPB)
 		} else {
 			field("Pooled recordings", "%d, one privacy-amplification block, all included", len(recs))
 			for _, r := range recs {
-				field("  "+filepath.Base(r.dir), "A %d clicks, B %d clicks (%d in range), skew %.3f ppb, %s", len(r.alice), r.rawBob, len(r.bob), r.report.ClockSkew.SkewPPB, recordingFilterLabel(r.filter))
+				field("  "+filepath.Base(r.dir), "A %d clicks (%d in range), B %d clicks (%d in range), skew %.3f ppb, %s", r.rawAlice, len(r.alice), r.rawBob, len(r.bob), r.report.ClockSkew.SkewPPB, recordingFilterLabel(r.filter))
 			}
 		}
 		field("Coincidence window", "+-%d ps", window)
 		printCoincidenceFilter(filterResult)
-		field("Multi-photon clicks", "A: %d / %d, B: %d / %d (window=%d ps)", flaggedMPA, len(aliceEv), flaggedMPB, len(bobEv), *multiPhotonWindowPS)
+		field("Multi-photon clicks", "A: %d / %d, B: %d / %d (window=%d ps)", flaggedMPA, rawAlice, flaggedMPB, len(bobEv), *multiPhotonWindowPS)
 		field("GOMAXPROCS", "%d", runtime.GOMAXPROCS(0))
 	}
 
@@ -749,7 +836,11 @@ func main() {
 	var finalKeyBytes []byte
 	var rep jsonReport
 	if *winnow {
-		blockSizes, err := parseIntList(*winnowBlocks)
+		var blockSizes []int
+		var err error
+		if *winnowBlocks != "" {
+			blockSizes, err = parseIntList(*winnowBlocks)
+		}
 		if err != nil {
 			fail(*jsonOut, "-winnow-blocks: %v", err)
 		}
@@ -808,6 +899,29 @@ func main() {
 	elapsed := time.Since(t0)
 
 	rep.KeysSaved = saveToKeystore(*keystoreDir, finalKeyBytes, *keystoreMax, *jsonOut)
+
+	if *windowSweep != "" {
+		widths, err := parseIntList(*windowSweep)
+		if err != nil {
+			fail(*jsonOut, "-window-sweep: %v", err)
+		}
+		// windows apart, the same events every -window run would sift: the drift correction ignores the window
+		// and the prune radius covers twice any width up to 10 ns
+		rep.WindowSweep = make([]windowSweepJSON, len(widths))
+		var wg sync.WaitGroup
+		for i, w := range widths {
+			if w <= 0 || w > 10_000 {
+				fail(*jsonOut, "-window-sweep: %d ps is outside 1 to 10000", w)
+			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				rep.WindowSweep[i] = windowSweepJSON{WindowPS: int64(w), SiftedBits: len(qkd.Sift(aliceEv, bobEv, int64(w))),
+					QBERVis: computeVisibilityMetrics(aliceEv, bobEv, int64(w)).QBERVis}
+			}()
+		}
+		wg.Wait()
+	}
 
 	if *jsonOut {
 		rep.RecordingDir = *dir
@@ -889,7 +1003,7 @@ func runDiscardPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, g qkd
 
 	if !jsonOut {
 		section("(1): sifting")
-		field("Alice raw clicks", "%d", len(aliceEv))
+		field("Alice clicks in coincidence range", "%d", len(aliceEv))
 		field("Bob raw clicks", "%d", len(bobEv))
 		field("Sifted bits", "%d", res.SiftedBits)
 
@@ -1052,7 +1166,7 @@ func runWinnowPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, blockS
 
 	if !jsonOut {
 		section("(1): sifting")
-		field("Alice raw clicks", "%d", len(aliceEv))
+		field("Alice clicks in coincidence range", "%d", len(aliceEv))
 		field("Bob raw clicks", "%d", len(bobEv))
 		field("Sifted bits", "%d", res.SiftedBits)
 
@@ -1131,7 +1245,7 @@ func runLDPCPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, blockLen
 
 	if !jsonOut {
 		section("(1): sifting")
-		field("Alice raw clicks", "%d", len(aliceEv))
+		field("Alice clicks in coincidence range", "%d", len(aliceEv))
 		field("Bob raw clicks", "%d", len(bobEv))
 		field("Sifted bits", "%d", res.SiftedBits)
 
@@ -1209,7 +1323,7 @@ func runPolarPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, blockLe
 
 	if !jsonOut {
 		section("(1): sifting")
-		field("Alice raw clicks", "%d", len(aliceEv))
+		field("Alice clicks in coincidence range", "%d", len(aliceEv))
 		field("Bob raw clicks", "%d", len(bobEv))
 		field("Sifted bits", "%d", res.SiftedBits)
 
@@ -1371,10 +1485,79 @@ type loadedRecording struct {
 	tsPathA, tsPathB       string
 	report                 coincidenceReport
 	alice, bob             []qkd.DetectionEvent
-	rawBob                 int // Bob clicks before PruneToCoincidenceRange
+	rawAlice, rawBob       int // clicks before PruneToCoincidenceRange
 	droppedA, droppedB     int
 	flaggedMPA, flaggedMPB int
 	filter                 *qkd.CoincidenceFilter
+}
+
+// eventsCacheName holds one recording's aligned, pruned and filtered events, about 1 MB where the raw
+// arrays take hundreds, so a continuously recorded segment can drop its raw files once processed
+const eventsCacheName = "events.cache"
+
+type recordingCache struct {
+	Key                    string
+	TsPathA, TsPathB       string
+	Report                 coincidenceReport
+	Alice, Bob             []qkd.DetectionEvent
+	RawAlice, RawBob       int
+	DroppedA, DroppedB     int
+	FlaggedMPA, FlaggedMPB int
+	Filter                 *qkd.CoincidenceFilter
+}
+
+func cacheKey(mpWindowPS, windowPS int64, filter bool, driftCfg qkd.DriftConfig, winCfg qkd.WindowConfig, delays *qkd.DetectorDelays) string {
+	d := qkd.DetectorDelays{}
+	if delays != nil {
+		d = *delays
+	}
+	return fmt.Sprintf("v1 mp=%d window=%d filter=%t drift=%+v win=%+v delays=%+v", mpWindowPS, windowPS, filter, driftCfg, winCfg, d)
+}
+
+// loadRecordingCached reads dir's events cache when it was made with these parameters, else loads the
+// recording and writes the cache; a recording whose raw files are gone needs a matching cache
+func loadRecordingCached(dir string, mpWindowPS, windowPS int64, filter bool, driftCfg qkd.DriftConfig, winCfg qkd.WindowConfig, delays *qkd.DetectorDelays) (loadedRecording, error) {
+	key := cacheKey(mpWindowPS, windowPS, filter, driftCfg, winCfg, delays)
+	path := filepath.Join(dir, eventsCacheName)
+	if f, err := os.Open(path); err == nil {
+		var c recordingCache
+		err = gob.NewDecoder(bufio.NewReader(f)).Decode(&c)
+		f.Close()
+		if err == nil && c.Key == key {
+			return loadedRecording{dir: dir, tsPathA: c.TsPathA, tsPathB: c.TsPathB, report: c.Report, alice: c.Alice, bob: c.Bob,
+				rawAlice: c.RawAlice, rawBob: c.RawBob, droppedA: c.DroppedA, droppedB: c.DroppedB,
+				flaggedMPA: c.FlaggedMPA, flaggedMPB: c.FlaggedMPB, filter: c.Filter}, nil
+		}
+	}
+	r, err := loadRecording(dir, mpWindowPS, windowPS, filter, driftCfg, winCfg, delays)
+	if err != nil {
+		return r, err
+	}
+	c := recordingCache{Key: key, TsPathA: r.tsPathA, TsPathB: r.tsPathB, Report: r.report, Alice: r.alice, Bob: r.bob,
+		RawAlice: r.rawAlice, RawBob: r.rawBob, DroppedA: r.droppedA, DroppedB: r.droppedB,
+		FlaggedMPA: r.flaggedMPA, FlaggedMPB: r.flaggedMPB, Filter: r.filter}
+	// written beside and renamed, so a reader never sees half a cache
+	tmp := path + ".tmp"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return r, fmt.Errorf("%s: events cache: %w", dir, err)
+	}
+	w := bufio.NewWriter(f)
+	err = gob.NewEncoder(w).Encode(c)
+	if err == nil {
+		err = w.Flush()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp, path)
+	}
+	if err != nil {
+		os.Remove(tmp)
+		return r, fmt.Errorf("%s: events cache: %w", dir, err)
+	}
+	return r, nil
 }
 
 // loadRecording finds, loads and clock-aligns one recording, flags multi-photon clicks,
@@ -1418,18 +1601,33 @@ func loadRecording(dir string, mpWindowPS, windowPS int64, filter bool, driftCfg
 		aRel := skew.ReferenceElapsedPS + (bRel-(skew.ReferenceElapsedPS+skew.LagAtReferencePS))/(1+skew.SkewFraction)
 		return a0 + int64(math.Round(aRel))
 	}
-	// own-side timing check, run before any cross-side alignment or shifting
-	mpA := detectMultiPhoton(tsA, chA, mpWindowPS)
-	mpB := detectMultiPhoton(tsB, chB, mpWindowPS)
-	r.alice, r.droppedA, r.flaggedMPA = buildEvents(tsA, chA, mpA, func(ts int64) int64 { return ts })
-	r.bob, r.droppedB, r.flaggedMPB = buildEvents(tsB, chB, mpB, toAliceClock)
-	r.rawBob = len(r.bob)
+	// own-side timing check, run before any cross-side alignment or shifting, both sides at once
+	var mpA, mpB []bool
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); mpA = detectMultiPhoton(tsA, chA, mpWindowPS) }()
+	go func() { defer wg.Done(); mpB = detectMultiPhoton(tsB, chB, mpWindowPS) }()
+	wg.Wait()
+
+	// one side often records ~50x the other's clicks, nearly all unpaired: on the raw arrays, keep only
+	// clicks that could coincide, on both sides, since either can be the busy one; the margin covers
+	// detector delays, applied later, so the exact prune below sees every click it would have kept
+	radius := pruneRadiusPS(windowPS, r.report)
+	margin := radius + maxDelayPS(delays)
+	bOnA := make([]int64, len(tsB))
+	for i, t := range tsB {
+		bOnA[i] = toAliceClock(t)
+	}
+	keepB := nearMask(bOnA, tsA, nil, margin)
+	keepA := nearMask(tsA, bOnA, keepB, margin)
+	r.alice, r.droppedA, r.flaggedMPA, r.rawAlice = buildEvents(tsA, chA, mpA, keepA, func(ts int64) int64 { return ts })
+	r.bob, r.droppedB, r.flaggedMPB, r.rawBob = buildEvents(tsB, chB, mpB, keepB, toAliceClock)
 	if delays != nil {
 		r.alice = qkd.ApplyDetectorDelays(r.alice, delays.Alice)
 		r.bob = qkd.ApplyDetectorDelays(r.bob, delays.Bob)
 	}
-	// Bob records ~50x Alice's clicks, nearly all unpaired: keep only those that could coincide
-	r.bob = qkd.PruneToCoincidenceRange(r.alice, r.bob, pruneRadiusPS(windowPS, r.report))
+	r.bob = qkd.PruneToCoincidenceRange(r.alice, r.bob, radius)
+	r.alice = qkd.PruneToCoincidenceRange(r.bob, r.alice, radius)
 
 	if filter {
 		corrected, fr, ferr := qkd.FilterCoincidences(r.alice, r.bob, driftCfg, winCfg)
@@ -1478,6 +1676,20 @@ func recordingFilterLabel(f *qkd.CoincidenceFilter) string {
 		return "filter off"
 	}
 	return fmt.Sprintf("drift %d/%d slices in %d pass(es), fit sigma %.0f ps, HWHM +-%d ps", f.DriftTrusted, f.Drift.Slices, f.DriftPasses, f.Fit.SigmaPS, f.WindowPS)
+}
+
+// maxDelayPS is the largest detector-delay shift, so a prune before the delays are applied can widen by it
+func maxDelayPS(d *qkd.DetectorDelays) int64 {
+	if d == nil {
+		return 0
+	}
+	m := 0.0
+	for _, side := range [][2][2]float64{d.Alice, d.Bob} {
+		for _, b := range side {
+			m = max(m, math.Abs(b[0]), math.Abs(b[1]))
+		}
+	}
+	return int64(math.Ceil(m)) + 1
 }
 
 // pruneRadiusPS is how far from any Alice click a Bob click is kept: 20 ns, or twice the
@@ -1544,8 +1756,34 @@ func toFiniteKeyJSON(r *qkd.FiniteKeyReport) *finiteKeyJSON {
 	return &finiteKeyJSON{PhaseErrorPoint: r.PhiPoint, PhaseErrorBound: r.Phi, TagBits: r.TagBits, Verified: r.Verified, SurvivingBits: r.Bits, ChargedBits: r.LeakedBits}
 }
 
+// ecPool starts the 5G NR LDPC service in the background, so its imports overlap loading the recording
+type ecPool struct {
+	done chan struct{}
+	pool *pyec.Pool
+	err  error
+}
+
+func startECPool() *ecPool {
+	p := &ecPool{done: make(chan struct{})}
+	go func() {
+		defer close(p.done)
+		p.pool, p.err = pyec.Start(0)
+	}()
+	return p
+}
+
+func (p *ecPool) wait() (*pyec.Pool, error) {
+	<-p.done
+	return p.pool, p.err
+}
+
+var ecStarted *ecPool
+
 func runLDPC5GPipeline(aliceEv, bobEv []qkd.DetectionEvent, window, seed int64, sampleFraction float64, chunkSize, alignBits, timingBins int, jsonOut bool) ([]byte, jsonReport) {
-	pool, err := pyec.Start(0)
+	if ecStarted == nil {
+		ecStarted = startECPool()
+	}
+	pool, err := ecStarted.wait()
 	if err != nil {
 		fail(jsonOut, "%v", err)
 	}

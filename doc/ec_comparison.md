@@ -1,6 +1,6 @@
 ### Error-correction comparison
 
-**Status:** measured on 2026-10-16 with `scripts/ec_compare.py`: every method on the same simulated binary symmetric channel, $2^{20}$ sifted bits per point, all eight cores of one machine. The efficiency is $f = \mathrm{leak} / (n\,h_2(\mathrm{QBER}))$, the bits each method discloses over the Shannon limit, counting every syndrome or frozen bit, every hash tag and one bit for each of Bob's verdicts; $f = 1$ is the theoretical optimum. The secret fraction is the asymptotic key left per sifted bit, $(1 - \mathrm{fail})(1 - h_2) - f\,h_2$, so a method pays both for what it discloses and for the blocks it fails to correct.
+**Status**: measured with `scripts/ec_compare.py`: every method on the same simulated binary symmetric channel, $2^{20}$ sifted bits per point, all eight cores of one machine. The efficiency is $f = \mathrm{leak} / (n\,h_2(\mathrm{QBER}))$, the bits each method discloses over the Shannon limit, counting every syndrome or frozen bit, every hash tag and one bit for each of Bob's verdicts; $f = 1$ is the theoretical optimum. The secret fraction is the asymptotic key left per sifted bit, $(1 - \mathrm{fail})(1 - h_2) - f\,h_2$, so a method pays both for what it discloses and for the blocks it fails to correct.
 
 ### Methods
 
@@ -10,7 +10,7 @@
 | LDPC regular | random (3, w) Gallager codes at a fixed rate 1.25 times the Shannon limit, no rate adaptation | `qkd/ldpc.go` |
 | 5G NR LDPC | the 3GPP TS 38.212 base graph 1 lifted by Z = 384 (matrices from the `py3gpp` library), decoded by the `ldpc` library's belief propagation (exact sum-product, serial schedule); blind reconciliation: the code's rows are chosen from the QBER, punctured positions start unknown to Bob and are revealed 1/40 at a time while a frame fails, and a 32-bit tag per frame confirms each decoded frame | `ec/ldpc5g.py` |
 
-### Efficiency $f$
+### Efficiency
 
 | Method | 1% | 2% | 3% | 5% | 7% | 9% | 11% |
 |---|---|---|---|---|---|---|---|
@@ -49,24 +49,11 @@ At 7% QBER 5G NR LDPC leaves 13% more key than the best polar setting, and at 9%
 
 ### Findings
 
-- **Most efficient: 5G NR LDPC with exact sum-product,** at every QBER measured, $f = 1.11$ to $1.28$ from 2% to 11% and 1.60 at 1%, with no failed frame. Min-sum is faster but costs 0.05 to 0.11 in $f$; it is not worth it on this link.
+- **Most efficient**: 5G NR LDPC with exact sum-product at every QBER measured, $f = 1.11$ to $1.28$ from 2% to 11% and 1.60 at 1%, with no failed frame. Min-sum is faster but costs 0.05 to 0.11 in $f$; it is not worth it on this link.
 - **Polar SCL32** is the best polar setting, 0.08 to 0.32 behind 5G NR LDPC; SCL8 is within 0.02 of it at a quarter of the time.
 - **Regular LDPC at a fixed rate** fails most blocks unless its rate is far from the limit; rate adaptation is what makes LDPC work in QKD.
-- **Low QBER is hard for every method:** at 1% the 5G frame is at most 9,984 key bits at rate 0.92, and such short high-rate codes are known to sit far from capacity. Longer, QKD-specific codes (frames of $10^5$ to $10^6$ bits with optimized irregular degree distributions) reach $f \approx 1.05$ in the literature, but no maintained library provides them.
+- **Low QBER is hard for every method**: at 1% the 5G frame is at most 9,984 key bits at rate 0.92, and such short high-rate codes are known to sit far from capacity. Longer, QKD-specific codes (frames of $10^5$ to $10^6$ bits with optimized irregular degree distributions) reach $f \approx 1.05$ in the literature, but no maintained library provides them.
 
 ### Status in the pipeline
 
 5G NR LDPC is the default error correction of the dashboard, single-site and two-party. The protocol and its accounting are in Go (`qkd/ldpc5g.go`, and the `ldpc5g` messages of `qkd/twoparty.go`); the matrix work runs in `ec/ldpc5g.py serve`, a pool of Python processes the Go side drives through `pyec`. The frame layout is computed in Go, with Go's seeded generator, so both sites derive the same one whatever numpy they run, and it fits the lifting size to the data: as few frames as the largest lifting allows, each with the smallest lifting that holds its share, so a short run is not charged for an empty frame. `scripts/ec_compare.py` measures the library module on its own and is what the tables above come from.
-
-### On the Nitra-Bratislava example recording
-
-`acquisition/example/20260909`, a ten-second recording of the Nitra-Bratislava link, 424 sifted bits at 4.8% QBER, every method on the same sample (`importtt`, single site); these figures describe that link only:
-
-| Method | Error-correction bits | Correction | Asymptotic key | Finite key |
-|---|---|---|---|---|
-| **5G NR LDPC** | **195** | all errors corrected | **52 bits** | 0 |
-| Polar SCL8 | 562 | all errors corrected | 0 | 0 |
-| LDPC regular (3,10) | 117 | failed, block dropped by the CRC | 0 | 0 |
-| Winnow | 156 | residual errors, every chunk dropped | 0 | 0 |
-
-Two-party between two Docker nodes, Nitra's file on one and Bratislava's on the other, 5G NR LDPC disclosed 179 bits for error correction, with both nodes agreeing on every number; three seconds are too short for a finite key with any method (`evaluation/results_report.md`).

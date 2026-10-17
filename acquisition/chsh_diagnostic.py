@@ -33,7 +33,7 @@ CHANNEL_LABELS = {1: "H", 2: "V", 3: "D", 4: "A"}
 MEASUREMENT_CHANNELS = (1, 2, 3, 4)
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _block_singles(timestamps: np.ndarray, origin_ps: int, block_ps: int, n_blocks: int) -> np.ndarray:
     counts = np.zeros(n_blocks, dtype=np.int64)
     for ts in timestamps:
@@ -43,7 +43,7 @@ def _block_singles(timestamps: np.ndarray, origin_ps: int, block_ps: int, n_bloc
     return counts
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _block_roi_coincidences(
     a: np.ndarray,
     b: np.ndarray,

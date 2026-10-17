@@ -27,7 +27,7 @@ import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_file
 from werkzeug.utils import secure_filename
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -60,6 +60,9 @@ KEYSTORE_DIR = _dir('KEYSTORE_DIR', BASE_DIR / 'keys')
 RECORDINGS_DIR = _dir('RECORDINGS_DIR', BASE_DIR / 'recordings')
 CONFIG_DIR = _dir('CONFIG_DIR', BASE_DIR / 'config')
 IMPORT_DIR = _dir('IMPORT_DIR', BASE_DIR / 'import')
+# continuous-QKD runs and evaluation reports: made from real data, so kept on this node only
+CONTINUOUS_DIR = _dir('CONTINUOUS_DIR', BASE_DIR / 'continuous')
+EVAL_DIR = _dir('EVAL_DIR', BASE_DIR / 'evaluations')
 UPLOADED_CONFIG_PATH = CONFIG_DIR / 'config.json'
 DELAYS_PATH = CONFIG_DIR / 'detector_delays.json'
 JOBS_PATH = CONFIG_DIR / 'jobs.jsonl'
@@ -549,6 +552,108 @@ def api_acquire_live():
                     'status': _acquire['live']})
 
 
+# ---------- continuous QKD: the recorder in continuous mode, and the processor distilling its blocks
+
+_CONT_PREFIX = 'CONT '  # continuous_qkd.py: one JSON status per line
+_cont = {'proc': None, 'run': None, 'status': None, 'log': collections.deque(maxlen=400), 'params': None, 'started_at': None}
+
+
+def _read_cont_output(proc):
+    for line in proc.stdout:
+        if line.startswith(_CONT_PREFIX):
+            try:
+                _cont['status'] = json.loads(line[len(_CONT_PREFIX):])
+            except ValueError:
+                pass
+            continue
+        # the processor's own lines and problems; the peak search's progress lines would drown them
+        if '[continuous]' in line or line.startswith(('[WARN]', '[ERROR]', 'Traceback')):
+            _cont['log'].append(line.rstrip('\n'))
+    proc.wait()
+
+
+def _cont_running():
+    return _cont['proc'] is not None and _cont['proc'].poll() is None
+
+
+@app.route('/api/continuous/start', methods=['POST'])
+def api_continuous_start():
+    '''Records continuously in segments and distils a key block every block_s seconds of data'''
+    if not UPLOADED_CONFIG_PATH.is_file():
+        return jsonify({'error': 'load a config first'}), 400
+    body = request.get_json(silent=True) or {}
+    try:
+        segment_s = float(body.get('segment_s', 10))
+        block_s = float(body.get('block_s', 300))
+        speed = float((body.get('replay') or {}).get('speed', 1))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'segment, block and speed must be numbers'}), 400
+    method = body.get('method', 'ldpc5g')
+    neighbor = body.get('neighbor') or ''
+    if method not in ('ldpc5g', 'polar') or not 1 <= segment_s <= 600 or not 10 <= block_s <= 86400 or speed <= 0:
+        return jsonify({'error': 'method ldpc5g or polar, segments of 1-600 s, blocks of 10 s to a day'}), 400
+    if neighbor and neighbor not in _neighbors():
+        return jsonify({'error': f'{neighbor} is not a QKD link of this node'}), 400
+    with _acquire_lock:
+        if _cont_running() or (_acquire['proc'] is not None and _acquire['proc'].poll() is None):
+            return jsonify({'error': 'a recording, replay or continuous run is already going'}), 409
+        run = CONTINUOUS_DIR / time.strftime('%Y%m%d_%H%M%S')
+        run.mkdir(parents=True, exist_ok=True)
+        rec = [sys.executable, str(REPO_ROOT / 'acquisition' / 'tt_record_dual.py'), str(UPLOADED_CONFIG_PATH),
+               '--stop-mode', 'continuous', '--segment-s', str(segment_s), '--output-dir', str(run)]
+        replay = body.get('replay')
+        if replay:
+            try:
+                path_a, path_b = _resolve_pair(replay.get('a'), replay.get('b'))
+            except ValueError as e:
+                return jsonify({'error': str(e)}), 400
+            rec += ['--replay', str(path_a), str(path_b), '--replay-speed', str(speed)]
+        elif body.get('link'):
+            rec += ['--link', str(body['link'])]
+        resp = _start_acquire(rec, 'continuous')
+        if _acquire['proc'] is None or _acquire['proc'].poll() is not None:
+            return resp
+        proc = [sys.executable, str(REPO_ROOT / 'acquisition' / 'continuous_qkd.py'), str(run), '--importtt', IMPORTTT_BIN,
+                '--config', str(UPLOADED_CONFIG_PATH), '--block-s', str(block_s), '--method', method]
+        if neighbor:
+            proc += ['--keystore', str(IMPORT_DIR / neighbor), '--keystore-max', str(KEYSTORE_MAX)]
+        _cont['log'].clear()
+        _cont['status'] = None
+        try:
+            p = subprocess.Popen(proc, cwd=str(REPO_ROOT / 'acquisition'), stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, text=True, bufsize=1)
+        except OSError as e:
+            _acquire['proc'].send_signal(signal.SIGINT)
+            return jsonify({'error': f'could not start the processor: {e}'}), 500
+        _cont.update(proc=p, run=run.name, started_at=time.time(),
+                     params={'segment_s': segment_s, 'block_s': block_s, 'method': method, 'neighbor': neighbor,
+                             'source': 'replay' if replay else (body.get('link') or 'default link'), 'speed': speed if replay else 1})
+        threading.Thread(target=_read_cont_output, args=(p,), daemon=True).start()
+    return jsonify({'started': True, 'run': run.name})
+
+
+@app.route('/api/continuous/stop', methods=['POST'])
+def api_continuous_stop():
+    '''Stops recording; the processor finishes the segments already written and distils the last block'''
+    with _acquire_lock:
+        rec = _acquire['proc']
+        if _acquire['kind'] == 'continuous' and rec is not None and rec.poll() is None:
+            rec.send_signal(signal.SIGINT)
+            return jsonify({'stopping': True})
+        if _cont_running() and request.args.get('abort') == '1':
+            _cont['proc'].send_signal(signal.SIGINT)
+            return jsonify({'aborting': True})
+    return jsonify({'error': 'no continuous recording is running'}), 409
+
+
+@app.route('/api/continuous/status')
+def api_continuous_status():
+    rec = _acquire['proc']
+    return jsonify({'recording': _acquire['kind'] == 'continuous' and rec is not None and rec.poll() is None,
+                    'processing': _cont_running(), 'run': _cont['run'], 'params': _cont['params'],
+                    'started_at': _cont['started_at'], 'status': _cont['status'], 'log': list(_cont['log'])[-150:]})
+
+
 # ---------- coincidence-peak analysis, cached per recording pair
 
 _ANALYSIS_CACHE_SIZE = 4
@@ -944,7 +1049,74 @@ def _two_party_listener():
                 _queue_job('twoparty-bob', {'peer': s['peer'], 'session': s['session']})
 
 
-_JOB_KINDS = {'extract': _job_extract, 'calibrate': _job_calibrate,
+def _job_evaluate(job):
+    '''evaluation/evaluate.py on the chosen pairs: every stage with figures, kept in EVAL_DIR on this node'''
+    p = job['params']
+    pairs = _pairs_from(p)
+    out = EVAL_DIR / f'{time.strftime("%Y%m%d_%H%M%S")}_job{job["id"]}'
+    args = [sys.executable, str(REPO_ROOT / 'evaluation' / 'evaluate.py'), *[str(x) for pair in pairs for x in pair],
+            '--out', str(out), '--importtt', IMPORTTT_BIN, '--jobs', str(int(p.get('jobs', 2)))]
+    if UPLOADED_CONFIG_PATH.is_file():
+        args += ['--config', str(UPLOADED_CONFIG_PATH)]
+    if not p.get('live', True):
+        args.append('--no-live')
+    job['log'].append('$ evaluate.py ' + ' '.join(Path(a).name for a in args[2:]))
+    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=str(REPO_ROOT))
+    for line in proc.stdout:
+        if line.startswith('[eval]') or 'Error' in line:
+            job['log'].append(line.rstrip('\n'))
+    if proc.wait() != 0:
+        raise RuntimeError('evaluation failed: ' + ' / '.join(list(job['log'])[-3:]))
+    res = json.loads((out / 'results.json').read_text())
+    return {'evaluation': out.name, 'pairs': len(res.get('pairs', [])), 'pooled': res.get('pooled')}
+
+
+def _evaluation_dir(name):
+    d = (EVAL_DIR / name).resolve()
+    if d.parent != EVAL_DIR.resolve() or not (d / 'results.json').is_file():
+        raise FileNotFoundError(name)
+    return d
+
+
+@app.route('/api/evaluations')
+def api_evaluations():
+    out = []
+    for d in sorted(EVAL_DIR.iterdir(), reverse=True):
+        if (d / 'results.json').is_file():
+            try:
+                res = json.loads((d / 'results.json').read_text())
+            except ValueError:
+                continue
+            out.append({'name': d.name, 'pairs': [p.get('name') for p in res.get('pairs', [])], 'created': d.stat().st_mtime})
+    return jsonify({'evaluations': out})
+
+
+@app.route('/api/evaluations/<name>')
+def api_evaluation(name):
+    try:
+        d = _evaluation_dir(name)
+    except FileNotFoundError:
+        return jsonify({'error': 'no such evaluation'}), 404
+    res = json.loads((d / 'results.json').read_text())
+    for p in res.get('pairs', []):
+        p['figures'] = sorted(f.name for f in (d / p.get('name', '')).glob('*.png')) if p.get('name') else []
+    res['comparison'] = (d / 'comparison.png').is_file()
+    return jsonify(res)
+
+
+@app.route('/api/evaluations/<name>/<path:rel>')
+def api_evaluation_file(name, rel):
+    try:
+        d = _evaluation_dir(name)
+    except FileNotFoundError:
+        return jsonify({'error': 'no such evaluation'}), 404
+    f = (d / rel).resolve()
+    if d not in f.parents or f.suffix not in ('.png', '.md', '.json') or not f.is_file():
+        return jsonify({'error': 'no such file'}), 404
+    return send_file(f)
+
+
+_JOB_KINDS = {'evaluate': _job_evaluate, 'extract': _job_extract, 'calibrate': _job_calibrate,
               'twoparty-alice': _job_two_party_alice, 'twoparty-bob': _job_two_party_bob}
 
 

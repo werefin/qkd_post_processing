@@ -78,7 +78,7 @@ Solid arrows carry key material; dotted arrows carry public information that onl
 | `cmd/qkd_post_processing/` | the chain on simulated click streams |
 | `cmd/tuneblock/` | compares block-discard generator matrices |
 | `acquisition/` | Python: TimeTagger recording, clock alignment, CHSH diagnostic ([`acquisition/README.md`](acquisition/README.md)) |
-| `evaluation/` | evaluates any recordings through the whole chain, one report with figures per pair and a pooled summary per link ([`evaluation/README.md`](evaluation/README.md)); the example recording's report is [`evaluation/results_report.md`](evaluation/results_report.md) |
+| `evaluation/` | evaluates any recordings through the whole chain, one report with figures per pair and a pooled summary per link ([`evaluation/README.md`](evaluation/README.md)) |
 | `ec/`, `pyec/` | 5G NR LDPC, the default error correction: matrices from `py3gpp`, belief propagation from `ldpc`, run as a Python service the Go pipeline drives (`doc/ec_comparison.md`) |
 | `ui/` | the node dashboard (Flask) |
 | `deploy/` | one node's containers, `setup.sh`, `trust-ca.sh` ([`doc/deployment.md`](doc/deployment.md)) |
@@ -131,9 +131,9 @@ cd ..
 go run ./cmd/importtt -dir acquisition/<recording dir> -ldpc5g
 ```
 
-`importtt` filters coincidences (drift removal, window from the half width at half maximum of a Gaussian fit to the peak, [`doc/coincidence_filtering.md`](doc/coincidence_filtering.md)), corrects errors (`-ldpc5g`, 5G NR LDPC, the most efficient; `-polar`, `-ldpc`, `-winnow`, or block discard; `-soft-bins 16` adds timing-aware decoding, [`doc/timing_aware_reconciliation.md`](doc/timing_aware_reconciliation.md)), verifies with CRC-16 and a universal hash, and sizes the key by the finite-key bound at $\varepsilon_\mathrm{sec} = 10^{-10}$, $\varepsilon_\mathrm{cor} = 10^{-15}$ ([`doc/finite_key_procedure.md`](doc/finite_key_procedure.md)). `-dir a,b,c` pools recordings into one block, `-keystore dir` writes the key as ETSI 014 records, `-json` prints one report.
+`importtt` filters coincidences (drift removal, window from the half width at half maximum of a Gaussian fit to the peak, [`doc/coincidence_filtering.md`](doc/coincidence_filtering.md)), corrects errors (`-ldpc5g`, 5G NR LDPC, the most efficient; `-polar`, `-ldpc`, `-winnow`, or block discard; `-soft-bins 16` adds timing-aware decoding, [`doc/timing_aware_reconciliation.md`](doc/timing_aware_reconciliation.md)), verifies with CRC-16 and a universal hash, and sizes the key by the finite-key bound at $\varepsilon_\mathrm{sec} = 10^{-10}$, $\varepsilon_\mathrm{cor} = 10^{-15}$ ([`doc/finite_key_procedure.md`](doc/finite_key_procedure.md)). `-dir a,b,c` pools recordings into one block, `-keystore dir` writes the key as ETSI 014 records, `-json` prints one report, and `-window-sweep 50,100,...` adds sifted bits and QBER for each window from the same load.
 
-A single 3-second recording is too short for a finite key: the example in `acquisition/example` (Nitra-Bratislava) certifies none ([`evaluation/results_report.md`](evaluation/results_report.md), which follows that recording through every stage with figures). Fine timestamps must be announced in one direction only (Alice to Bob), see Per-detector delays and the timing side channel in [`doc/coincidence_filtering.md`](doc/coincidence_filtering.md).
+A single recording of a few seconds is too short for a finite key; continuous mode distils blocks of minutes (Continuous QKD below), and `evaluation/evaluate.py` follows any recording through every stage with figures, kept locally, never committed. Fine timestamps must be announced in one direction only (Alice to Bob), see Per-detector delays and the timing side channel in [`doc/coincidence_filtering.md`](doc/coincidence_filtering.md).
 
 ### Applications
 

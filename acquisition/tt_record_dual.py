@@ -10,7 +10,7 @@ import argparse
 import queue
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 import numpy as np
@@ -52,8 +52,8 @@ def load_config(config_path: str) -> dict:
 
     if rec.get('link') not in links:
         raise SystemExit(f'{config_path}: record_dual.link = {rec.get("link")!r} not found in "links"')
-    if rec.get('stop_mode') not in ('duration', 'detection_count'):
-        raise SystemExit(f'{config_path}: record_dual.stop_mode must be "duration" or "detection_count"')
+    if rec.get('stop_mode') not in ('duration', 'detection_count', 'continuous'):
+        raise SystemExit(f'{config_path}: record_dual.stop_mode must be "duration", "detection_count" or "continuous"')
 
     return cfg
 
@@ -104,8 +104,14 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
                          'Requires --site-b too; takes precedence over --link.')
     parser.add_argument('--site-b', metavar='NAME',
                          help='see --site-a; any name under "sites"')
-    parser.add_argument('--stop-mode', choices=('duration', 'detection_count'),
-                         help='override record_dual.stop_mode')
+    parser.add_argument('--stop-mode', choices=('duration', 'detection_count', 'continuous'),
+                         help='override record_dual.stop_mode; continuous records until stopped, in segments')
+    parser.add_argument('--segment-s', type=float, metavar='SECONDS',
+                         help='continuous mode: length of each segment written, override record_dual.segment_s (default 10)')
+    parser.add_argument('--replay', nargs=2, metavar=('A_NPY', 'B_NPY'),
+                         help='play two recorded *_timestamp_sequence.npy files back at stream speed, looping, instead of '
+                         'connecting to TimeTaggers; for testing and demonstrations')
+    parser.add_argument('--replay-speed', type=float, default=1.0, metavar='X', help='replay speed, default 1')
     parser.add_argument('--duration', type=float, metavar='SECONDS',
                          help='override record_dual.record_duration_s')
     parser.add_argument('--target-count', type=int, metavar='N',
@@ -155,6 +161,7 @@ class TTContext:
     scratch_ch_path: Optional[str] = None  # set on first flush, see _flush_overflow/write_outputs
     scratch_ts_path: Optional[str] = None
     live_queue: Optional[queue.Queue] = None  # every new frame's timestamps, for the live tracker
+    segmenting: bool = False  # continuous mode: the segment writer drains the buffers, no overflow spill
 
     @property
     def tag(self) -> str:
@@ -296,7 +303,8 @@ def reader_thread(ctx: TTContext,
         with ctx.lock:
             ctx.channels.append(ch)
             ctx.timestamps.append(ts)
-            _flush_overflow(ctx, base, outdir)
+            if not ctx.segmenting:
+                _flush_overflow(ctx, base, outdir)
         if ctx.live_queue is not None and ts.size:
             ctx.live_queue.put(ts)
         total += ch.size
@@ -362,6 +370,61 @@ def reader_thread(ctx: TTContext,
         pass
 
     ctx.wall_end_s = time.monotonic()
+
+
+SEGMENT_DONE = '.recording_done'  # continuous mode: written last, so a processor knows no segment follows
+
+
+def _cut_segment(ctxs: list, started_at: datetime, index: int, segment_s: float, outdir: str, frames_done: dict) -> Optional[str]:
+    '''Takes what every TimeTagger buffered since the last cut and writes it as one recording pair in its own
+    directory, named by the segment's start, built under a hidden name and renamed so readers see it whole'''
+    taken = []
+    for ctx in ctxs:
+        with ctx.lock:
+            chs, tss = ctx.channels, ctx.timestamps
+            ctx.channels, ctx.timestamps = [], []
+            frames = ctx.frames_meta[frames_done.get(ctx.tag, 0):]
+            frames_done[ctx.tag] = len(ctx.frames_meta)
+        taken.append((ctx, chs, tss, frames))
+    if not any(sum(t.size for t in tss) for _, _, tss, _ in taken):
+        return None
+    seg_start = started_at + timedelta(seconds=index * segment_s)
+    name = seg_start.strftime('%Y%m%d_%H%M%S')
+    tmp, final = os.path.join(outdir, f'.{name}.tmp'), os.path.join(outdir, name)
+    os.makedirs(tmp, exist_ok=True)
+    for ctx, chs, tss, frames in taken:
+        base = make_file_basename(ctx.cfg['tt_ip'], ctx.cfg['tt_port'], seg_start)
+        ch = np.concatenate(chs) if chs else np.empty(0, np.int8)
+        ts = np.concatenate(tss) if tss else np.empty(0, np.int64)
+        np.save(os.path.join(tmp, f'{base}_channel_sequence.npy'), ch)
+        np.save(os.path.join(tmp, f'{base}_timestamp_sequence.npy'), ts)
+        with open(os.path.join(tmp, f'{base}_meta.json'), 'w') as f:
+            json.dump({'tt_ip': ctx.cfg['tt_ip'], 'tt_port': ctx.cfg['tt_port'], 'segment': index, 'segment_s': segment_s,
+                       'n_frames': len(frames), 'n_detections': int(ch.size),
+                       'n_capped_frames': sum(1 for m in frames if m.get('capped')), 'frames': frames}, f)
+    os.rename(tmp, final)
+    return name
+
+
+def segment_thread(ctxs: list, stop_event: threading.Event, started_at: datetime, segment_s: float, outdir: str,
+                   readers: list) -> None:
+    '''Continuous mode: cuts a segment every segment_s seconds of host time until stopped, then, once the
+    readers have made their last read, the final one and the marker that no segment follows'''
+    frames_done: dict = {}
+    index, t0 = 0, time.monotonic()
+    while not stop_event.wait(max(0.0, t0 + (index + 1) * segment_s - time.monotonic())):
+        name = _cut_segment(ctxs, started_at, index, segment_s, outdir, frames_done)
+        if name:
+            log('INFO', 'segment', f'[OK] wrote segment {name}')
+        index += 1
+        if any(c.error for c in ctxs):
+            stop_event.set()
+    for t in readers:
+        t.join(timeout=35.0)
+    name = _cut_segment(ctxs, started_at, index, segment_s, outdir, frames_done)
+    if name:
+        log('INFO', 'segment', f'[OK] wrote the last segment {name}')
+    open(os.path.join(outdir, SEGMENT_DONE), 'w').close()
 
 
 def ctx_failure_reason(ctx: TTContext) -> Optional[str]:
@@ -445,17 +508,32 @@ def main(argv: Optional[list] = None) -> int:
     output_dir = args.output_dir or rec['output_dir']
     per_call_cap = rec.get('per_call_detection_cap', 4_000_000)
 
-    log('INFO', None, f'[CONF] link "{link_label}": {site_a_name} + {site_b_name}')
-    tt_a_conn, tt_a_settings = site_connection_and_settings(sites[site_a_name])
-    tt_b_conn, tt_b_settings = site_connection_and_settings(sites[site_b_name])
+    segment_s = float(args.segment_s or rec.get('segment_s', 10.0))
+    if stop_mode == 'continuous' and segment_s < 1:
+        log('ERROR', None, 'segments must be at least 1 s long')
+        return 2
 
     started_at = datetime.now()
     stop_event = threading.Event()
 
-    contexts = [
-        TTContext(cfg=tt_a_conn, stream=build_stream(tt_a_conn, tt_a_settings)),
-        TTContext(cfg=tt_b_conn, stream=build_stream(tt_b_conn, tt_b_settings)),
-    ]
+    if args.replay:
+        # stand-ins named after the recordings, playing them back looped with one common period
+        from tt_replay import ReplayStream, pair_skew, replay_identity
+        files = sorted(args.replay)  # A first, as the recordings sort
+        spans = [(lambda t: (int(t[-1]) - int(t[0])) / 1e12)(np.load(p, mmap_mode='r')) for p in files]
+        period = max(spans) + 1.0
+        skew = pair_skew(files[0], files[1])
+        contexts = [TTContext(cfg=replay_identity(p), stream=ReplayStream(p, period, speed=args.replay_speed, rate=rate))
+                    for p, rate in zip(files, (1.0, 1.0 + skew))]
+        log('INFO', None, f'[CONF] replaying {len(args.replay)} recordings, looping every {period:.1f}s, instead of TimeTaggers')
+    else:
+        log('INFO', None, f'[CONF] link "{link_label}": {site_a_name} + {site_b_name}')
+        tt_a_conn, tt_a_settings = site_connection_and_settings(sites[site_a_name])
+        tt_b_conn, tt_b_settings = site_connection_and_settings(sites[site_b_name])
+        contexts = [
+            TTContext(cfg=tt_a_conn, stream=build_stream(tt_a_conn, tt_a_settings)),
+            TTContext(cfg=tt_b_conn, stream=build_stream(tt_b_conn, tt_b_settings)),
+        ]
 
     # connect each TimeTagger sequentially; collect the survivors
     live = []
@@ -480,7 +558,15 @@ def main(argv: Optional[list] = None) -> int:
                 pass
         return 1
 
-    if stop_mode == 'duration':
+    if stop_mode == 'continuous':
+        target_detections = None
+        os.makedirs(output_dir, exist_ok=True)
+        for ctx in live:
+            ctx.segmenting = True
+        log('INFO', None,
+            f'[REQ] recording continuously in {segment_s:g}s segments into {output_dir} until stopped '
+            f'({len(live)} TimeTagger(s): {[c.tag for c in live]})')
+    elif stop_mode == 'duration':
         target_detections = None
         log('INFO', None,
             f'[REQ] recording for {record_duration_s:.1f}s on {site_a_name} + {site_b_name} '
@@ -534,10 +620,22 @@ def main(argv: Optional[list] = None) -> int:
         log('INFO', None, f'[CONF] live coincidence tracking enabled: searching the trailing {window_s:.1f}s until the peak locks, '
                           f'then following it chunk by chunk; a summary every {interval_s:.1f}s')
 
+    seg_thread = None
+    if stop_mode == 'continuous':
+        ordered = sorted(live, key=lambda c: make_file_basename(c.cfg['tt_ip'], c.cfg['tt_port'], started_at))
+        seg_thread = threading.Thread(target=segment_thread, args=(ordered, stop_event, started_at, segment_s, output_dir, threads),
+                                      name='segments', daemon=True)
+        seg_thread.start()
+
     # duration mode: timeout on stop_event, then set it. detection_count mode: wait for
     # threads to finish on their own (they stop at the target); Ctrl+C still sets stop_event
     try:
-        if stop_mode == 'duration':
+        if stop_mode == 'continuous':
+            while not stop_event.wait(1.0):
+                if any(c.error for c in live):
+                    log('ERROR', None, '[STOP] a TimeTagger failed, ending the continuous recording')
+                    break
+        elif stop_mode == 'duration':
             stopped_early = stop_event.wait(timeout=record_duration_s)
             if not stopped_early:
                 log('INFO', None, 'requested duration reached, stopping both streams')
@@ -562,9 +660,16 @@ def main(argv: Optional[list] = None) -> int:
             except Exception:
                 pass
 
+    if seg_thread is not None:
+        # continuous mode: every segment is already written, each complete on its own
+        seg_thread.join(timeout=60.0)
+        failed = {}
+    else:
+        failed = None
     # strict quorum: both TimeTaggers must be healthy, or nothing is saved
     # checked before any write, so a failed run leaves zero files behind
-    failed = {ctx.tag: ctx_failure_reason(ctx) for ctx in live}
+    if failed is None:
+        failed = {ctx.tag: ctx_failure_reason(ctx) for ctx in live}
     failed = {tag: reason for tag, reason in failed.items() if reason is not None}
     if failed:
         for tag, reason in failed.items():
@@ -580,6 +685,8 @@ def main(argv: Optional[list] = None) -> int:
                     except OSError:
                         pass
         rc = 1
+    elif seg_thread is not None:
+        rc = 0 if not any(c.error for c in live) else 1
     else:
         # basename uses the same wall-clock tag for both TimeTaggers
         for ctx in live:

@@ -55,6 +55,7 @@
     "overlap_margin_s": 2.0,
     "max_memory_gib": 4.0,
     "slope_range_ppb": 200.0,
+    "coarse_span_s": 2.0,
     "strict": true
   },
 

@@ -2,190 +2,118 @@ package qkd
 
 import (
 	"bytes"
+	"math"
 	"math/rand"
 	"testing"
 )
 
-// TestHammingSyndromeLocatesEveryUnitError exhaustively checks that a
-// single-bit error at every position decodes back to that exact position
-func TestHammingSyndromeLocatesEveryUnitError(t *testing.T) {
-	for _, blockSize := range []int{1, 2, 3, 4, 7, 8, 15, 16, 31} {
-		g, err := HammingGeneratorMatrix(blockSize)
-		if err != nil {
-			t.Fatalf("blockSize=%d: %v", blockSize, err)
-		}
-		zero := make([]byte, blockSize)
-		zeroSyndrome := ComputeBlockParity(zero, g)[0]
-		for j := 0; j < blockSize; j++ {
-			e := make([]byte, blockSize)
-			e[j] = 1
-			syndrome := ComputeBlockParity(e, g)[0]
-			diff := make([]byte, len(syndrome))
-			for i := range diff {
-				diff[i] = syndrome[i] ^ zeroSyndrome[i]
-			}
-			pos := syndromeToPosition(diff)
-			if pos != j {
-				t.Fatalf("blockSize=%d: unit error at %d decoded to %d", blockSize, j, pos)
-			}
-		}
-	}
-}
-
-func TestWinnowCorrectFixesExactlyOneErrorPerBlock(t *testing.T) {
-	g, err := HammingGeneratorMatrix(15)
-	if err != nil {
-		t.Fatalf("HammingGeneratorMatrix: %v", err)
-	}
+// TestWinnowPassFixesOneErrorAnywhere puts one error at every position of a block, the parity-only
+// position 0 included, and checks the parity and syndrome find it
+func TestWinnowPassFixesOneErrorAnywhere(t *testing.T) {
 	r := rand.New(rand.NewSource(5))
-	numBlocks := 50
-	alice := make([]byte, 15*numBlocks)
-	for i := range alice {
-		alice[i] = byte(r.Intn(2))
-	}
-	bob := append([]byte(nil), alice...)
-	// exactly one flipped bit in every block
-	for bi := 0; bi < numBlocks; bi++ {
-		bob[bi*15+r.Intn(15)] ^= 1
-	}
-
-	res := WinnowPass(alice, bob, g)
-	if !bytes.Equal(res.CorrectedBob, alice) {
-		t.Fatal("expected every single-bit error to be corrected exactly")
-	}
-	if res.Corrections != numBlocks {
-		t.Fatalf("expected %d corrections, got %d", numBlocks, res.Corrections)
-	}
-	if res.LeakedBits != numBlocks*g.ParityBits() {
-		t.Fatalf("expected %d leaked bits, got %d", numBlocks*g.ParityBits(), res.LeakedBits)
+	for _, size := range []int{4, 8, 16, 32} {
+		alice := randomBits(r, size)
+		for j := range size {
+			bob := append([]byte(nil), alice...)
+			bob[j] ^= 1
+			res := WinnowPass(alice, bob, size)
+			if !bytes.Equal(res.CorrectedBob, alice) || res.Corrections != 1 || res.Mismatched != 1 {
+				t.Fatalf("block %d, error at %d: corrected=%v corrections=%d", size, j, bytes.Equal(res.CorrectedBob, alice), res.Corrections)
+			}
+			// one parity and log2(size) syndrome bits
+			if want := 1 + int(math.Log2(float64(size))); res.LeakedBits != want {
+				t.Fatalf("block %d: leaked %d bits, want %d", size, res.LeakedBits, want)
+			}
+		}
 	}
 }
 
-func TestWinnowCorrectNoErrorsStaysUnchanged(t *testing.T) {
-	g, err := HammingGeneratorMatrix(7)
-	if err != nil {
-		t.Fatalf("HammingGeneratorMatrix: %v", err)
-	}
+// TestWinnowPassLeavesEvenErrors: two errors keep the parities equal, so the block is left for a later
+// pass instead of being miscorrected into three errors, and only its parity is disclosed
+func TestWinnowPassLeavesEvenErrors(t *testing.T) {
 	r := rand.New(rand.NewSource(6))
-	alice := make([]byte, 7*20)
-	for i := range alice {
-		alice[i] = byte(r.Intn(2))
-	}
+	alice := randomBits(r, 16)
 	bob := append([]byte(nil), alice...)
-
-	res := WinnowPass(alice, bob, g)
-	if res.Corrections != 0 {
-		t.Fatalf("expected 0 corrections on identical input, got %d", res.Corrections)
-	}
-	if !bytes.Equal(res.CorrectedBob, alice) {
-		t.Fatal("expected identical input to stay identical")
+	bob[3] ^= 1
+	bob[11] ^= 1
+	res := WinnowPass(alice, bob, 16)
+	if !bytes.Equal(res.CorrectedBob, bob) || res.Corrections != 0 || res.LeakedBits != 1 {
+		t.Fatalf("two errors: corrections=%d leaked=%d, want an untouched block and one parity bit", res.Corrections, res.LeakedBits)
 	}
 }
 
-// TestWinnowCorrectTwoErrorsNeverPanics: 2 errors can decode to a bogus
-// position, but that must never go out of bounds or crash
-func TestWinnowCorrectTwoErrorsNeverPanics(t *testing.T) {
-	g, err := HammingGeneratorMatrix(15)
-	if err != nil {
-		t.Fatalf("HammingGeneratorMatrix: %v", err)
+// TestWinnowPassShortFinalBlock: a trailing block shorter than the rest is corrected with a shorter syndrome
+func TestWinnowPassShortFinalBlock(t *testing.T) {
+	r := rand.New(rand.NewSource(8))
+	alice := randomBits(r, 21) // blocks of 8, 8 and 5
+	bob := append([]byte(nil), alice...)
+	bob[20] ^= 1
+	res := WinnowPass(alice, bob, 8)
+	if !bytes.Equal(res.CorrectedBob, alice) {
+		t.Fatal("error in the short final block not corrected")
 	}
-	alice := make([]byte, 15)
-	bob := make([]byte, 15)
-	bob[2] ^= 1
-	bob[9] ^= 1
-
-	res := WinnowPass(alice, bob, g)
-	if len(res.CorrectedBob) != 15 {
-		t.Fatalf("expected 15 bits back, got %d", len(res.CorrectedBob))
+	if want := 3 + 3; res.LeakedBits != want { // three parities, a 3-bit syndrome for positions 0..4
+		t.Fatalf("leaked %d bits, want %d", res.LeakedBits, want)
 	}
 }
 
-func TestWinnowCorrectHandlesShortFinalBlock(t *testing.T) {
-	g, err := HammingGeneratorMatrix(15)
-	if err != nil {
-		t.Fatalf("HammingGeneratorMatrix: %v", err)
+func TestWinnowScheduleFollowsQBER(t *testing.T) {
+	for _, c := range []struct {
+		qber  float64
+		first int
+	}{{0.01, 16}, {0.03, 16}, {0.05, 8}, {0.08, 8}, {0.1, 4}} {
+		s := WinnowSchedule(c.qber, 100_000)
+		if s[0] != c.first || s[1] != 2*c.first {
+			t.Fatalf("QBER %.2f: schedule starts %v, want %d then %d", c.qber, s[:2], c.first, 2*c.first)
+		}
 	}
-	alice := make([]byte, 15*3+4) // a 4-bit short final block
-	bob := append([]byte(nil), alice...)
-	bob[15*3+2] ^= 1 // error inside the short block
+}
 
-	res := WinnowPass(alice, bob, g)
-	if !bytes.Equal(res.CorrectedBob, alice) {
-		t.Fatal("expected the short final block's error to be corrected")
+// TestWinnowReconcileEfficiency: on a long block at the QBERs of real links, the planned schedule
+// corrects every error, or leaves a handful for the CRC, at a disclosure close to the Shannon limit
+func TestWinnowReconcileEfficiency(t *testing.T) {
+	r := rand.New(rand.NewSource(13))
+	n := 200_000
+	for _, q := range []float64{0.02, 0.05, 0.08} {
+		alice := randomBits(r, n)
+		bob := append([]byte(nil), alice...)
+		errors := 0
+		for i := range bob {
+			if r.Float64() < q {
+				bob[i] ^= 1
+				errors++
+			}
+		}
+		corrected, leaked, _ := WinnowReconcile(alice, bob, WinnowConfig{BlockSizes: WinnowSchedule(q, n), Seed: 1})
+		left := 0
+		for i := range corrected {
+			if corrected[i] != alice[i] {
+				left++
+			}
+		}
+		p := float64(errors) / float64(n)
+		f := float64(leaked) / (float64(n) * (-p*math.Log2(p) - (1-p)*math.Log2(1-p)))
+		t.Logf("QBER %.0f%%: %d errors, %d left, leaked %d bits, f = %.3f", 100*q, errors, left, leaked, f)
+		if left > errors/1000 || f > 1.6 {
+			t.Fatalf("QBER %.0f%%: %d errors left of %d, f = %.3f", 100*q, left, errors, f)
+		}
 	}
 }
 
 func TestPermuteUnpermuteRoundTrip(t *testing.T) {
 	r := rand.New(rand.NewSource(7))
-	n := 500
-	data := make([]byte, n)
-	for i := range data {
-		data[i] = byte(r.Intn(2))
-	}
-	perm := GeneratePermutation(n, 42)
-	got := unpermuteBits(permuteBits(data, perm), perm)
-	if !bytes.Equal(got, data) {
+	data := randomBits(r, 500)
+	perm := GeneratePermutation(len(data), 42)
+	if got := unpermuteBits(permuteBits(data, perm), perm); !bytes.Equal(got, data) {
 		t.Fatal("expected unpermuteBits(permuteBits(x)) == x")
 	}
 }
 
 func TestGeneratePermutationIsDeterministic(t *testing.T) {
-	a := GeneratePermutation(1000, 99)
-	b := GeneratePermutation(1000, 99)
-	if !intSliceEqual(a, b) {
-		t.Fatal("expected the same seed to produce the same permutation")
-	}
-}
-
-func intSliceEqual(a, b []int) bool {
-	if len(a) != len(b) {
-		return false
-	}
+	a, b := GeneratePermutation(1000, 99), GeneratePermutation(1000, 99)
 	for i := range a {
 		if a[i] != b[i] {
-			return false
+			t.Fatal("expected the same seed to produce the same permutation")
 		}
-	}
-	return true
-}
-
-// TestWinnowReconcileConverges runs a full multi-pass schedule and
-// checks the error count drops sharply, unlike a single pass alone
-func TestWinnowReconcileConverges(t *testing.T) {
-	r := rand.New(rand.NewSource(13))
-	n := 8000
-	alice := make([]byte, n)
-	for i := range alice {
-		alice[i] = byte(r.Intn(2))
-	}
-	bob := append([]byte(nil), alice...)
-	initialErrors := 0
-	for i := range bob {
-		if r.Float64() < 0.03 { // 3% initial QBER
-			bob[i] ^= 1
-			initialErrors++
-		}
-	}
-
-	cfg := WinnowConfig{
-		BlockSizes:   []int{8, 8, 16, 16, 32},
-		Permutations: make([][]int, 5),
-	}
-	for i := range cfg.Permutations {
-		cfg.Permutations[i] = GeneratePermutation(n, int64(1000+i))
-	}
-
-	corrected, leaked, corrections := WinnowReconcile(alice, bob, cfg)
-
-	remainingErrors := 0
-	for i := range corrected {
-		if corrected[i] != alice[i] {
-			remainingErrors++
-		}
-	}
-	t.Logf("initial errors=%d, corrections made=%d, leaked bits=%d, remaining errors=%d",
-		initialErrors, corrections, leaked, remainingErrors)
-	if remainingErrors >= initialErrors {
-		t.Fatalf("expected Winnow to reduce the error count: %d initial -> %d remaining", initialErrors, remainingErrors)
 	}
 }

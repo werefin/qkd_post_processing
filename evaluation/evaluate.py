@@ -41,7 +41,7 @@ METHODS = {
     'polar': ('Polar SCL8', ['-polar'], None, False),
     'polar-soft': ('Polar SCL8, timing-aware', ['-polar', '-soft-bins', '16'], None, False),
     'ldpc': ('LDPC regular (3,10)', ['-ldpc'], None, False),
-    'winnow': ('Winnow', ['-winnow', '-chunk', '128'], None, False),
+    'winnow': ('Winnow', ['-winnow'], None, False),
 }
 
 
@@ -88,17 +88,7 @@ def public_name(path, names):
 
 def peak_kwargs(cfg):
     '''analyze_files settings from config.json's coincidence_peak section, the same the recorder uses'''
-    c = cfg.get('coincidence_peak', {})
-    return {
-        'max_lag_ps': int(round(c.get('max_lag_ms', 1000.0) * 1e9)),
-        'coarse_bin_ps': int(round(c.get('coarse_bin_ns', 100.0) * 1e3)),
-        'fine_bin_ps': int(c.get('fine_bin_ps', 100)),
-        'candidate_count': int(c.get('candidates', 16)),
-        'segments': int(c.get('segments', 6)),
-        'refine_radius_ps': int(round(c.get('refine_radius_ns', 2000.0) * 1e3)),
-        'max_memory_gib': float(c.get('max_memory_gib', 4.0)),
-        'slope_range_ppb': float(c.get('slope_range_ppb', 200.0)),
-    }
+    return cp.kwargs_from_config(cfg)
 
 
 # ---------- tools
@@ -219,6 +209,28 @@ def evaluate_pair(pair, out, staging, it, ec_py, cfg, args):
         res['notes'].append('no significant coincidence peak: the later stages cannot run')
         return res
 
+    # every importtt run of the pair goes out at once; the live replay runs meanwhile in this thread
+    base_method = 'ldpc5g' if ec_py else 'polar'
+    sweep = [] if args.no_sweep else ['-window-sweep', ','.join(map(str, SWEEP_PS))]
+    pool = ThreadPoolExecutor(args.jobs)
+
+    def run(*flags):
+        try:
+            return it.run(inp, *flags)
+        except RuntimeError as e:
+            return e
+
+    log(f'{pair_name}: sifting, window sweep and {len(args.methods)} error-correction methods, {args.jobs} at a time')
+    base_job = pool.submit(run, *METHODS[base_method][1], *sweep)
+    jobs = {}
+    for key in args.methods:
+        flags, needs_ec = METHODS[key][1], METHODS[key][3]
+        if needs_ec and not ec_py:
+            continue
+        # the base run is this method's finite-key run already
+        fin = base_job if key == base_method else pool.submit(run, *flags)
+        jobs[key] = (fin, pool.submit(run, *flags, '-asymptotic'))
+
     if not args.no_live:
         log(f'{pair_name}: live tracker replay')
         st, timeline, secs = replay_live(a, b, lp.tracker_kwargs(cfg))
@@ -227,12 +239,10 @@ def evaluate_pair(pair, out, staging, it, ec_py, cfg, args):
         res['live'].update(lock_s=lock, seconds=secs, events=st.get('events', []))
         figures.live(timeline, st, lp.LOCK_SCORE, work / 'live.png')
 
-    base_method = 'ldpc5g' if ec_py else 'polar'
-    log(f'{pair_name}: sifting and {METHODS[base_method][0]}')
-    try:
-        base = it.run(inp, *METHODS[base_method][1])
-    except RuntimeError as e:
-        res['notes'].append(f'importtt failed: {e}')
+    base = base_job.result()
+    if isinstance(base, Exception):
+        pool.shutdown(cancel_futures=True)
+        res['notes'].append(f'importtt failed: {base}')
         return res
     for key in ('a_recording', 'b_recording', 'recording_dir'):  # file names carry the IPs
         base.pop(key, None)
@@ -240,39 +250,31 @@ def evaluate_pair(pair, out, staging, it, ec_py, cfg, args):
     res['base_method'] = base_method
 
     if not args.no_sweep:
-        log(f'{pair_name}: window sweep')
+        # the skew-only curve also at the chosen window, which only the base run knew
         widths = sorted(set(SWEEP_PS + [int(base['window_ps'])]))
-        jobs = [(f, w) for f in ('true', 'false') for w in widths]
-
-        def one(job):
-            try:
-                r = it.run(inp, f'-filter={job[0]}', '-window', str(job[1]))
-                return job, (job[1], r['sifted_bits'], r['qber_vis'])
-            except RuntimeError:
-                return job, (job[1], None, None)
-        with ThreadPoolExecutor(args.jobs) as ex:
-            got = dict(ex.map(one, jobs))
-        res['sweep'] = {'drift tracked': [got[('true', w)] for w in widths], 'skew only': [got[('false', w)] for w in widths]}
+        skew_only = run('-filter=false', '-window-sweep', ','.join(map(str, widths)))
+        tracked = {e['window_ps']: (e['window_ps'], e['sifted_bits'], e['qber_vis']) for e in base.pop('window_sweep', [])}
+        tracked[int(base['window_ps'])] = (int(base['window_ps']), base['sifted_bits'], base['qber_vis'])
+        other = {} if isinstance(skew_only, Exception) else {e['window_ps']: (e['window_ps'], e['sifted_bits'], e['qber_vis']) for e in skew_only['window_sweep']}
+        res['sweep'] = {'drift tracked': [tracked.get(w, (w, None, None)) for w in widths],
+                        'skew only': [other.get(w, (w, None, None)) for w in widths]}
         figures.window(res['sweep'], int(base['window_ps']), work / 'window.png')
 
-    log(f'{pair_name}: error correction, {len(args.methods)} methods')
     runs = {}
-
-    def method(key):
+    for key in args.methods:
         label, flags, leak_key, needs_ec = METHODS[key]
-        if needs_ec and not ec_py:
-            return label, {'leak': None, 'ok': False, 'key': 0, 'finite': 0, 'error': 'ec/requirements.txt not installed'}
-        try:
-            fin, asy = it.run(inp, *flags), it.run(inp, *flags, '-asymptotic')
-        except RuntimeError as e:
-            return label, {'leak': None, 'ok': False, 'key': 0, 'finite': 0, 'error': str(e)[:120]}
+        if key not in jobs:
+            runs[label] = {'leak': None, 'ok': False, 'key': 0, 'finite': 0, 'error': 'ec/requirements.txt not installed'}
+            continue
+        fin, asy = jobs[key][0].result(), jobs[key][1].result()
+        if isinstance(fin, Exception) or isinstance(asy, Exception):
+            runs[label] = {'leak': None, 'ok': False, 'key': 0, 'finite': 0, 'error': str(fin if isinstance(fin, Exception) else asy)[:120]}
+            continue
         leak = fin.get(leak_key) if leak_key else fin['leaked_bits_total'] - fin['bits_leaked_crc']
-        return label, {'leak': int(leak), 'ok': fin['chunks_total'] > 0 and fin['chunks_kept'] == fin['chunks_total'],
+        runs[label] = {'leak': int(leak), 'ok': fin['chunks_total'] > 0 and fin['chunks_kept'] == fin['chunks_total'],
                        'key': int(asy['final_key_bits']), 'finite': int(fin['final_key_bits']), 'qber': fin['qber'],
                        'kept': f'{fin["chunks_kept"]}/{fin["chunks_total"]}'}
-    with ThreadPoolExecutor(args.jobs) as ex:
-        for label, r in ex.map(method, args.methods):
-            runs[label] = r
+    pool.shutdown()
     res['ec'] = runs
     n_bits = base['finite_key']['surviving_bits']
     res['shannon'] = figures.ec(runs, n_bits, base['qber'], work / 'ec.png')
@@ -437,14 +439,14 @@ def write_summary(results, pools, skipped, out):
 def main(argv=None):
     ap = argparse.ArgumentParser(description='Evaluates TimeTagger recordings through the whole chain, with figures')
     ap.add_argument('paths', nargs='+', help='recording directories, parent directories (searched recursively) or timestamp files')
-    ap.add_argument('--out', type=Path, help='output directory, default evaluation/results/<date>_<first path name>')
+    ap.add_argument('--out', type=Path, help='output directory, default <first recording directory>/evaluation/<date>')
     ap.add_argument('--config', type=Path, default=ROOT / 'acquisition' / 'config.json', help='site names and search settings')
     ap.add_argument('--importtt', help='importtt binary; default: built from this checkout with go')
     ap.add_argument('--methods', default=','.join(METHODS), help=f'comma-separated error-correction methods, from {",".join(METHODS)}')
     ap.add_argument('--no-live', action='store_true', help='skip the live tracker replay')
     ap.add_argument('--no-sweep', action='store_true', help='skip the coincidence-window sweep')
     ap.add_argument('--no-pool', action='store_true', help='skip pooling each link\'s recordings')
-    ap.add_argument('--jobs', type=int, default=2, help='importtt runs in parallel; each loads a whole recording into memory')
+    ap.add_argument('--jobs', type=int, default=4, help='importtt runs in parallel, about 0.6 GB each on a 300 MB recording')
     args = ap.parse_args(argv)
     args.methods = [m for m in args.methods.split(',') if m]
     for m in args.methods:
@@ -457,7 +459,9 @@ def main(argv=None):
     pairs, skipped = find_pairs(args.paths)
     if not pairs:
         sys.exit('no recording pairs found (two *_timestamp_sequence.npy files with the same start time in one directory)')
-    out = args.out or HERE / 'results' / f'{datetime.now():%Y%m%d_%H%M%S}_{Path(args.paths[0]).resolve().name}'
+    # by default next to the recordings, outside this repository: results never belong in it
+    first = Path(args.paths[0]).resolve()
+    out = args.out or (first if first.is_dir() else first.parent) / 'evaluation' / f'{datetime.now():%Y%m%d_%H%M%S}'
     try:
         out.mkdir(parents=True, exist_ok=True)
     except PermissionError:  # read-only install, as in the tools image: write next to where it was run

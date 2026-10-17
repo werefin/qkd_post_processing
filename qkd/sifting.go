@@ -117,6 +117,13 @@ type tsIdx struct {
 // sortedIndices sorts contiguous {timestamp,idx} pairs directly, not an
 // index array through sort.Slice's reflect-based closure comparator
 func sortedIndices(events []PublicEvent) []int32 {
+	if slices.IsSortedFunc(events, func(a, b PublicEvent) int { return cmp.Compare(a.TimestampPS, b.TimestampPS) }) {
+		idx := make([]int32, len(events)) // already time-ordered, as recordings nearly always are
+		for i := range idx {
+			idx[i] = int32(i)
+		}
+		return idx
+	}
 	pairs := make([]tsIdx, len(events))
 	for i := range events {
 		pairs[i] = tsIdx{events[i].TimestampPS, int32(i)}
