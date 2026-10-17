@@ -104,6 +104,7 @@ func TestEstimateTimingErrorModelRejectsBadInput(t *testing.T) {
 // TestRunPolarTimingBeatsFlat: same link, seed and margin; timing must disclose fewer
 // bits, fail no more blocks, and keep strictly more final key
 func TestRunPolarTimingBeatsFlat(t *testing.T) {
+	t.Parallel() // heavy and independent: runs beside the other heavy tests
 	const window = 2000
 	alice, bob := timingLink(120000, 0.06, 0.01, 100, window, 3)
 	base := PolarRunConfig{CoincidenceWindowPS: window, SampleFraction: 0.1, BlockLength: 4096, RateMargin: 0.1, ListSize: 8, Seed: 4, ChunkSize: 256}
@@ -134,6 +135,7 @@ func TestRunPolarTimingBeatsFlat(t *testing.T) {
 // TestRunLDPCTimingConvergesMore: at rate 0.7, above flat decoding's reach on this link but
 // below the timing-aware bound, per-bit LLRs must converge every block on the same syndromes
 func TestRunLDPCTimingConvergesMore(t *testing.T) {
+	t.Parallel() // heavy and independent: runs beside the other heavy tests
 	const window = 2000
 	alice, bob := timingLink(120000, 0.06, 0.01, 100, window, 3)
 	base := LDPCRunConfig{CoincidenceWindowPS: window, SampleFraction: 0.1, BlockLength: 4000, ColWeight: 3, RowWeight: 10, Seed: 6, ChunkSize: 256}

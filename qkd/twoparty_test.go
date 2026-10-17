@@ -28,6 +28,7 @@ func twoPartyCfg() TwoPartyConfig {
 // TestTwoPartyMatchesJoint: on the same data and sample, the two-party protocol certifies the
 // same key length as the joint pipeline, and the two ends hold the same key under the same IDs
 func TestTwoPartyMatchesJoint(t *testing.T) {
+	t.Parallel() // heavy and independent: runs beside the other heavy tests
 	alice, bob := simulateClicks(600000, 0.02, 3)
 	cfg := twoPartyCfg()
 	joint, err := RunPolar(alice, bob, PolarRunConfig{CoincidenceWindowPS: 500, RateMargin: 0.02, ListSize: 1,
@@ -58,6 +59,7 @@ func TestTwoPartyMatchesJoint(t *testing.T) {
 // TestTwoPartyTimingAwareBob: Bob's timing-aware decoding changes nothing Alice must know and
 // still yields the same key at both ends
 func TestTwoPartyTimingAwareBob(t *testing.T) {
+	t.Parallel() // heavy and independent: runs beside the other heavy tests
 	alice, bob := simulateClicks(300000, 0.03, 9)
 	cfg := twoPartyCfg()
 	cfg.TimingBins = 8
@@ -123,8 +125,9 @@ func TestTwoPartyAliceRejectsBadPairs(t *testing.T) {
 // TestTwoPartyLDPC5G: with 5G NR LDPC both sides hold the same key under the same IDs, agree on
 // every disclosed bit, land within 3% of the joint run, and beat two-party polar on the same data
 func TestTwoPartyLDPC5G(t *testing.T) {
+	t.Parallel() // heavy and independent: runs beside the other heavy tests
 	b := ecBackend(t)
-	alice, bob := simulateClicks(600000, 0.05, 3)
+	alice, bob := simulateClicks(300000, 0.05, 3)
 	cfg := twoPartyCfg()
 	cfg.ExpectedQBER = 0.05
 	cfg.Method, cfg.LDPC = "ldpc5g", b

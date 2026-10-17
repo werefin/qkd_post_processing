@@ -207,7 +207,7 @@ func (p *Pool) Rank(m, z int, cols []int) (int, error) {
 	return int(f), nil
 }
 
-// Decode is belief propagation (exact sum-product, serial schedule) toward syndrome s
+// Decode is belief propagation (exact sum-product, parallel schedule) toward syndrome s
 func (p *Pool) Decode(m, z int, y []byte, probs []float64, s []byte, maxIter int) ([]byte, bool, error) {
 	pb := make([]byte, 8*len(probs))
 	for i, v := range probs {

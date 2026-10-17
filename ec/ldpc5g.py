@@ -172,7 +172,9 @@ class _Service:
 
     def decoder(self, m, z):
         if (m, z) not in self.dec:
-            self.dec[m, z] = BpDecoder(self.matrix(m, z), error_rate=0.05, bp_method='product_sum', schedule='serial', max_iter=100)
+            # the parallel schedule runs about 6x faster per iteration than serial; with the Go side's longer attempts
+            # it discloses no more (doc/ec_comparison.md)
+            self.dec[m, z] = BpDecoder(self.matrix(m, z), error_rate=0.05, bp_method='product_sum', schedule='parallel', max_iter=250)
         return self.dec[m, z]
 
     def handle(self, req):

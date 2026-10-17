@@ -8,7 +8,7 @@
 |---|---|---|
 | Polar SC, SCL8, SCL32 | rate-adaptive polar codes, successive cancellation and list decoding, the current default | `qkd/polar.go`, `qkd/softrecon.go` |
 | LDPC regular | random (3, w) Gallager codes at a fixed rate 1.25 times the Shannon limit, no rate adaptation | `qkd/ldpc.go` |
-| 5G NR LDPC | the 3GPP TS 38.212 base graph 1 lifted by Z = 384 (matrices from the `py3gpp` library), decoded by the `ldpc` library's belief propagation (exact sum-product, serial schedule); blind reconciliation: the code's rows are chosen from the QBER, punctured positions start unknown to Bob and are revealed 1/40 at a time while a frame fails, and a 32-bit tag per frame confirms each decoded frame | `ec/ldpc5g.py` |
+| 5G NR LDPC | the 3GPP TS 38.212 base graph 1 lifted by Z = 384 (matrices from the `py3gpp` library), decoded by the `ldpc` library's belief propagation (exact sum-product, parallel schedule, 60 iterations per attempt and 250 on the last, which matches the serial schedule's disclosure at a third of the time); blind reconciliation: the code's rows are chosen from the QBER, punctured positions start unknown to Bob and are revealed 1/40 at a time while a frame fails, and a 32-bit tag per frame confirms each decoded frame | `ec/ldpc5g.py` |
 
 ### Efficiency
 

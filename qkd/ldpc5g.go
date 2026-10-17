@@ -29,8 +29,8 @@ const (
 	ldpc5gKB       = 22
 	ldpc5gTagBits  = 32 // per-frame hash: a satisfied syndrome is not proof while positions stay punctured
 	ldpc5gSteps    = 40 // reveals per frame before it is given up
-	ldpc5gStepIter = 25 // iterations of an attempt that more checks may still follow
-	ldpc5gMaxIter  = 100
+	ldpc5gStepIter = 60 // iterations of an attempt that more checks may still follow (parallel schedule)
+	ldpc5gMaxIter  = 250
 	ldpc5gFLow     = 1.0 // efficiency of the first attempt, every modulated position punctured
 	ldpc5gFHigh    = 2.0 // efficiency once every modulated position is revealed
 	ldpc5gKnown    = 1e-12

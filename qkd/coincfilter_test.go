@@ -70,6 +70,7 @@ func TestEstimateDriftRecoversLinearDrift(t *testing.T) {
 // TestFilterCoincidencesRestoresLowQBER: drift smears the peak so a wide window is needed
 // and admits accidentals; after filtering, QBER must fall close to the 2% intrinsic rate
 func TestFilterCoincidencesRestoresLowQBER(t *testing.T) {
+	t.Parallel() // heavy and independent: runs beside the other heavy tests
 	alice, bob := driftingLink(20000, 1600, 140, 0.0035, 2) // singles rates as in the real recordings
 	nBefore, qBefore := siftedQBER(alice, bob, 1000)
 	corrected, f, err := FilterCoincidences(alice, bob, DriftConfig{SliceDurationPS: 4_000_000_000}, WindowConfig{})
@@ -87,6 +88,7 @@ func TestFilterCoincidencesRestoresLowQBER(t *testing.T) {
 // TestFilterCoincidencesNeverReadsBits is the security property: flipping every one of
 // Bob's bits must leave the drift model and the chosen window exactly unchanged
 func TestFilterCoincidencesNeverReadsBits(t *testing.T) {
+	t.Parallel() // heavy and independent: runs beside the other heavy tests
 	alice, bob := driftingLink(20000, 1200, 20, 0.0035, 3)
 	flipped := make([]DetectionEvent, len(bob))
 	for i, e := range bob {

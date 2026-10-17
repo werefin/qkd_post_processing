@@ -172,6 +172,7 @@ func TestDistillFiniteKeyAbortsOnMismatch(t *testing.T) {
 // TestRunLDPCFiniteKeyAtScale: at a realistic block size the finite-key bound must yield a key,
 // smaller than the asymptotic figure, with the phase-error bound above its point estimate
 func TestRunLDPCFiniteKeyAtScale(t *testing.T) {
+	t.Parallel() // heavy and independent: runs beside the other heavy tests
 	alice, bob := simulateClicks(1_200_000, 0.02, 21)
 	cfg := LDPCRunConfig{CoincidenceWindowPS: 500, SampleFraction: 0.1, BlockLength: 20000, ColWeight: 3, RowWeight: 8, Seed: 22, ChunkSize: 128}
 	finite, err := RunLDPC(alice, bob, cfg)

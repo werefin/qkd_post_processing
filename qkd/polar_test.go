@@ -301,6 +301,7 @@ func TestPolarReliabilityOrderingMatchesMeasuredErrors(t *testing.T) {
 // TestPolarReconcileBlockFailureRate bounds block failure at a conservative margin and checks
 // a larger SCL list lowers it, the trend Yan et al. 2018 (Table 1) report
 func TestPolarReconcileBlockFailureRate(t *testing.T) {
+	t.Parallel() // heavy and independent: runs beside the other heavy tests
 	const n = 1024
 	const qber = 0.03
 	const margin = 0.15

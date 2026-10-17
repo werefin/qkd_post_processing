@@ -73,6 +73,7 @@ func TestBuildPEGLDPCDeterministic(t *testing.T) {
 // TestBuildPEGLDPCLowersShortCycles checks PEG's core claim: for the same (n, wc, wr), it
 // produces no more 4-cycles than BuildRegularLDPC, usually far fewer
 func TestBuildPEGLDPCLowersShortCycles(t *testing.T) {
+	t.Parallel() // heavy and independent: runs beside the other heavy tests
 	countPairs := func(h *LDPCMatrix) int {
 		pairCount := make(map[uint64]int)
 		for c := range h.M {

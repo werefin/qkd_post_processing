@@ -5,6 +5,7 @@ import "testing"
 // TestSearchGeneratorMatrixImprovesInSample: the search must improve its own objective on its
 // training data; out-of-sample it is logged, not asserted, because it does not generalize
 func TestSearchGeneratorMatrixImprovesInSample(t *testing.T) {
+	t.Parallel() // heavy and independent: runs beside the other heavy tests
 	const window = 500
 	const chunk = 2048
 

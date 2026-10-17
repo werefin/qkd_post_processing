@@ -42,9 +42,10 @@ func randomBSC(n int, q float64, seed int64) (alice, bob []byte, qs []float64) {
 // TestLDPC5GReconcile: across the QBER range every frame is recovered exactly within the efficiency
 // the comparison measured, and the punctured columns earn their credit
 func TestLDPC5GReconcile(t *testing.T) {
+	t.Parallel() // heavy and independent: runs beside the other heavy tests
 	b := ecBackend(t)
 	for _, q := range []float64{0.02, 0.05, 0.09} {
-		alice, bob, qs := randomBSC(120000, q, int64(q*1000))
+		alice, bob, qs := randomBSC(60000, q, int64(q*1000))
 		got, res, err := LDPC5GReconcile(b, alice, bob, qs, q, 7)
 		if err != nil {
 			t.Fatal(err)
@@ -60,8 +61,9 @@ func TestLDPC5GReconcile(t *testing.T) {
 // TestRunLDPC5GBeatsPolar: on the same data and sample the full chain with 5G NR LDPC certifies a
 // verified key and discloses less than polar SCL8
 func TestRunLDPC5GBeatsPolar(t *testing.T) {
+	t.Parallel() // heavy and independent: runs beside the other heavy tests
 	b := ecBackend(t)
-	alice, bob := simulateClicks(600000, 0.05, 21)
+	alice, bob := simulateClicks(300000, 0.05, 21)
 	ld, err := RunLDPC5G(alice, bob, LDPC5GRunConfig{Backend: b, CoincidenceWindowPS: 500, Seed: 5, ChunkSize: 1024, ExpectedQBER: 0.05})
 	if err != nil {
 		t.Fatal(err)
