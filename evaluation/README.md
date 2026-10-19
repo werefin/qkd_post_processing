@@ -25,7 +25,7 @@ evaluation/.venv/bin/python evaluation/evaluate.py <recording dir> [<recording d
 
 | Option | Effect |
 |---|---|
-| `--methods ldpc5g,polar` | only these error-correction methods (`ldpc5g`, `ldpc5g-soft`, `polar`, `polar-soft`, `ldpc`, `winnow`) |
+| `--methods cascade,ldpc5g` | only these error-correction methods (`cascade`, `ldpc5g`, `ldpc5g-soft`, `polar`, `polar-soft`, `ldpc`, `winnow`); Cascade is the main one, run for the key budget and the pooled blocks |
 | `--no-live` | skip the live tracker replay, the slowest stage on high-rate recordings |
 | `--no-sweep` | skip the coincidence-window sweep |
 | `--no-pool` | skip pooling each link's recordings into one block |

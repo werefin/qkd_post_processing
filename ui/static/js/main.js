@@ -513,7 +513,7 @@ function redrawRunPlots() {
 
 const methodSelect = document.getElementById('f-method');
 function syncMethodFields() {
-  for (const name of ['ldpc5g', 'polar', 'ldpc', 'winnow', 'discard']) {
+  for (const name of ['cascade', 'ldpc5g', 'polar', 'ldpc', 'winnow', 'discard']) {
     document.getElementById('method-' + name).style.display = methodSelect.value === name ? '' : 'none';
   }
 }

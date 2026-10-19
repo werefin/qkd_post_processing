@@ -1,8 +1,6 @@
 '''
-Evaluates TimeTagger recordings end to end: finds every pair in the given paths, runs each stage of the chain on it
-(rates, offline and live coincidence-peak finding, window choice, every error-correction method, key budget), and
-writes one report with figures per pair plus a summary comparing them and pooling each link's recordings
-usage: python3 evaluation/evaluate.py <recording dir or parent dir> [...] [--out evaluation/results/<name>]
+Evaluates recordings through every stage of the chain, writing a report with figures per pair and a summary
+pooling each link; usage: evaluate.py <recording dir or parent dir> [...] [--out <dir>]
 '''
 
 import argparse
@@ -36,6 +34,7 @@ IP_RE = re.compile(r'(?<![\d.])\d{1,3}[._]\d{1,3}[._]\d{1,3}[._]\d{1,3}(?![\d.])
 SWEEP_PS = [50, 100, 150, 200, 300, 400, 500, 750, 1000, 1500, 2000]
 # name, importtt flags, the JSON field holding its disclosure (None: total minus CRC), needs the Python EC service
 METHODS = {
+    'cascade': ('Cascade, optimized', ['-cascade'], 'cascade_parities', False),
     'ldpc5g': ('5G NR LDPC', ['-ldpc5g'], 'ldpc5g_leaked_bits', True),
     'ldpc5g-soft': ('5G NR LDPC, timing-aware', ['-ldpc5g', '-soft-bins', '16'], 'ldpc5g_leaked_bits', True),
     'polar': ('Polar SCL8', ['-polar'], None, False),
@@ -210,7 +209,7 @@ def evaluate_pair(pair, out, staging, it, ec_py, cfg, args):
         return res
 
     # every importtt run of the pair goes out at once; the live replay runs meanwhile in this thread
-    base_method = 'ldpc5g' if ec_py else 'polar'
+    base_method = 'cascade'  # the least disclosure, and no Python service needed
     sweep = [] if args.no_sweep else ['-window-sweep', ','.join(map(str, SWEEP_PS))]
     pool = ThreadPoolExecutor(args.jobs)
 
@@ -279,7 +278,7 @@ def evaluate_pair(pair, out, staging, it, ec_py, cfg, args):
     n_bits = base['finite_key']['surviving_bits']
     res['shannon'] = figures.ec(runs, n_bits, base['qber'], work / 'ec.png')
     label = METHODS[base_method][0]
-    leak = base.get('ldpc5g_leaked_bits') if base_method == 'ldpc5g' else base['leaked_bits_total'] - base['bits_leaked_crc']
+    leak = base.get(METHODS[base_method][2]) or base['leaked_bits_total'] - base['bits_leaked_crc']
     figures.budget(base['sifted_bits'], base['sifted_bits'] - n_bits, int(leak), base['bits_leaked_crc'],
                    runs.get(label, {}).get('key', 0), base['final_key_bits'], label, work / 'budget.png')
     return res
@@ -385,7 +384,7 @@ def pooled(results, it, ec_py):
         if len(rs) < 2:
             continue
         dirs = [Path(r['input']) for r in rs]
-        flags = ['-ldpc5g'] if ec_py else ['-polar']
+        flags = ['-cascade']
         log(f'pooling {len(rs)} recordings of {link}')
         try:
             fin, asy = it.run(dirs, *flags), it.run(dirs, *flags, '-asymptotic')

@@ -79,7 +79,7 @@ Solid arrows carry key material; dotted arrows carry public information that onl
 | `cmd/tuneblock/` | compares block-discard generator matrices |
 | `acquisition/` | Python: TimeTagger recording, clock alignment, CHSH diagnostic ([`acquisition/README.md`](acquisition/README.md)) |
 | `evaluation/` | evaluates any recordings through the whole chain, one report with figures per pair and a pooled summary per link ([`evaluation/README.md`](evaluation/README.md)) |
-| `ec/`, `pyec/` | 5G NR LDPC, the default error correction: matrices from `py3gpp`, belief propagation from `ldpc`, run as a Python service the Go pipeline drives (`doc/ec_comparison.md`) |
+| `ec/`, `pyec/` | 5G NR LDPC, the one-way error correction for two-party extraction: matrices from `py3gpp`, belief propagation from `ldpc`, run as a Python service the Go pipeline drives (`doc/ec_comparison.md`) |
 | `ui/` | the node dashboard (Flask) |
 | `deploy/` | one node's containers, `setup.sh`, `trust-ca.sh` ([`doc/deployment.md`](doc/deployment.md)) |
 | `doc/` | procedures, security analysis, key management, deployment, code reference |
@@ -118,6 +118,8 @@ Each node runs three hardened containers: `kms` (the key management system, a 13
 - **Alignment**: coincidence-peak lag, window, score and clock skew for any pair, with zoomable plots.
 - **Two-party key extraction**: the production mode; this node announces its own recordings' timing to a neighbor, which aligns, matches and decodes with its own, and both pools receive the same certified key under the same key_IDs.
 - **Key extraction**: the chain on one pair or several pooled at one site, as a background job with a live log; detector delay calibration.
+- **Continuous QKD**: records without end and distils a key block every few minutes into a link's KMS pool, with the current block's progress, per-segment QBER, rate, skew and processing time, and every block's disclosure, efficiency and key. A replay of two stored recordings stands in for the TimeTaggers.
+- **Evaluation**: every stage of the chain on chosen recordings, with figures, kept on the node.
 - **Network and KMS**: links and their reachability, each end's half of every pool, routes, applications, an end-to-end ETSI key exchange between two dashboards (key IDs and fingerprints only), the audit trail.
 - **CHSH diagnostic** and the **simulator**, whose demo keys never reach the KMS.
 
@@ -128,12 +130,23 @@ cd acquisition
 python3 tt_record_dual.py                       # record from both TimeTaggers, tracking the peak live
 python3 coincidence_peak.py <recording dir>     # coarse clock offset and skew
 cd ..
-go run ./cmd/importtt -dir acquisition/<recording dir> -ldpc5g
+go run ./cmd/importtt -dir acquisition/<recording dir> -cascade
 ```
 
-`importtt` filters coincidences (drift removal, window from the half width at half maximum of a Gaussian fit to the peak, [`doc/coincidence_filtering.md`](doc/coincidence_filtering.md)), corrects errors (`-ldpc5g`, 5G NR LDPC, the most efficient; `-polar`, `-ldpc`, `-winnow`, or block discard; `-soft-bins 16` adds timing-aware decoding, [`doc/timing_aware_reconciliation.md`](doc/timing_aware_reconciliation.md)), verifies with CRC-16 and a universal hash, and sizes the key by the finite-key bound at $\varepsilon_\mathrm{sec} = 10^{-10}$, $\varepsilon_\mathrm{cor} = 10^{-15}$ ([`doc/finite_key_procedure.md`](doc/finite_key_procedure.md)). `-dir a,b,c` pools recordings into one block, `-keystore dir` writes the key as ETSI 014 records, `-json` prints one report, and `-window-sweep 50,100,...` adds sifted bits and QBER for each window from the same load.
+`importtt` filters coincidences (drift removal, window from the half width at half maximum of a Gaussian fit to the peak, [`doc/coincidence_filtering.md`](doc/coincidence_filtering.md)), corrects errors (`-cascade`, optimized Cascade, the least disclosure, f 1.03 to 1.08; `-ldpc5g`, 5G NR LDPC, the best one-way method, for two-party; `-polar`, `-ldpc`, `-winnow`, or block discard; `-soft-bins 16` adds timing-aware decoding, [`doc/timing_aware_reconciliation.md`](doc/timing_aware_reconciliation.md)), verifies with CRC-16 and a universal hash, and sizes the key by the finite-key bound at $\varepsilon_\mathrm{sec} = 10^{-10}$, $\varepsilon_\mathrm{cor} = 10^{-15}$ ([`doc/finite_key_procedure.md`](doc/finite_key_procedure.md)). `-dir a,b,c` pools recordings into one block, `-keystore dir` writes the key as ETSI 014 records, `-json` prints one report, and `-window-sweep 50,100,...` adds sifted bits and QBER for each window from the same load.
 
 A single recording of a few seconds is too short for a finite key; continuous mode distils blocks of minutes (Continuous QKD below), and `evaluation/evaluate.py` follows any recording through every stage with figures, kept locally, never committed. Fine timestamps must be announced in one direction only (Alice to Bob), see Per-detector delays and the timing side channel in [`doc/coincidence_filtering.md`](doc/coincidence_filtering.md).
+
+### Continuous QKD
+
+```bash
+cd acquisition
+python3 tt_record_dual.py --stop-mode continuous --segment-s 10 --output-dir run/            # until Ctrl+C
+python3 continuous_qkd.py run/ --block-s 300 --keystore ../ui/import/<neighbor>             # beside it
+python3 tt_record_dual.py --stop-mode continuous --replay A.npy B.npy --output-dir run/      # without TimeTaggers
+```
+
+The recorder writes one recording pair per segment, each complete before it appears. The processor follows them: every segment is aligned from a clock model, the first from the recorder's live tracker and every later one from the segment before, which also keeps only the clicks within 50 ns of a possible partner (a fraction of a percent of a busy detector's), so a 10 s segment of a 3 MHz detector is aligned and sifted in about 0.3 s; the full search runs only when there is no model or it fails. Each segment's aligned events stay as about 1 MB (`importtt -events-cache`) and its raw arrays are deleted; every `--block-s` seconds of data the block goes through optimized Cascade, verification and finite-key privacy amplification into the KMS import directory while the next fills. Blocks of 5 minutes reach about 70% of the key rate of hour-long ones ([`doc/finite_key_procedure.md`](doc/finite_key_procedure.md)); a stopped processor resumes from `continuous_state.json`. Details in [`acquisition/README.md`](acquisition/README.md).
 
 ### Applications
 

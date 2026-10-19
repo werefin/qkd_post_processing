@@ -174,6 +174,9 @@ type jsonReport struct {
 	BlocksDropped      int                `json:"blocks_dropped,omitempty"`
 	BitsLeakedParity   int                `json:"bits_leaked_parity,omitempty"`
 	WinnowCorrections  int                `json:"winnow_corrections,omitempty"`
+	CascadeParities    int                `json:"cascade_parities,omitempty"`
+	CascadeCorrections int                `json:"cascade_corrections,omitempty"`
+	CascadeBlocks      []int              `json:"cascade_block_sizes,omitempty"`
 	WinnowLeakedBits   int                `json:"winnow_leaked_bits,omitempty"`
 	LDPCBlocks         int                `json:"ldpc_blocks,omitempty"`
 	LDPCConverged      int                `json:"ldpc_converged,omitempty"`
@@ -586,6 +589,8 @@ func main() {
 	chunkSize := flag.Int("chunk", 2048, "step 3 CRC chunk size (bits); with -winnow too, the CRC pass after correction")
 	keystoreDir := flag.String("keystore", "", "directory to save the final key into (ETSI 014 key_ID/key JSON); empty = don't save")
 	keystoreMax := flag.Int("keystore-max", 0, "maximum keys to keep in -keystore, 0 = unlimited; existing keys are never evicted, only this run's own new keys are held back past the cap")
+	cascade := flag.Bool("cascade", false, "correct errors with optimized Cascade (cascade.go): the least disclosure, f about 1.03-1.07, interactive, so single-site only")
+	cascadePasses := flag.Int("cascade-passes", 0, "Cascade passes, 0 = the measured default of 3")
 	winnow := flag.Bool("winnow", false, "correct errors with Winnow instead of discarding blocks (see winnow.go/pipeline_winnow.go)")
 	winnowBlocks := flag.String("winnow-blocks", "", "comma-separated block size per Winnow pass; empty plans them from the sample QBER: a power of two holding about 0.45 errors, doubling each pass (qkd.WinnowSchedule)")
 	winnowSample := flag.Float64("winnow-sample", 0.05, "fraction of sifted bits sacrificed to measure QBER directly before Winnow correction")
@@ -595,7 +600,7 @@ func main() {
 	ldpcWr := flag.Int("ldpc-wr", 10, "LDPC row weight (check node degree); tune rate=1-wc/wr comfortably below 1-h2(QBER), not just barely under it; a regular code's real decoding threshold runs below the Shannon bound, see ldpc_test.go")
 	ldpcIterations := flag.Int("ldpc-iterations", 0, "belief propagation iteration cap per block, 0 = default 50")
 	ldpcSample := flag.Float64("ldpc-sample", 0.05, "fraction of sifted bits sacrificed to measure QBER directly before LDPC correction")
-	ldpc5g := flag.Bool("ldpc5g", false, "correct errors with 5G NR LDPC (TS 38.212 matrices from py3gpp, belief propagation from the ldpc library, blind reconciliation), the most efficient method; needs ec/requirements.txt")
+	ldpc5g := flag.Bool("ldpc5g", false, "correct errors with 5G NR LDPC (TS 38.212 matrices from py3gpp, belief propagation from the ldpc library, blind reconciliation), the best one-way method, for two-party; needs ec/requirements.txt")
 	polar := flag.Bool("polar", false, "correct errors with polar codes (successive cancellation list decoding) instead of discarding blocks (see polar.go/pipeline_polar.go)")
 	polarN := flag.Int("polar-n", 0, "polar codeword length in bits, must be a power of two; 0 = largest power of two covering the remaining sifted key, at most 2^16")
 	polarMargin := flag.Float64("polar-margin", 0.02, "starting rate margin below the per-block capacity; on a failed block hash the margin rises by 0.02 and only the extra frozen values are revealed (rate-adaptive)")
@@ -641,15 +646,15 @@ func main() {
 		os.Exit(2)
 	}
 	methods := 0
-	for _, m := range []bool{*winnow, *ldpc, *polar, *searchMatrix, *ldpc5g} {
+	for _, m := range []bool{*winnow, *ldpc, *polar, *searchMatrix, *ldpc5g, *cascade} {
 		if m {
 			methods++
 		}
 	}
 	if methods > 1 {
-		fail(*jsonOut, "-winnow, -ldpc, -polar, -ldpc5g and -search-matrix are mutually exclusive")
+		fail(*jsonOut, "-cascade, -winnow, -ldpc, -polar, -ldpc5g and -search-matrix are mutually exclusive")
 	}
-	if *epochS > 0 && (*winnow || *ldpc || *polar || *searchMatrix) {
+	if *epochS > 0 && (*winnow || *ldpc || *polar || *searchMatrix || *cascade) {
 		fail(*jsonOut, "-epoch-s only applies to the default block-discard method, not -winnow/-ldpc/-polar/-search-matrix")
 	}
 	if *softBins < 0 || (*softBins > 0 && !*ldpc && !*polar && !*ldpc5g) {
@@ -675,7 +680,7 @@ func main() {
 		}
 	}
 	if *role != "" {
-		if *winnow || *ldpc || *searchMatrix || *epochS > 0 || *calibrateDelays != "" {
+		if *winnow || *ldpc || *searchMatrix || *cascade || *epochS > 0 || *calibrateDelays != "" {
 			fail(*jsonOut, "two-party mode runs polar or 5G NR LDPC correction only")
 		}
 		method := "polar"
@@ -835,7 +840,13 @@ func main() {
 	t0 := time.Now()
 	var finalKeyBytes []byte
 	var rep jsonReport
-	if *winnow {
+	if *cascade {
+		if !*jsonOut {
+			field("Method (step 2/3)", "optimized Cascade (passes=%d, sample=%.2f, chunk=%d)", *cascadePasses, *winnowSample, *chunkSize)
+		}
+		finalKeyBytes, rep = runCascadePipeline(aliceEv, bobEv, window, *cascadePasses, *winnowSample, *chunkSize, alignBits, *jsonOut)
+		rep.Method = "cascade"
+	} else if *winnow {
 		var blockSizes []int
 		var err error
 		if *winnowBlocks != "" {
@@ -1203,6 +1214,54 @@ func runWinnowPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, blockS
 		LeakedBitsTotal:   res.LeakedBits,
 		FinalKeyBits:      len(res.FinalKeyBits),
 		CompressionRate:   rate,
+	}
+}
+
+// runCascadePipeline runs qkd.RunCascade and prints the same report as the other methods
+func runCascadePipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, passes int, sampleFraction float64, chunkSize, alignBits int, jsonOut bool) ([]byte, jsonReport) {
+	res, err := qkd.RunCascade(aliceEv, bobEv, qkd.CascadeRunConfig{
+		CoincidenceWindowPS: window, SampleFraction: sampleFraction, Cascade: qkd.CascadeConfig{Passes: passes}, Seed: 1,
+		ChunkSize: chunkSize, KeyAlignBits: alignBits, Asymptotic: keyOpts.asymptotic, FiniteKey: keyOpts.finite,
+		ExpectedQBER: keyOpts.expectedQBER,
+	})
+	if err != nil {
+		fail(jsonOut, "pipeline error: %v", err)
+	}
+	cv := res.CRCVerify
+	rate := 0.0
+	if len(cv.SurvivingAlice) > 0 {
+		rate = float64(len(res.FinalKeyBits)) / float64(len(cv.SurvivingAlice))
+	}
+	if !jsonOut {
+		section("(1): sifting")
+		field("Alice clicks in coincidence range", "%d", len(aliceEv))
+		field("Bob clicks in coincidence range", "%d", len(bobEv))
+		field("Sifted bits", "%d", res.SiftedBits)
+
+		section("(4 before 2/3): QBER from a sacrificed public sample")
+		field("Sample bits", "%d (%.1f%% of sifted)", res.QBER.SampleBits, 100*float64(res.QBER.SampleBits)/float64(max(1, res.SiftedBits)))
+		field("Error bits in sample", "%d", res.QBER.ErrorBits)
+		field("QBER estimate", "%.4f", res.QBER.QBER)
+
+		section(fmt.Sprintf("(2): optimized Cascade (blocks=%v)", res.Cascade.BlockSizes))
+		field("Bits corrected toward Alice", "%d", res.Cascade.Corrections)
+		field("Parities disclosed", "%d (%d more inferred, %d searches)", res.Cascade.Parities, res.Cascade.Inferred, res.Cascade.Searches)
+
+		section(fmt.Sprintf("(3): error verification (chunk=%d bits, CRC-16)", chunkSize))
+		field("Chunks total", "%d", cv.ChunksTotal)
+		field("Chunks kept", "%d", cv.ChunksKept)
+		field("Chunks dropped", "%d", cv.ChunksDropped)
+		field("Bits surviving", "%d", len(cv.SurvivingAlice))
+		field("Bits leaked (CRCs)", "%d", cv.LeakedBits)
+
+		printFiniteKey(res.FiniteKey)
+		printSanityAndKey(cv.SurvivingAlice, cv.SurvivingBob, res.LeakedBits, res.FinalKeyBits, res.FinalKeyBytes)
+	}
+	return res.FinalKeyBytes, jsonReport{
+		SiftedBits: res.SiftedBits, CascadeParities: res.Cascade.Parities, CascadeCorrections: res.Cascade.Corrections,
+		CascadeBlocks: res.Cascade.BlockSizes, FiniteKey: toFiniteKeyJSON(res.FiniteKey),
+		ChunksTotal: cv.ChunksTotal, ChunksKept: cv.ChunksKept, ChunksDropped: cv.ChunksDropped, BitsLeakedCRC: cv.LeakedBits,
+		QBER: res.QBER.QBER, LeakedBitsTotal: res.LeakedBits, FinalKeyBits: len(res.FinalKeyBits), CompressionRate: rate,
 	}
 }
 
@@ -1609,9 +1668,8 @@ func loadRecording(dir string, mpWindowPS, windowPS int64, filter bool, driftCfg
 	go func() { defer wg.Done(); mpB = detectMultiPhoton(tsB, chB, mpWindowPS) }()
 	wg.Wait()
 
-	// one side often records ~50x the other's clicks, nearly all unpaired: on the raw arrays, keep only
-	// clicks that could coincide, on both sides, since either can be the busy one; the margin covers
-	// detector delays, applied later, so the exact prune below sees every click it would have kept
+	// keep only clicks that could coincide, on both sides since either can be the busy one; the margin covers
+	// the detector delays applied later, so the exact prune below sees every click it would have kept
 	radius := pruneRadiusPS(windowPS, r.report)
 	margin := radius + maxDelayPS(delays)
 	bOnA := make([]int64, len(tsB))

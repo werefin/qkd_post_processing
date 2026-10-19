@@ -59,6 +59,49 @@ def _pair_residuals(a, b, lag_ps, slope_ps_per_s, ref_ps, radius_ps):
     return times, residuals
 
 
+@njit(cache=True, nogil=True)
+def _pair_residuals_by_b(a, b, lag_ps, slope_ps_per_s, ref_ps, radius_ps):
+    '''_pair_residuals walking B, for when B is the far smaller side: the same pairs, A's clicks looked up'''
+    n_a = len(a)
+    count = 0
+    lo = 0
+    for k in range(len(b)):
+        t = b[k] - lag_ps
+        lag = lag_ps + slope_ps_per_s * ((t - ref_ps) / PS_PER_S)
+        while lo < n_a and a[lo] < b[k] - lag - radius_ps:
+            lo += 1
+        i = lo
+        while i < n_a and a[i] <= b[k] - lag + radius_ps:
+            count += 1
+            i += 1
+    times = np.empty(count, np.float64)
+    residuals = np.empty(count, np.float64)
+    m = 0
+    lo = 0
+    for k in range(len(b)):
+        t = b[k] - lag_ps
+        lag = lag_ps + slope_ps_per_s * ((t - ref_ps) / PS_PER_S)
+        while lo < n_a and a[lo] < b[k] - lag - radius_ps:
+            lo += 1
+        i = lo
+        while i < n_a and a[i] <= b[k] - lag + radius_ps:
+            exact = lag_ps + slope_ps_per_s * ((a[i] - ref_ps) / PS_PER_S)
+            r = (b[k] - a[i]) - exact
+            if -radius_ps < r < radius_ps:
+                times[m] = a[i]
+                residuals[m] = r
+                m += 1
+            i += 1
+    return times[:m], residuals[:m]
+
+
+def pair_residuals(a, b, lag_ps, slope_ps_per_s, ref_ps, radius_ps):
+    '''Every pair within radius of the lag model, walking whichever side has fewer clicks'''
+    if len(b) * 8 < len(a):
+        return _pair_residuals_by_b(a, b, lag_ps, slope_ps_per_s, ref_ps, radius_ps)
+    return _pair_residuals(a, b, lag_ps, slope_ps_per_s, ref_ps, radius_ps)
+
+
 @njit(cache=True, nogil=True, parallel=True)
 def _skew_scan(times, residuals, ref_ps, slopes, radius_ps, bin_ps, width_bins):
     '''For each trial slope, the fullest window of width_bins after removing that slope, and where it sits'''
@@ -188,7 +231,7 @@ class LiveTracker:
         ranked = []
         for cand, cscore in zip(coarse['candidate_lags_ps'], coarse['candidate_scores']):
             lag0 = float(cand + (b[0] - a[0]))  # the coarse lag counts from the slices' first clicks
-            times, res = _pair_residuals(a, b, lag0, 0.0, ref, radius)
+            times, res = pair_residuals(a, b, lag0, 0.0, ref, radius)
             if times.size >= 10:
                 pre = self._scan(times, res, ref, radius, span, passes=((20 * PS_PER_NS, 40 * PS_PER_NS),))
                 ranked.append((pre['score'], lag0, cscore, times, res))
@@ -246,7 +289,7 @@ class LiveTracker:
             a_c = self.a[np.searchsorted(self.a, t0):np.searchsorted(self.a, t1)]
             b_lo = np.searchsorted(self.b, t0 + self.lag_at(t0) - self.radius_ps - 1)
             b_hi = np.searchsorted(self.b, t1 + self.lag_at(t1) + self.radius_ps + 1)
-            times, res = _pair_residuals(a_c, self.b[b_lo:b_hi], self.lag, self.slope, self.ref, self.radius_ps)
+            times, res = pair_residuals(a_c, self.b[b_lo:b_hi], self.lag, self.slope, self.ref, self.radius_ps)
             self.pairs.append((times, res + self.lag_at(times)))
             self._chunk_point(t0, t1, res, a_c.size)
             self.done = t1
@@ -343,6 +386,9 @@ class LiveTracker:
         now = self.done
         delay = (self.b0 - self.a0) + self.lag_at(now) if self.a0 is not None else None
         out.update({
+            # the clock model in absolute timestamps, so a continuous processor can start from it
+            'model': None if delay is None else {'delay_b_minus_a_ps': int(round(delay)), 't_ref_ps': int(self.a0 + now),
+                                                 'slope_ps_per_s': float(self.slope)},
             'lag_ns': self.lag_at(now) / 1e3, 'delay_b_minus_a_ps': None if delay is None else int(round(delay)),
             'skew_ppb': self.slope / 1e3, 'skew_err_ppb': self.slope_err / 1e3,
             'sigma_ps': self.sigma, 'hwhm_ps': hwhm,

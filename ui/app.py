@@ -114,7 +114,7 @@ def healthz():
     return 'ok'
 
 
-# ---------- key management system client
+# Key management system client
 
 class KMSError(Exception):
     pass
@@ -221,7 +221,7 @@ def api_kms_dec():
                     'keys': [{'key_ID': k['key_ID'], 'fingerprint': _fingerprint(k['key'])} for k in data['keys']]})
 
 
-# ---------- recordings
+# Recordings
 
 def _list_recordings():
     return sorted(p.name for p in RECORDINGS_DIR.glob('*_timestamp_sequence.npy'))
@@ -332,11 +332,11 @@ def api_delete_recording(base):
     return jsonify({'deleted': base, 'freed_bytes': _delete_recording(base), 'recordings': _list_recordings()})
 
 
-# ---------- simulator
+# Simulator
 
 # Default CRC chunk per method: polar and LDPC fix or fail whole blocks, so a coarse chunk keeps
 # the 16-bit-per-chunk disclosure small; Winnow leaves scattered errors and needs fine chunks
-_DEFAULT_CHUNK = {'ldpc5g': 1024, 'polar': 1024, 'ldpc': 1024, 'winnow': 128}
+_DEFAULT_CHUNK = {'ldpc5g': 1024, 'polar': 1024, 'ldpc': 1024}
 
 
 def _add_arg(body, args, flag, key, cast):
@@ -348,8 +348,10 @@ def _add_arg(body, args, flag, key, cast):
 def _method_args(body, args, real):
     '''Error-correction and key-length flags shared by the simulator and real extraction; real adds
     the coincidence-filter and timing options only cmd/importtt has'''
-    method = body.get('method', 'ldpc5g')
-    if method == 'ldpc5g':
+    method = body.get('method', 'cascade')
+    if method == 'cascade':
+        args.append('-cascade')
+    elif method == 'ldpc5g':
         args.append('-ldpc5g')
     elif method == 'polar':
         args.append('-polar')
@@ -413,7 +415,7 @@ def api_run():
     return jsonify(metrics)
 
 
-# ---------- acquisition config and recording
+# Acquisition config and recording
 
 def _validate_config(cfg):
     if not isinstance(cfg.get('sites'), dict) or not cfg['sites']:
@@ -552,7 +554,7 @@ def api_acquire_live():
                     'status': _acquire['live']})
 
 
-# ---------- continuous QKD: the recorder in continuous mode, and the processor distilling its blocks
+# Continuous QKD: the recorder in continuous mode, and the processor distilling its blocks
 
 _CONT_PREFIX = 'CONT '  # continuous_qkd.py: one JSON status per line
 _cont = {'proc': None, 'run': None, 'status': None, 'log': collections.deque(maxlen=400), 'params': None, 'started_at': None}
@@ -588,10 +590,10 @@ def api_continuous_start():
         speed = float((body.get('replay') or {}).get('speed', 1))
     except (TypeError, ValueError):
         return jsonify({'error': 'segment, block and speed must be numbers'}), 400
-    method = body.get('method', 'ldpc5g')
+    method = body.get('method', 'cascade')
     neighbor = body.get('neighbor') or ''
-    if method not in ('ldpc5g', 'polar') or not 1 <= segment_s <= 600 or not 10 <= block_s <= 86400 or speed <= 0:
-        return jsonify({'error': 'method ldpc5g or polar, segments of 1-600 s, blocks of 10 s to a day'}), 400
+    if method not in ('cascade', 'ldpc5g', 'polar') or not 1 <= segment_s <= 600 or not 10 <= block_s <= 86400 or speed <= 0:
+        return jsonify({'error': 'method cascade, ldpc5g or polar, segments of 1-600 s, blocks of 10 s to a day'}), 400
     if neighbor and neighbor not in _neighbors():
         return jsonify({'error': f'{neighbor} is not a QKD link of this node'}), 400
     with _acquire_lock:
@@ -654,7 +656,7 @@ def api_continuous_status():
                     'started_at': _cont['started_at'], 'status': _cont['status'], 'log': list(_cont['log'])[-150:]})
 
 
-# ---------- coincidence-peak analysis, cached per recording pair
+# Coincidence-peak analysis, cached per recording pair
 
 _ANALYSIS_CACHE_SIZE = 4
 _analysis_cache = collections.OrderedDict()  # pair and file versions, then report, diagnostics, plots
@@ -776,7 +778,7 @@ def _prepared_dirs(pairs):
             shutil.rmtree(d, ignore_errors=True)
 
 
-# ---------- background jobs: key extraction and delay calibration, one at a time
+# Background jobs: key extraction and delay calibration, one at a time
 
 _job_ids = itertools.count(1)
 _jobs = collections.OrderedDict()
@@ -1166,7 +1168,7 @@ def api_job(job_id):
     return jsonify(_job_view(job))
 
 
-# ---------- CHSH diagnostic
+# CHSH diagnostic
 
 _chsh_last = {'columns': None, 'rows': None, 'filename': None}
 

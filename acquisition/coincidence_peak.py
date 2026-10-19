@@ -390,8 +390,12 @@ def _coarse_search(
     lag_bins = np.arange(-max_lag_bins, max_lag_bins + 1, dtype=np.int64)
     values = correlation[(-lag_bins) % n_fft]
     del correlation
-    median = float(np.median(values))
-    mad = float(np.median(np.abs(values - median)))
+    # robust noise level from a 1-in-64 subsample: exact medians of tens of millions of lags cost a second,
+    # and the scores are only ranked, which a monotone normalisation leaves unchanged
+    stride = max(1, len(values) // 300_000)
+    sub = values[::stride]
+    median = float(np.median(sub))
+    mad = float(np.median(np.abs(sub - median)))
     scale = 1.4826 * mad
     if not math.isfinite(scale) or scale <= 0:
         scale = float(np.std(values)) or 1.0
@@ -760,13 +764,8 @@ def analyze_arrays(
     lag_hint_ps: int | None = None,
     lag_hint_slope_ps_per_s: float = 0.0,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Core search; analyze_files wraps this with file loading, but a live monitor can call
-    it directly on an in-memory snapshot. fit_skew=False skips the slow segment fit.
-    coarse_span_ps: the coarse FFT only proposes candidates, so it runs on this much of the start
-    (at least twice max_lag_ps) and falls back to everything if no candidate refines to a peak.
-    lag_hint_ps, lag_hint_slope_ps_per_s: a predicted relative lag at the first click and its drift, from a
-    previous recording of the same link; checked on the clock-corrected peak and refined without any coarse
-    search, or, if it gives no unambiguous peak, ignored for the usual search"""
+    """Core search on in-memory arrays: a predicted lag and drift first (lag_hint_ps), then a coarse FFT on the
+    first coarse_span_ps, a joint lag and skew search, and the coarse FFT on everything, until one is sure"""
     if fine_bin_ps > refine_radius_ps:
         raise AnalysisError(
             "fine bin width must not exceed the refinement radius"
@@ -993,6 +992,38 @@ def analyze_arrays(
             f"{selected.window.score:.2f}, required {MIN_PEAK_SCORE:.2f})"
         )
     return report, diagnostics
+
+
+@njit(cache=True, nogil=True)
+def _near_model(x, ref, ref_keep, delay_ref, slope_ps_per_s, t_ref, radius_ps, sign):
+    """Marks each x within radius of some kept ref once ref is mapped onto x's clock through the delay model;
+    sign 1 maps B onto A (a = b - delay), -1 maps A onto B --> both ascending, one pass over each"""
+    keep = np.zeros(len(x), np.bool_)
+    i = 0
+    for k in range(len(ref)):
+        if not ref_keep[k]:
+            continue
+        r = ref[k]
+        t = r if sign == -1 else r - delay_ref
+        delay = delay_ref + slope_ps_per_s * ((t - t_ref) / PS_PER_S)
+        target = r - delay if sign == 1 else r + delay
+        lo = target - radius_ps
+        while i < len(x) and x[i] < lo:
+            i += 1
+        j = i
+        while j < len(x) and x[j] <= target + radius_ps:
+            keep[j] = True
+            j += 1
+    return keep
+
+
+def prune_to_model(a: np.ndarray, b: np.ndarray, delay_ref: float, slope_ps_per_s: float, t_ref: float, radius_ps: int):
+    """Clicks of A and of B within radius of a click of the other side under the clock model b = a + delay(a),
+    the only ones that can pair; on a busy link a percent or two of the clicks"""
+    keep_b_all = np.ones(len(b), np.bool_)
+    keep_a = _near_model(a, b, keep_b_all, float(delay_ref), float(slope_ps_per_s), float(t_ref), int(radius_ps), 1)
+    keep_b = _near_model(b, a, keep_a, float(delay_ref), float(slope_ps_per_s), float(t_ref), int(radius_ps), -1)
+    return keep_a, keep_b
 
 
 def kwargs_from_config(cfg: dict) -> dict[str, Any]:

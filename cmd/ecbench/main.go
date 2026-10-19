@@ -115,7 +115,24 @@ func methods() []method {
 		})
 		return out, leak, n, nil
 	}}
-	return []method{polar(1<<14, 1), polar(1<<16, 1), polar(1<<16, 8), polar(1<<16, 32), polar(1<<20, 8), regular}
+	cascade := func(n int) method {
+		return method{fmt.Sprintf("Cascade, optimized n=2^%d", int(math.Log2(float64(n)))), n,
+			func(a, b []byte, q []float64, qber float64) ([]byte, int, int, error) {
+				out, leak := parallelBlocks(a, b, q, n, func(a, b []byte, _ []float64) ([]byte, int) {
+					c, st := qkd.CascadeReconcile(a, b, qber, qkd.CascadeConfig{Seed: 1})
+					return c, st.Parities
+				})
+				return out, leak, n, nil
+			}}
+	}
+	winnow := method{"Winnow n=2^17", 1 << 17, func(a, b []byte, q []float64, qber float64) ([]byte, int, int, error) {
+		out, leak := parallelBlocks(a, b, q, 1<<17, func(a, b []byte, _ []float64) ([]byte, int) {
+			c, l, _ := qkd.WinnowReconcile(a, b, qkd.WinnowConfig{BlockSizes: qkd.WinnowSchedule(qber, len(a)), Seed: 1})
+			return c, l
+		})
+		return out, leak, 1 << 17, nil
+	}}
+	return []method{cascade(1 << 14), cascade(1 << 17), winnow, polar(1<<14, 1), polar(1<<16, 1), polar(1<<16, 8), polar(1<<16, 32), polar(1<<20, 8), regular}
 }
 
 func main() {

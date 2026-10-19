@@ -314,7 +314,8 @@
             <div class="field">
               <label class="field-label" for="extract-method">Error correction</label>
               <select class="input" id="extract-method">
-                <option value="ldpc5g" selected>5G NR LDPC, blind (most efficient)</option>
+                <option value="cascade" selected>Cascade, optimized (least disclosure)</option>
+                <option value="ldpc5g">5G NR LDPC, blind (one-way)</option>
                 <option value="polar">Polar codes, rate-adaptive</option>
                 <option value="ldpc">LDPC belief propagation</option>
                 <option value="winnow">Winnow</option>
@@ -378,7 +379,7 @@
     <section class="section" id="section-continuous">
       <div class="section-header section-header--wide">
         <h1 class="section-title">Continuous <span class="grad-text">QKD</span></h1>
-        <p class="section-sub">Records without end in segments; each segment is aligned and sifted as it lands, its raw arrays replaced by about 1 MB of events, and every block of data goes through 5G NR LDPC, verification and finite-key privacy amplification into the chosen link's KMS pool while the next block fills. Blocks of 5 minutes reach about 70% of the key rate of hour-long blocks; a block of seconds certifies nothing.</p>
+        <p class="section-sub">Records without end in segments; each segment is aligned and sifted as it lands, its raw arrays replaced by about 1 MB of events, and every block of data goes through optimized Cascade (or 5G NR LDPC), verification and finite-key privacy amplification into the chosen link's KMS pool while the next block fills. Blocks of 5 minutes reach about 70% of the key rate of hour-long blocks; a block of seconds certifies nothing.</p>
       </div>
       <div class="card">
         <div class="card-head">
@@ -404,7 +405,7 @@
             <div class="field"><label class="field-label" for="cont-segment">Segment (s)</label><input class="input" id="cont-segment" type="number" value="10" min="1"></div>
             <div class="field">
               <label class="field-label" for="cont-method">Error correction</label>
-              <select class="input" id="cont-method"><option value="ldpc5g">5G NR LDPC</option><option value="polar">polar SCL8</option></select>
+              <select class="input" id="cont-method"><option value="cascade">Cascade, optimized</option><option value="ldpc5g">5G NR LDPC</option><option value="polar">polar SCL8</option></select>
             </div>
           </div>
           <div class="btn-row">
@@ -614,14 +615,16 @@
             <div class="field">
               <label class="field-label" for="f-method">Error correction</label>
               <select class="input" id="f-method">
-                <option value="ldpc5g" selected>5G NR LDPC, blind (most efficient)</option>
+                <option value="cascade" selected>Cascade, optimized (least disclosure)</option>
+                <option value="ldpc5g">5G NR LDPC, blind (one-way)</option>
                 <option value="polar">Polar codes, rate-adaptive</option>
                 <option value="ldpc">LDPC belief propagation</option>
                 <option value="winnow">Winnow</option>
                 <option value="discard">Block discard (baseline)</option>
               </select>
             </div>
-            <div id="method-ldpc5g"><p class="hint" style="padding:0 0 .6rem">3GPP TS 38.212 base graph 1 (py3gpp), exact belief propagation (ldpc library); the rate adapts by revealing punctured positions while a frame fails.</p></div>
+            <div id="method-cascade"><p class="hint" style="padding:0 0 .6rem">Brassard-Salvail Cascade as optimized by Martinez-Mateo et al. (2015): blocks from the QBER growing x4, no parity disclosed twice, halves inferred, corrections cascading back; f about 1.03-1.07.</p></div>
+            <div id="method-ldpc5g" style="display:none"><p class="hint" style="padding:0 0 .6rem">3GPP TS 38.212 base graph 1 (py3gpp), exact belief propagation (ldpc library); the rate adapts by revealing punctured positions while a frame fails.</p></div>
             <div id="method-polar" class="field-row" style="display:none">
               <div class="field"><label class="field-label" for="f-polar-margin">Starting rate margin</label><input class="input" id="f-polar-margin" type="number" value="0.02" min="0" max="0.3" step="0.01"></div>
               <div class="field"><label class="field-label" for="f-polar-list">SCL list size</label><input class="input" id="f-polar-list" type="number" value="8" min="1" max="32" step="1"></div>
@@ -630,7 +633,7 @@
               <div class="checkbox-row"><input type="checkbox" id="f-search"><label for="f-search">Use a searched generator matrix (designed on independent proxy data)</label></div>
             </div>
             <div id="method-winnow" style="display:none">
-              <div class="field"><label class="field-label" for="f-winnow-blocks">Hamming block sizes per pass</label><input class="input" id="f-winnow-blocks" type="text" value="25,50,100"></div>
+              <div class="field"><label class="field-label" for="f-winnow-blocks">Block sizes per pass</label><input class="input" id="f-winnow-blocks" type="text" value="" placeholder="planned from the QBER"></div>
             </div>
             <div id="method-ldpc" class="field-row" style="display:none">
               <div class="field"><label class="field-label" for="f-ldpc-wc">Column weight (wc)</label><input class="input" id="f-ldpc-wc" type="number" value="3" min="2"></div>

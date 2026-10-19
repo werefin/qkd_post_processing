@@ -34,6 +34,7 @@ type jsonReport struct {
 	BitsLeakedParity  int            `json:"bits_leaked_parity,omitempty"`
 	WinnowCorrections int            `json:"winnow_corrections,omitempty"`
 	WinnowLeakedBits  int            `json:"winnow_leaked_bits,omitempty"`
+	CascadeParities   int            `json:"cascade_parities,omitempty"`
 	LDPCBlocks        int            `json:"ldpc_blocks,omitempty"`
 	LDPCConverged     int            `json:"ldpc_converged,omitempty"`
 	LDPCLeakedBits    int            `json:"ldpc_leaked_bits,omitempty"`
@@ -198,7 +199,7 @@ func main() {
 	windowPS := flag.Int64("window", 500, "coincidence window in picoseconds")
 	jitterPS := flag.Int64("jitter", 300, "simulated detector timing jitter in picoseconds")
 	matrixName := flag.String("matrix", "bch", "step 2 generator matrix: bch")
-	chunkSize := flag.Int("chunk", 2048, "step 3 CRC chunk size (bits); with -winnow this is the post-correction CRC pass, so it wants a much smaller value, e.g. 128")
+	chunkSize := flag.Int("chunk", 2048, "step 3 CRC chunk size (bits); with -winnow or -cascade too, the CRC pass after correction")
 	seed := flag.Int64("seed", 1, "PRNG seed for the simulation")
 	keystoreDir := flag.String("keystore", "", "directory to save the final key into (ETSI 014 key_ID/key JSON); empty = don't save")
 	searchMatrix := flag.Bool("search-matrix", false, "design a step 2 matrix by searching on independently-simulated proxy data, then apply it here, instead of -matrix (see matrixsearch.go)")
@@ -208,6 +209,7 @@ func main() {
 	searchSeed := flag.Int64("search-seed", 99, "PRNG seed for the search itself and its proxy dataset")
 	searchOfflineErr := flag.Float64("search-offline-err", 0.03, "target error rate for the simulated proxy data the search designs against; set this to match -err in real practice, never search directly on the actual dataset being reconciled")
 	searchOfflineN := flag.Int("search-offline-n", 100000, "raw attempts in the simulated proxy dataset used to design the matrix")
+	cascade := flag.Bool("cascade", false, "correct errors with optimized Cascade (cascade.go): the least disclosure, f about 1.03-1.07")
 	winnow := flag.Bool("winnow", false, "correct errors with Winnow instead of discarding blocks (see winnow.go/pipeline_winnow.go)")
 	winnowBlocks := flag.String("winnow-blocks", "", "comma-separated block size per Winnow pass; empty plans them from the sample QBER: a power of two holding about 0.45 errors, doubling each pass (qkd.WinnowSchedule)")
 	winnowSample := flag.Float64("winnow-sample", 0.05, "fraction of sifted bits sacrificed to measure QBER directly before Winnow correction")
@@ -236,13 +238,13 @@ func main() {
 	}
 
 	exclusive := 0
-	for _, on := range []bool{*winnow, *ldpc, *polar, *searchMatrix, *ldpc5g} {
+	for _, on := range []bool{*winnow, *ldpc, *polar, *searchMatrix, *ldpc5g, *cascade} {
 		if on {
 			exclusive++
 		}
 	}
 	if exclusive > 1 {
-		fail(*jsonOut, "-winnow, -ldpc, -polar, -ldpc5g and -search-matrix are mutually exclusive")
+		fail(*jsonOut, "-cascade, -winnow, -ldpc, -polar, -ldpc5g and -search-matrix are mutually exclusive")
 	}
 
 	if *softBins < 0 || (*softBins > 0 && !*ldpc && !*polar && !*ldpc5g) {
@@ -251,6 +253,8 @@ func main() {
 
 	method := "discard"
 	switch {
+	case *cascade:
+		method = "cascade"
 	case *winnow:
 		method = "winnow"
 	case *ldpc:
@@ -295,6 +299,8 @@ func main() {
 			if *searchMatrix {
 				field("Search", "designed offline at err=%.3f, n=%d, fitness=%.5f", *searchOfflineErr, *searchOfflineN, searchFitness)
 			}
+		case "cascade":
+			field("Method (step 2/3)", "optimized Cascade (sample=%.2f)", *winnowSample)
 		case "winnow":
 			field("Method (step 2/3)", "Winnow correction (blocks=%s, sample=%.2f)", *winnowBlocks, *winnowSample)
 		case "ldpc":
@@ -315,6 +321,8 @@ func main() {
 
 	var report jsonReport
 	switch method {
+	case "cascade":
+		report = runCascadePipeline(aliceEv, bobEv, *windowPS, *winnowSample, *chunkSize, *keystoreDir, *jsonOut)
 	case "winnow":
 		var blockSizes []int
 		var err error
@@ -482,6 +490,49 @@ func runWinnowPipeline(aliceEv, bobEv []qkd.DetectionEvent, windowPS int64, bloc
 		CompressionRate:   rate,
 		KeysSaved:         keysSaved,
 		ElapsedMS:         elapsed.Milliseconds(),
+	}
+}
+
+// runCascadePipeline runs qkd.RunCascade and prints the same report as the other methods
+func runCascadePipeline(aliceEv, bobEv []qkd.DetectionEvent, windowPS int64, sampleFraction float64, chunkSize int, keystoreDir string, jsonOut bool) jsonReport {
+	cfg := qkd.CascadeRunConfig{CoincidenceWindowPS: windowPS, SampleFraction: sampleFraction, Seed: 1, ChunkSize: chunkSize,
+		Asymptotic: keyOpts.asymptotic, FiniteKey: keyOpts.finite, ExpectedQBER: keyOpts.expectedQBER}
+	if keystoreDir != "" {
+		cfg.KeyAlignBits = kms.ETSI014KeySizeBits
+	}
+	t0 := time.Now()
+	res, err := qkd.RunCascade(aliceEv, bobEv, cfg)
+	elapsed := time.Since(t0)
+	if err != nil {
+		fail(jsonOut, "pipeline error: %v", err)
+	}
+	cv := res.CRCVerify
+	rate := 0.0
+	if len(cv.SurvivingAlice) > 0 {
+		rate = float64(len(res.FinalKeyBits)) / float64(len(cv.SurvivingAlice))
+	}
+	if !jsonOut {
+		section("(1): sifting")
+		field("Sifted bits", "%d", res.SiftedBits)
+
+		section("(4 before 2/3): QBER from a sacrificed public sample")
+		field("Sample bits", "%d (%.1f%% of sifted)", res.QBER.SampleBits, 100*float64(res.QBER.SampleBits)/float64(max(1, res.SiftedBits)))
+		field("Error bits in sample", "%d", res.QBER.ErrorBits)
+		field("QBER estimate", "%.4f", res.QBER.QBER)
+
+		section(fmt.Sprintf("(2): optimized Cascade (blocks=%v)", res.Cascade.BlockSizes))
+		field("Bits corrected toward Alice", "%d", res.Cascade.Corrections)
+		field("Parities disclosed", "%d (%d more inferred)", res.Cascade.Parities, res.Cascade.Inferred)
+
+		printFiniteKey(res.FiniteKey)
+		printCRCAndKey(cv, chunkSize, res.QBER.QBER, res.LeakedBits, res.FinalKeyBits, res.FinalKeyBytes, rate)
+	}
+	keysSaved := saveToKeystore(keystoreDir, res.FinalKeyBytes, jsonOut)
+	return jsonReport{
+		SiftedBits: res.SiftedBits, CascadeParities: res.Cascade.Parities, FiniteKey: toFiniteKeyJSON(res.FiniteKey),
+		ChunksTotal: cv.ChunksTotal, ChunksKept: cv.ChunksKept, ChunksDropped: cv.ChunksDropped, BitsLeakedCRC: cv.LeakedBits,
+		QBER: res.QBER.QBER, LeakedBitsTotal: res.LeakedBits, FinalKeyBits: len(res.FinalKeyBits), CompressionRate: rate,
+		KeysSaved: keysSaved, ElapsedMS: elapsed.Milliseconds(),
 	}
 }
 

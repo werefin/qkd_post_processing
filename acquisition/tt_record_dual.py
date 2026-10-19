@@ -233,6 +233,9 @@ def _drain(q: queue.Queue) -> list:
             return parts
 
 
+_LIVE_MODEL: dict = {}  # the live tracker's latest clock model, written into each continuous segment
+
+
 def live_coincidence_thread(ctx_a: TTContext, ctx_b: TTContext, stop_event: threading.Event,
                              interval_s: float, tracker_kwargs: dict) -> None:
     '''Feeds every new frame to live_peak.LiveTracker, which locks onto the peak and then follows its lag and
@@ -249,6 +252,9 @@ def live_coincidence_thread(ctx_a: TTContext, ctx_b: TTContext, stop_event: thre
             log('WARN', 'live', f'live tracker update failed, will retry with the next data: {exc}')
             continue
         status = tracker.status()
+        _LIVE_MODEL.clear()
+        if status.get('model'):
+            _LIVE_MODEL.update(status['model'])
         emit(status)
         for event in tracker.events[seen:]:
             log('INFO', 'live', event)
@@ -401,7 +407,8 @@ def _cut_segment(ctxs: list, started_at: datetime, index: int, segment_s: float,
         with open(os.path.join(tmp, f'{base}_meta.json'), 'w') as f:
             json.dump({'tt_ip': ctx.cfg['tt_ip'], 'tt_port': ctx.cfg['tt_port'], 'segment': index, 'segment_s': segment_s,
                        'n_frames': len(frames), 'n_detections': int(ch.size),
-                       'n_capped_frames': sum(1 for m in frames if m.get('capped')), 'frames': frames}, f)
+                       'n_capped_frames': sum(1 for m in frames if m.get('capped')), 'frames': frames,
+                       'live_model': dict(_LIVE_MODEL) or None}, f)
     os.rename(tmp, final)
     return name
 

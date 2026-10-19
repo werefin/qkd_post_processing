@@ -5,9 +5,8 @@ import (
 	"testing"
 )
 
-// TestUniversalHashTagBitsMatchesReviewTarget: epsCor=1e-15 needs 50 bits
-// (ceil(log2(1e15)) = 50), matching the review's "64- to 128-bit" suggestion
-// as a safe, round superset
+// TestUniversalHashTagBitsMatchesReviewTarget: epsCor=1e-15 needs ceil(log2(1e15)) = 50 bits, within the
+// review's "64- to 128-bit" suggestion as a safe, round superset
 func TestUniversalHashTagBitsMatchesReviewTarget(t *testing.T) {
 	got := UniversalHashTagBits(1e-15)
 	if got != 50 {
@@ -46,11 +45,8 @@ func TestVerifyUniversalHashAcceptsEqualStrings(t *testing.T) {
 	}
 }
 
-// TestVerifyUniversalHashRejectsDifferingStringsWithHighProbability:
-// flipping even a single bit must be caught the overwhelming majority of
-// the time across independent random seeds -- this is the collision-bound
-// property the correctness guarantee depends on, so it's checked
-// empirically here across many trials rather than asserted once
+// TestVerifyUniversalHashRejectsDifferingStringsWithHighProbability: flipping even a single bit must be
+// caught the overwhelming majority of the time across independent random seeds
 func TestVerifyUniversalHashRejectsDifferingStringsWithHighProbability(t *testing.T) {
 	r := rand.New(rand.NewSource(2))
 	const tagBits = 16 // small on purpose: makes the rare-collision case reachable in a feasible number of trials
