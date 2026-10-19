@@ -408,7 +408,7 @@ func finishTwoParty(conn Conn, alice bool, res TwoPartyResult, cfg TwoPartyConfi
 		l = SecureKeyLength(n, res.QBER.QBER, res.LeakedBits)
 	} else {
 		rep := FiniteKeyReport{Bits: n, TagBits: UniversalHashTagBits(budget.EpsCor)}
-		rep.Phi, rep.PhiPoint = crossBasisPhaseError(sampleTB, remTB, n, budget.EpsPE)
+		rep.Phi, rep.PhiPoint = crossBasisPhaseError(sampleTB, remTB, n, estimationTail(budget.EpsPE))
 		rep.LeakedBits = res.LeakedBits + rep.TagBits
 		res.FiniteKey = &rep
 		if n == 0 {
@@ -442,7 +442,7 @@ func finishTwoParty(conn Conn, alice bool, res TwoPartyResult, cfg TwoPartyConfi
 		if !rep.Verified {
 			return res, nil
 		}
-		l = FiniteKeySecureKeyLength(n, rep.Phi, rep.LeakedBits, budget.EpsCor, budget.EpsPA)
+		l = FiniteKeySecureKeyLength(n, rep.Phi, res.LeakedBits, budget.EpsCor, budget.EpsPA) // tag in the epsCor term
 	}
 	if cfg.KeyAlignBits > 0 {
 		l -= l % cfg.KeyAlignBits

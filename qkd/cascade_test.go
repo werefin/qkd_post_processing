@@ -99,3 +99,77 @@ func TestRunCascadeBeatsLDPCAndWinnow(t *testing.T) {
 		t.Fatal("Cascade should certify a verified key, longer than Winnow's")
 	}
 }
+
+// TestRunCascadeCountsErrorsFromCorrection: with nothing sacrificed, the errors correction found bound the
+// phase errors; the key is longer than with a sacrificed sample, and the bound never falls below the count
+func TestRunCascadeCountsErrorsFromCorrection(t *testing.T) {
+	t.Parallel() // heavy and independent: runs beside the other heavy tests
+	alice, bob := simulateClicks(300000, 0.05, 23)
+	cfg := CascadeRunConfig{CoincidenceWindowPS: 500, Seed: 5, ChunkSize: 1024, ExpectedQBER: 0.05}
+	free, err := RunCascade(alice, bob, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.SacrificeSample = true
+	spent, err := RunCascade(alice, bob, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("counted from correction: %d errors in %d bits, phi %.4f, %d-bit key; sacrificed sample: %d bits, phi %.4f, %d-bit key",
+		free.QBER.ErrorBits, free.QBER.SampleBits, free.FiniteKey.Phi, len(free.FinalKeyBits), spent.QBER.SampleBits, spent.FiniteKey.Phi, len(spent.FinalKeyBits))
+	if !free.FiniteKey.Verified || len(free.FinalKeyBits) <= len(spent.FinalKeyBits) || free.FiniteKey.Phi < free.QBER.QBER {
+		t.Fatal("counting errors from correction should give a verified, longer key with a bound above the count")
+	}
+	// the chain rule joining the two bases is charged only when the bits double as estimation data
+	if free.FiniteKey.ChainBits < 60 || spent.FiniteKey.ChainBits != 0 {
+		t.Fatalf("chain rule charged %d and %d bits", free.FiniteKey.ChainBits, spent.FiniteKey.ChainBits)
+	}
+}
+
+// TestCorrectionSampleCountsDroppedChunksAsErrors: a chunk the CRC drops has unknown errors, so every bit counts
+func TestCorrectionSampleCountsDroppedChunksAsErrors(t *testing.T) {
+	r := rand.New(rand.NewSource(4))
+	n := 4096
+	rem := timedBits{Alice: randomBits(r, n), Bob: make([]byte, n), Dt: make([]int64, n), Basis: make([]Basis, n)}
+	copy(rem.Bob, rem.Alice)
+	rem.Bob[10] ^= 1 // one real error in the first chunk, which correction fixes
+	corrected := append([]byte(nil), rem.Alice...)
+	corrected[3000] ^= 1 // a residual error leaves the third chunk unverified
+	s := correctionSample(rem, corrected, 1024)
+	errs := 0
+	for i := range s.Alice {
+		if s.Alice[i] != s.Bob[i] {
+			errs++
+		}
+	}
+	if errs != 1+1024 {
+		t.Fatalf("%d errors counted, want the real one plus the whole dropped chunk, 1025", errs)
+	}
+}
+
+// TestCorrectionBeatsSampleAcrossSizes: with the chain rule charged in full, counting errors by correction still
+// certifies a longer key than sacrificing a sample, at every block size and QBER tried
+func TestCorrectionBeatsSampleAcrossSizes(t *testing.T) {
+	t.Parallel() // heavy and independent: runs beside the other heavy tests
+	for _, n := range []int{60_000, 200_000, 600_000} {
+		for _, q := range []float64{0.02, 0.05, 0.08} {
+			alice, bob := simulateClicks(n, q, int64(n)+int64(q*1000))
+			cfg := CascadeRunConfig{CoincidenceWindowPS: 500, Seed: 5, ChunkSize: 1024, ExpectedQBER: q}
+			free, err := RunCascade(alice, bob, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.SacrificeSample = true
+			spent, err := RunCascade(alice, bob, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("%7d sifted, QBER %.0f%%: by correction %6d bits (phi %.4f, chain rule %d bits), sacrificed sample %6d bits (phi %.4f), x%.2f",
+				free.SiftedBits, 100*q, len(free.FinalKeyBits), free.FiniteKey.Phi, free.FiniteKey.ChainBits,
+				len(spent.FinalKeyBits), spent.FiniteKey.Phi, float64(len(free.FinalKeyBits))/max(1, float64(len(spent.FinalKeyBits))))
+			if len(free.FinalKeyBits) <= len(spent.FinalKeyBits) {
+				t.Fatalf("%d clicks, QBER %.2f: correction %d bits, sample %d bits", n, q, len(free.FinalKeyBits), len(spent.FinalKeyBits))
+			}
+		}
+	}
+}

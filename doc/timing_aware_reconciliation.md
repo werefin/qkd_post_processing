@@ -1,6 +1,6 @@
 ### Timing-aware soft reconciliation
 
-**Status:** formal procedure, implemented in `softrecon.go` and wired into the LDPC and polar strategies (`RunLDPC`, `RunPolar`, CLI flag `-soft-bins`). It changes how efficiently error correction uses information that is already public; it does not change what is disclosed to an adversary beyond what the reconciliation code itself discloses, and it does not change privacy amplification.
+**Status**: formal procedure, implemented in `softrecon.go` and wired into the LDPC and polar strategies (`RunLDPC`, `RunPolar`, CLI flag `-soft-bins`). It changes how efficiently error correction uses information that is already public; it does not change what is disclosed to an adversary beyond what the reconciliation code itself discloses, and it does not change privacy amplification.
 
 ### Motivation
 
@@ -59,10 +59,14 @@ clamped to $[1, N-1]$. Alice discloses the $N-K$ frozen values; Bob decodes with
 | 6% accidentals (3.7%) | LDPC (3,10), rate 0.7: blocks converged / finite-key final key | 3 of 27 / 0 bits | 27 of 27 / 34,792 bits |
 | 6% accidentals | disclosure bound, bits per bit | $H_\text{flat} = 0.237$ | $H_\text{soft} = 0.163$ |
 
+### Timing and Cascade
+
+Cascade was also tried with per-bit error rates from timing: blocks closing at equal expected errors, searches splitting at half a block's expected errors. On a simulated link after coincidence filtering, a window of $\pm$HWHM with 9% accidentals, the timing-aware bound $H_\text{soft}$ is 0.3% below the flat one, so there is almost nothing to gain, and uneven blocks lose the exact $\log_2$ cost of power-of-two ones: it disclosed 2% more than flat Cascade. Only at windows of $\pm 3\sigma$, 30% accidentals, did it disclose 1% less, and filtering such a window down to the HWHM gains far more. The coincidence filter has already taken what timing says about errors, so Cascade stays flat.
+
 ### Limitations
 
 - The gain depends on how much $q(\Delta t)$ varies. When accidentals dominate the peak centre as well as the edges, $q(\Delta t)$ is nearly flat and the gain is small.
 - At a fixed margin $\delta$, the polar path's rate rises toward the lower bound $H_\text{soft}$, so more blocks may fail. $\delta$ trades disclosure against block failures, as it does for the flat procedure.
 - $\hat q_b$ is estimated from a finite sample. Too many bins for the sample size makes bins noisy; the shrinkage pulls them toward the flat QBER, so the decoder falls back to flat decoding, which costs efficiency, not security.
-- Final-key figures above use the finite-key bound at $\varepsilon_\text{sec} = 10^{-10}$ with the exact hypergeometric phase-error bound, now the default for LDPC and polar, and polar is rate-adaptive (Error correction and Phase-error estimation in `doc/finite_key_procedure.md`).
+- Final-key figures above use the finite-key bound at $\varepsilon_\text{sec} = 10^{-10}$ with the exact hypergeometric phase-error bound, now the default for LDPC and polar, and polar is rate-adaptive (Error correction methods and Parameter estimation in `doc/finite_key_procedure.md`).
 - Soft information is standard in continuous-variable QKD reconciliation, and timing-derived reliability may have been used in discrete-variable systems; treat this as a procedure tailored to this pipeline, not a claim of priority.

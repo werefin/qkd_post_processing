@@ -448,6 +448,7 @@ function poll(name, fn, ms) {
 }
 
 function navigate(section) {
+  window.history.replaceState(null, '', '#' + section);  // the simulator's own history shadows the global
   document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.section === section));
   document.querySelectorAll('.section').forEach(el => el.classList.toggle('active', el.id === 'section-' + section));
   stopPolls();
@@ -457,6 +458,7 @@ function navigate(section) {
   else if (section === 'extract') { refreshRecordings(); refreshNode(); poll('jobs', refreshJobs, 2000); }
   else if (section === 'network') { poll('node', refreshNode, 10000); refreshAudit(); }
   else if (section === 'continuous') { refreshConfigLinks(); refreshRecordings(); refreshNode(); poll('continuous', refreshContinuous, 1500); }
+  else if (section === 'clog') { clogLoadOptions(); refreshRecordings().then(fillClogRecordings); refreshClogFiles(); poll('clog', refreshClog, 1000); }
   else if (section === 'evaluate') { refreshRecordings().then(renderEvalPairs); refreshEvaluations(); poll('evaljob', refreshEvalJob, 2000); }
   else if (section === 'chsh') refreshRecordings();
   else if (section === 'acquire') { refreshRecordings(); poll('acquire', refreshAcquireStatus, 2000); poll('live', refreshLive, 1000); }
@@ -1321,4 +1323,466 @@ async function showEvaluation(name) {
         `<figure class="eval-figure"><img class="eval-fig" src="${url(encodeURIComponent(p.name) + '/' + f)}" alt="${esc(title)}" loading="lazy"><figcaption>${esc(title)}</figcaption></figure>`).join('')).join('');
 }
 
-navigate('home');
+// Coincidence log: the settings form, the QBER, the coincidence matrix, the delay histograms and the rows;
+// series colors are fixed slots validated on this surface
+const CLOG_COLORS = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9', '#e66767'];
+const CLOG_RAMP = ['#2b4d94', '#3766bd', '#4d84dd', '#7cabf1', '#b5d5fc'];
+const CLOG_PRESETS = ['30', '300', '1200', '3600', '18000'];
+const CLOG_INK = { text: '#EDF0FF', text2: '#8892B0', text3: '#5A6480', grid: '#161632', dark: '#06060F', neutral: '#111128' };
+const clog = { opts: null, status: null, started: null, live: [], liveSeen: 0, hist: null, rows: [], columns: [], written: -1, fetching: false };
+const clogTip = document.createElement('div');
+clogTip.className = 'clog-tip';
+document.body.appendChild(clogTip);
+const $c = id => document.getElementById(id);
+
+function clogFmt(v) {
+  if (v == null || !isFinite(v)) return '-';
+  const a = Math.abs(v);
+  if (a >= 1e6) return (v / 1e6).toFixed(2) + 'M';
+  if (a >= 1e4) return (v / 1e3).toFixed(1) + 'k';
+  if (Number.isInteger(v)) return String(v);
+  return a >= 100 ? v.toFixed(0) : String(Number(a >= 1 ? v.toFixed(2) : v.toPrecision(3)));
+}
+
+// One plot: thin lines (or bars), recessive grid and axes, a legend from two series, a crosshair and tooltip on hover
+function clogPlot(canvas, series, o = {}) {
+  const c = typeof canvas === 'string' ? $c(canvas) : canvas;
+  if (!c) return;
+  c._args = [series, o];
+  const dpr = window.devicePixelRatio || 1;
+  const W = c.clientWidth, H = c.clientHeight;
+  if (W <= 0 || H <= 0) return;
+  c.width = W * dpr; c.height = H * dpr;
+  const ctx = c.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const pts = series.flatMap(s => s.xs.map((x, i) => [x, s.ys[i]])).filter(([x, y]) => x != null && y != null && isFinite(y) && (!o.logY || y > 0));
+  ctx.font = '10px "JetBrains Mono", monospace';
+  if (!pts.length) {
+    ctx.fillStyle = CLOG_INK.text3;
+    ctx.fillText(o.empty || 'waiting for data...', 8, H / 2);
+    c._map = null;
+    return;
+  }
+  const mini = !!o.mini;
+  const L = mini ? 4 : 52, R = mini ? 4 : 10, T = mini ? 4 : (series.length >= 2 ? 22 : 8), B = mini ? 4 : 20;
+  let xmn = Math.min(...pts.map(p => p[0])), xmx = Math.max(...pts.map(p => p[0]));
+  if (o.xRange) [xmn, xmx] = o.xRange;
+  if (xmn === xmx) { xmn -= 1; xmx += 1; }
+  const tf = o.logY ? v => Math.log10(v) : v => v;
+  let ymn = Math.min(...pts.map(p => tf(p[1]))), ymx = Math.max(...pts.map(p => tf(p[1])));
+  if (!o.logY && o.zero !== false) ymn = Math.min(ymn, 0);
+  if (ymn === ymx) { ymn -= 1; ymx += 1; }
+  ymx += (ymx - ymn) * 0.05;
+  const X = v => L + ((v - xmn) / (xmx - xmn)) * (W - L - R);
+  const Y = v => H - B - ((tf(v) - ymn) / (ymx - ymn)) * (H - T - B);
+  c._map = { X, xmn, xmx, L, R, W, series };
+
+  ctx.strokeStyle = CLOG_INK.grid; ctx.lineWidth = 1;
+  ctx.fillStyle = CLOG_INK.text3; ctx.textAlign = 'right';
+  for (const v of clogTicks(ymn, ymx, o.logY)) {
+    const gy = H - B - ((v - ymn) / (ymx - ymn)) * (H - T - B);
+    ctx.beginPath(); ctx.moveTo(L, gy); ctx.lineTo(W - R, gy); ctx.stroke();
+    if (!mini) ctx.fillText((o.yFmt || clogFmt)(o.logY ? 10 ** v : v), L - 6, gy + 3);
+  }
+  if (!mini) {
+    ctx.textAlign = 'center';
+    for (const v of clogTicks(xmn, xmx, false)) {
+      ctx.fillText((o.xFmt || clogFmt)(v), Math.min(Math.max(X(v), L + 20), W - R - 20), H - 5);
+    }
+  }
+  for (const [lo, hi, dashed] of o.bands || []) {
+    const a = Math.max(X(Math.max(lo, xmn)), L), b = Math.min(X(Math.min(hi, xmx)), W - R);
+    if (b <= a) continue;
+    if (dashed) {
+      ctx.setLineDash([3, 3]); ctx.strokeStyle = CLOG_INK.text3;
+      ctx.strokeRect(a, T, Math.max(1, b - a), H - T - B); ctx.setLineDash([]);
+    } else {
+      ctx.fillStyle = 'rgba(237,240,255,0.08)';
+      ctx.fillRect(a, T, Math.max(1, b - a), H - T - B);
+    }
+  }
+  const base = o.logY ? null : Y(Math.max(ymn, 0));
+  for (const s of series) {
+    ctx.strokeStyle = s.color; ctx.fillStyle = s.color;
+    if (o.bars) {
+      const w = Math.max(1, (W - L - R) / s.xs.length - (s.xs.length < 120 ? 2 : 0));
+      s.xs.forEach((x, i) => {
+        const y = s.ys[i];
+        if (y == null || (o.logY && y <= 0)) return;
+        const top = Y(y), bot = o.logY ? H - B : base;
+        ctx.fillRect(X(x) - w / 2, Math.min(top, bot), w, Math.max(1, Math.abs(bot - top)));
+      });
+      continue;
+    }
+    ctx.lineWidth = mini ? 1.2 : 2; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    let pen = false;
+    s.xs.forEach((x, i) => {
+      const y = s.ys[i];
+      if (y == null || !isFinite(y) || (o.logY && y <= 0)) { pen = false; return; }
+      if (pen) ctx.lineTo(X(x), Y(y)); else { ctx.moveTo(X(x), Y(y)); pen = true; }
+    });
+    ctx.stroke();
+  }
+  if (!mini && series.length >= 2) {
+    // legend in text ink, the colored swatch beside each name carries the identity
+    let lx = L;
+    ctx.textAlign = 'left'; ctx.font = '600 10px "JetBrains Mono", monospace';
+    for (const s of series) {
+      const w = ctx.measureText(s.name).width;
+      if (lx + w + 18 > W - R) break;
+      ctx.fillStyle = s.color; ctx.fillRect(lx, 6, 9, 9);
+      ctx.fillStyle = CLOG_INK.text2; ctx.fillText(s.name, lx + 13, 14);
+      lx += w + 26;
+    }
+  }
+  if (o.hoverX != null && !mini) {
+    const hx = X(o.hoverX);
+    ctx.strokeStyle = CLOG_INK.text3; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(hx, T); ctx.lineTo(hx, H - B); ctx.stroke();
+    for (const s of series) {
+      const i = clogNearest(s.xs, o.hoverX);
+      const y = s.ys[i];
+      if (i < 0 || y == null || (o.logY && y <= 0)) continue;
+      ctx.beginPath(); ctx.arc(X(s.xs[i]), Y(y), 4, 0, Math.PI * 2);
+      ctx.fillStyle = s.color; ctx.fill();
+      ctx.lineWidth = 2; ctx.strokeStyle = '#0C0C1E'; ctx.stroke();
+    }
+  }
+  if (!c._hooked && !mini) {
+    c._hooked = true;
+    c.addEventListener('mousemove', e => {
+      const m = c._map;
+      if (!m) return;
+      const r = c.getBoundingClientRect();
+      const x = m.xmn + ((e.clientX - r.left - m.L) / (m.W - m.L - m.R)) * (m.xmx - m.xmn);
+      const [ser, opt] = c._args;
+      clogPlot(c, ser, { ...opt, hoverX: x });
+      const lines = ser.map(s => {
+        const i = clogNearest(s.xs, x);
+        return i < 0 ? '' : `<div><span class="sw" style="background:${s.color}"></span>${esc(s.name)}: ${clogFmt(s.ys[i])}</div>`;
+      }).join('');
+      const i0 = ser.length ? clogNearest(ser[0].xs, x) : -1;
+      clogTip.innerHTML = (i0 >= 0 ? `<div style="color:${CLOG_INK.text2}">${esc((opt.xFmt || clogFmt)(ser[0].xs[i0]))}${opt.xUnit || ''}</div>` : '') + lines;
+      clogShowTip(e);
+    });
+    c.addEventListener('mouseleave', () => { clogTip.style.display = 'none'; const [ser, opt] = c._args; clogPlot(c, ser, { ...opt, hoverX: null }); });
+  }
+}
+
+function clogTicks(lo, hi, log) {
+  // round steps of 1, 2 or 5 times a power of ten; on a log axis, whole decades
+  if (log) {
+    const out = [];
+    for (let e = Math.ceil(lo); e <= hi; e++) out.push(e);
+    return out.length >= 2 ? out : [lo, hi];
+  }
+  const raw = (hi - lo) / 4, mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 5, 10].map(m => m * mag).find(st => st >= raw);
+  const out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9 * step; v += step) out.push(Math.abs(v) < step * 1e-9 ? 0 : v);
+  return out;
+}
+
+function clogNearest(xs, x) {
+  let best = -1, d = Infinity;
+  xs.forEach((v, i) => { const dd = Math.abs(v - x); if (dd < d) { d = dd; best = i; } });
+  return best;
+}
+
+function clogShowTip(e) {
+  clogTip.style.display = 'block';
+  const w = clogTip.offsetWidth;
+  clogTip.style.left = `${Math.min(e.clientX + 14, window.innerWidth - w - 8)}px`;
+  clogTip.style.top = `${e.clientY + 14}px`;
+}
+
+// The form
+
+async function clogLoadOptions() {
+  let d;
+  try { d = await apiFetch('/api/clog/options'); } catch (e) { return; }
+  clog.opts = d;
+  const a = $c('clog-site-a'), b = $c('clog-site-b');
+  const ka = a.value, kb = b.value;
+  const opts = Object.keys(d.site_channels || {}).map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
+  a.innerHTML = d.loaded ? opts : '<option value="">load a config on the Acquisition page</option>';
+  b.innerHTML = '<option value="">none, one TimeTagger</option>' + opts;
+  if (ka) a.value = ka;
+  b.value = kb || '';
+  if (!a.dataset.filled) {
+    // the defaults under the config's own section fill the form once
+    a.dataset.filled = '1';
+    const o = { ...d.defaults, ...d.config };
+    if (o.sites && o.sites.length) { a.value = o.sites[0]; b.value = o.sites[1] || ''; }
+    const v = String(o.integration_s);
+    $c('clog-int').value = CLOG_PRESETS.includes(v) ? v : 'custom';
+    $c('clog-int-custom').value = v;
+    $c('clog-int-custom-f').style.display = CLOG_PRESETS.includes(v) ? 'none' : '';
+    $c('clog-window').value = o.window_ps; $c('clog-center').value = o.roi_center_ps; $c('clog-noise').value = o.noise_offset_ps;
+    $c('clog-delays').value = Object.entries(o.delays_ps || {}).map(([k, x]) => `${k}=${x}`).join(', ');
+    $c('clog-higher').value = (o.higher_order || []).map(g => (g.channels || g).join('+')).join(', ');
+    $c('clog-derived').value = Object.entries(o.derived || {}).map(([k, x]) => `${k} = ${x}`).join('\n');
+    $c('clog-exp').value = (o.metadata || {}).experiment || '';
+    $c('clog-notes').value = (o.metadata || {}).notes || '';
+  }
+  clogLabels();
+}
+
+function fillClogRecordings() {
+  const opts = recordings.files.map(f => `<option value="${esc(f)}">${esc(f.replace('_timestamp_sequence.npy', ''))}</option>`).join('');
+  const ra = $c('clog-ra'), rb = $c('clog-rb');
+  const ka = ra.value, kb = rb.value;
+  ra.innerHTML = opts;
+  rb.innerHTML = '<option value="">none, one recording</option>' + opts;
+  if (ka) ra.value = ka;
+  rb.value = kb || '';
+}
+
+function clogTwoSites() {
+  return $c('clog-source').value === 'sites' ? !!$c('clog-site-b').value : !!$c('clog-rb').value;
+}
+
+function clogLabels() {
+  const two = clogTwoSites();
+  $c('clog-labels').textContent = two
+    ? 'Channels A1-A4 and B1-B4; columns S_A1 (singles), C_A1_B1 (coincidences), C_A1_B1_noise, and QBER_HV, QBER_DA, QBER with channels 1-2 the H/V bits and 3-4 the D/A bits.'
+    : 'Channels 1-4; columns S_1 (singles), C_1_2 (coincidences) and C_1_2_noise.';
+}
+
+function clogOptions() {
+  const val = id => $c(id).value.trim();
+  const o = { integration_s: Number(val('clog-int') === 'custom' ? val('clog-int-custom') : val('clog-int')) };
+  for (const [id, key] of [['clog-window', 'window_ps'], ['clog-center', 'roi_center_ps'], ['clog-noise', 'noise_offset_ps']]) {
+    if (val(id) !== '') o[key] = Number(val(id));
+  }
+  o.delays_ps = {};
+  for (const part of val('clog-delays').split(',').map(x => x.trim()).filter(Boolean)) {
+    const [k, v] = part.split('=').map(x => (x || '').trim());
+    if (!k || v === '' || isNaN(Number(v))) throw new Error(`delay "${part}" is not channel=ps`);
+    o.delays_ps[k] = Number(v);
+  }
+  o.higher_order = val('clog-higher').split(',').map(g => g.replace(/\s+/g, '')).filter(Boolean).map(g => g.split('+'));
+  o.derived = {};
+  for (const line of $c('clog-derived').value.split('\n').map(x => x.trim()).filter(Boolean)) {
+    const i = line.indexOf('=');
+    if (i < 1) throw new Error(`"${line}" is not name = formula`);
+    o.derived[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+  }
+  o.metadata = {};
+  if (val('clog-exp')) o.metadata.experiment = val('clog-exp');
+  if (val('clog-notes')) o.metadata.notes = val('clog-notes');
+  return o;
+}
+
+$c('clog-source').addEventListener('change', e => {
+  const sites = e.target.value === 'sites';
+  document.querySelectorAll('.clog-sites').forEach(el => { el.style.display = sites ? '' : 'none'; });
+  document.querySelectorAll('.clog-recs').forEach(el => { el.style.display = sites ? 'none' : ''; });
+  clogLabels();
+});
+['clog-site-b', 'clog-rb'].forEach(id => $c(id).addEventListener('change', clogLabels));
+$c('clog-int').addEventListener('change', e => { $c('clog-int-custom-f').style.display = e.target.value === 'custom' ? '' : 'none'; });
+
+$c('clog-start').addEventListener('click', async () => {
+  const err = $c('clog-error');
+  err.textContent = '';
+  let body;
+  try { body = { source: $c('clog-source').value, options: clogOptions(), windows: $c('clog-windows').value || null }; } catch (e) { err.textContent = e.message; return; }
+  if (body.source === 'sites') body.sites = [$c('clog-site-a').value, $c('clog-site-b').value].filter(Boolean);
+  else { body.a = $c('clog-ra').value; body.b = $c('clog-rb').value; }
+  try {
+    await postJSON('/api/clog/start', body);
+    clog.rows = []; clog.written = -1;
+    refreshClog();
+  } catch (e) { err.textContent = e.message; }
+});
+$c('clog-stop').addEventListener('click', async () => {
+  try { await apiFetch('/api/clog/stop', { method: 'POST' }); refreshClog(); } catch (e) { $c('clog-error').textContent = e.message; }
+});
+
+// Status and rows
+
+let clogWasRunning = false;
+async function refreshClog() {
+  let d;
+  try { d = await apiFetch(`/api/clog/status?since=${clog.liveSeen}`); } catch (e) { return; }
+  if (d.started_at !== clog.started) {
+    // a new run: its live history from the start
+    clog.started = d.started_at;
+    clog.live = [];
+    try { d = await apiFetch('/api/clog/status?since=0'); } catch (e) { return; }
+  }
+  clog.live.push(...d.live);
+  if (clog.live.length > 2400) clog.live.splice(0, clog.live.length - 2400);
+  clog.liveSeen = d.live_total;
+  clog.status = d.status;
+  if (d.histograms) clog.hist = d.histograms;
+  const st = d.status;
+  setBadge('clog-badge', d.running ? (st ? st.state : 'starting') : st ? 'Finished' : 'Idle',
+    d.running ? (st && st.state === 'running' ? 'success' : 'warn') : 'muted');
+  $c('clog-start').disabled = d.running;
+  $c('clog-stop').disabled = !d.running;
+  const chips = [];
+  if (d.params) chips.push(['Source', d.params.source], ['Integration', fmtDur(d.params.integration_s)]);
+  if (st) {
+    chips.push(['File', st.file], ['Rows', st.written + (st.max_windows ? ` of ${st.max_windows}` : '')]);
+    if (st.window) {
+      chips.push([`Window ${st.window.index}`, `${fmtDur(st.window.progress_s)} of ${fmtDur(st.integration_s)}`]);
+      $c('clog-progress').style.width = `${Math.min(100, 100 * st.window.progress_s / st.integration_s).toFixed(1)}%`;
+    }
+    if (st.alignment) chips.push(['Clocks', st.alignment.state === 'locked' ? `locked, skew ${fmtNum(st.alignment.skew_ppb, 2)} ppb` : st.alignment.state]);
+    const last = clog.live[clog.live.length - 1];
+    if (last) chips.push(['Singles per second', st.singles.map(s => `${s.slice(2)} ${clogFmt(last.rates[s])}`).join(', ')]);
+    if (st.written !== clog.written && st.file && !clog.fetching) clogFetchRows(st.file, st.written);
+  }
+  if (clogWasRunning && !d.running) refreshClogFiles();
+  clogWasRunning = d.running;
+  $c('clog-chips').innerHTML = chipsHTML(chips);
+  const logEl = $c('clog-log');
+  logEl.textContent = (d.log || []).join('\n');
+  logEl.scrollTop = logEl.scrollHeight;
+  clogDrawAll();
+}
+
+async function clogFetchRows(name, written) {
+  clog.fetching = true;
+  try {
+    const d = await apiFetch(`/api/clog/files/${encodeURIComponent(name)}/data`);
+    clog.rows = d.rows; clog.columns = d.columns; clog.written = written;
+  } catch (e) { /* the file appears with the first row */ } finally { clog.fetching = false; }
+  clogDrawRows();
+  clogDrawQber();
+}
+
+async function refreshClogFiles() {
+  let d;
+  try { d = await apiFetch('/api/clog/files'); } catch (e) { return; }
+  $c('clog-files').innerHTML = d.files.length ? d.files.map(f => `<tr>
+      <td class="mono">${esc(f.name)}</td><td>${f.rows}</td><td>${formatBytes(f.bytes)}</td><td>${fmtTime(f.modified)}</td>
+      <td style="white-space:nowrap"><a class="btn btn-outline clog-btn" href="/api/clog/files/${encodeURIComponent(f.name)}">Download</a>
+        <button class="btn btn-outline clog-btn" data-del="${esc(f.name)}">Delete</button></td></tr>`).join('') : emptyRow(5, 'none yet');
+}
+$c('clog-files').addEventListener('click', async e => {
+  const del = e.target.closest('[data-del]');
+  if (del && confirm(`Delete ${del.dataset.del} for good?`)) {
+    try { await apiFetch(`/api/clog/files/${encodeURIComponent(del.dataset.del)}`, { method: 'DELETE' }); } catch (err) { $c('clog-error').textContent = err.message; }
+    refreshClogFiles();
+  }
+});
+
+// Drawing
+
+function clogDrawQber() {
+  const st = clog.status;
+  const names = ['QBER_HV', 'QBER_DA', 'QBER'].filter(n => (st ? st.columns : clog.columns).includes(n));
+  $c('clog-qber-card').style.display = names.length ? '' : 'none';
+  if (!names.length) return;
+  const last = clog.live[clog.live.length - 1];
+  const pct = v => v == null ? '-' : `${(100 * v).toFixed(2)}%`;
+  const row = clog.rows[clog.rows.length - 1];
+  $c('clog-qber').innerHTML = chipsHTML([
+    ...names.map(n => [`${n.replace('_', ' ')}, last ${last ? Math.round(last.derived_span_s || 0) : 10} s`, pct(last && last.derived ? last.derived[n] : null)]),
+    ...(row ? names.map(n => [`${n.replace('_', ' ')}, last row`, pct(row[n])]) : []),
+  ]);
+  const rows = clog.rows;
+  const t0 = rows.length ? Date.parse(rows[0].start) : 0;
+  const xs = rows.map(r => (Date.parse(r.start) - t0) / 60000);
+  clogPlot('clog-qber-plot', names.map((n, i) => ({ name: n, color: CLOG_COLORS[i], xs, ys: rows.map(r => r[n] == null ? null : 100 * r[n]) })),
+    { xFmt: v => `${v.toFixed(1)} min`, yFmt: v => `${clogFmt(v)}%`, empty: 'one point per row: the first comes at the end of the first window' });
+}
+
+function clogDrawMatrix() {
+  const c = $c('clog-mx');
+  const dpr = window.devicePixelRatio || 1;
+  const W = c.clientWidth, H = c.clientHeight;
+  if (W <= 0) return;
+  c.width = W * dpr; c.height = H * dpr;
+  const ctx = c.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  ctx.font = '10px "JetBrains Mono", monospace';
+  c._cells = [];
+  const groups = ((clog.status && clog.status.groups) || []).filter(g => g.channels.length === 2);
+  if (!groups.length || !clog.live.length) { ctx.fillStyle = CLOG_INK.text3; ctx.fillText('no coincidences counted yet', 8, H / 2); return; }
+  const end = clog.live[clog.live.length - 1].t_s;
+  const pts = clog.live.filter(p => p.t_s > end - 10);
+  const get = n => pts.reduce((a, p) => a + (p.rates[n] || 0) * p.dt_s, 0);
+  const rowsL = [...new Set(groups.map(g => g.channels[0]))], colsL = [...new Set(groups.map(g => g.channels[1]))];
+  const cells = {};
+  for (const g of groups) { const sig = get(g.name), noise = get(g.name + '_noise'); cells[g.channels[0] + '|' + g.channels[1]] = { v: sig - noise, sig, noise, name: g.name }; }
+  const vmax = Math.max(1, ...Object.values(cells).map(x => x.v));
+  const L = 40, T = 20, cw = (W - L - 4) / colsL.length, ch = (H - T - 4) / rowsL.length;
+  ctx.fillStyle = CLOG_INK.text2; ctx.textAlign = 'center';
+  colsL.forEach((n, j) => ctx.fillText(n, L + (j + 0.5) * cw, 13));
+  ctx.textAlign = 'right';
+  rowsL.forEach((n, i) => ctx.fillText(n, L - 8, T + (i + 0.5) * ch + 3));
+  rowsL.forEach((r, i) => colsL.forEach((col, j) => {
+    const cell = cells[r + '|' + col];
+    if (!cell) return;
+    const x = L + j * cw + 1, y = T + i * ch + 1, w = cw - 2, h = ch - 2;
+    // one hue, brighter is more; zero or below is the neutral surface
+    const k = cell.v > 0 ? Math.min(CLOG_RAMP.length - 1, Math.floor((cell.v / vmax) * CLOG_RAMP.length * 0.999)) : -1;
+    ctx.fillStyle = k < 0 ? CLOG_INK.neutral : CLOG_RAMP[k];
+    ctx.beginPath(); ctx.roundRect(x, y, w, h, 4); ctx.fill();
+    if (w > 34 && h > 16) { ctx.textAlign = 'center'; ctx.fillStyle = k >= 3 ? CLOG_INK.dark : CLOG_INK.text; ctx.fillText(clogFmt(cell.v), x + w / 2, y + h / 2 + 3); }
+    c._cells.push({ x, y, w, h, r, col, ...cell });
+  }));
+  if (!c._hooked) {
+    c._hooked = true;
+    c.addEventListener('mousemove', e => {
+      const b = c.getBoundingClientRect(), px = e.clientX - b.left, py = e.clientY - b.top;
+      const hit = (c._cells || []).find(q => px >= q.x && px <= q.x + q.w && py >= q.y && py <= q.y + q.h);
+      if (!hit) { clogTip.style.display = 'none'; return; }
+      clogTip.innerHTML = `<div>${esc(hit.name)}</div><div>signal ${clogFmt(hit.sig)}, noise ${clogFmt(hit.noise)}, net ${clogFmt(hit.v)}</div>`;
+      clogShowTip(e);
+    });
+    c.addEventListener('mouseleave', () => { clogTip.style.display = 'none'; });
+  }
+}
+
+function clogDrawHist() {
+  const h = clog.hist, st = clog.status, sel = $c('clog-hist-group');
+  if (!h || !st) { clogPlot('clog-hist', [], { empty: 'no histogram yet' }); $c('clog-hist-v').textContent = ''; return; }
+  const names = Object.keys(h.groups);
+  if (sel.options.length !== names.length) {
+    const keep = sel.value;
+    sel.innerHTML = names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+    sel.value = names.includes(keep) ? keep : names[0];
+  }
+  const n = sel.value, ys = h.groups[n] || [];
+  const [lo, hi] = st.roi_ps.map(v => v / 1e3), [nlo, nhi] = st.noise_roi_ps.map(v => v / 1e3);
+  clogPlot('clog-hist', [{ name: n, color: CLOG_COLORS[0], xs: h.x_ns, ys }],
+    { bars: true, bands: [[lo, hi, false], [nlo, nhi, true]], xFmt: v => `${v.toFixed(1)}`, xUnit: ' ns' });
+  const inRoi = ys.reduce((a, y, i) => a + (h.x_ns[i] >= lo && h.x_ns[i] < hi ? y : 0), 0);
+  $c('clog-hist-v').textContent = `${inRoi} of ${ys.reduce((a, b) => a + b, 0)} in the ROI (shaded); delay from the first channel in ns. Move the peak into the ROI with the ROI center or the delays.`;
+}
+$c('clog-hist-group').addEventListener('change', clogDrawHist);
+
+function clogDrawRows() {
+  const cols = clog.columns.length ? clog.columns : (clog.status ? clog.status.columns : []);
+  const rows = clog.rows;
+  setBadge('clog-rows-badge', rows.length ? `${rows.length} row(s), newest first` : 'none yet', rows.length ? 'success' : 'muted');
+  $c('clog-head').innerHTML = cols.length ? '<tr>' + cols.map(c => `<th>${esc(c)}</th>`).join('') + '</tr>' : '';
+  $c('clog-rows').innerHTML = rows.length ? rows.slice(-200).reverse().map(r => '<tr>' + cols.map(c => {
+    let v = r[c];
+    if (c === 'start' || c === 'end') v = String(v).replace('T', ' ').slice(0, 19);
+    else if (c.startsWith('QBER') && typeof v === 'number') v = `${(100 * v).toFixed(2)}%`;
+    else if (typeof v === 'number') v = clogFmt(v);
+    return `<td>${v == null ? '' : esc(v)}</td>`;
+  }).join('') + '</tr>').join('') : emptyRow(Math.max(cols.length, 1), 'no row yet');
+}
+
+function clogDrawAll() {
+  if (!$c('section-clog').classList.contains('active')) return;
+  clogDrawQber();
+  clogDrawMatrix();
+  clogDrawHist();
+  clogDrawRows();
+}
+window.addEventListener('resize', clogDrawAll);
+
+// #section in the address opens that page, so a page can be bookmarked or linked; last, once everything is defined
+const startSection = location.hash.slice(1);
+navigate(startSection && document.getElementById('section-' + startSection) ? startSection : 'home');

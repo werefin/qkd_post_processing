@@ -26,6 +26,7 @@ The catch: two TimeTaggers run on independent local clocks, and there's no wire 
 | `coincidence_peak.py` | `_coarse_search` (FFT cross-correlation over binned counts, `numba`-jitted `_bin_timestamps`), then `_refine_candidate`/`_best_window` (exact timestamp differences, finds the best coincidence-window width), then `_fit_clock_skew` (segment-wise linear fit of lag vs. elapsed time, `_grid_search_clock_skew` as a fallback). `analyze_arrays` runs all three over two in-memory timestamp arrays and builds the JSON report (`fit_skew=False` skips the skew stage, for a fast live check); `analyze_files` wraps it with file loading, validation, and wall-overlap slicing. `save_plot` renders the diagnostic figure; `main` is the CLI (stdlib `argparse`; `--config` loads this section's JSON as defaults, no third-party dependency needed). |
 | `live_peak.py` | `LiveTracker`: `feed` appends each stream's new timestamps (relative to its first one, since raw TimeTagger timestamps exceed float64's exact range), `step` runs the lock (`_coarse_search` candidates, then `_pair_residuals` and the parallel `_skew_scan` over trial skews) or the per-chunk tracking (`_chunk_point`, `_refit`), `status` builds the JSON the dashboard draws. `tracker_kwargs` maps `config.json` onto it; `main` replays two recordings through it. |
 | `continuous_qkd.py` | `Processor`: `process_segment` (`fast_align` on the previous segment's clock model, else the full search, then `importtt -events-cache`), `run_block` in a background thread, `status`/`emit` for the dashboard, state saved to `continuous_state.json`. |
+| `coincidence_logger.py`, `coincidences/` | Singles, coincidences and QBER per integration window into a CSV; see "Coincidence log for the photonics experiments". |
 | `tt_replay.py` | `ReplayStream`, a stand-in for `TimeTaggerStream` playing a recording back at stream speed, looped; `pair_skew` gives B's loop its skew-scaled period. |
 | `chsh_diagnostic.py` | Standalone CHSH/Bell diagnostic, unrelated to the QKD chain; see "Optional: CHSH self-testing diagnostic" below. |
 | `config.json` | `"sites"` (per-TT connection + detector settings), `"links"` (named site pairs), `"record_dual"` (which link + recording-mode defaults), `"live_coincidence"` (live tracker settings while recording), `"coincidence_peak"` (final-analysis defaults, also reused by the live monitor's algorithm settings). |
@@ -135,6 +136,38 @@ python3 live_peak.py example/20260909/*_timestamp_sequence.npy --speed 1   # the
 - **Sifting**: `importtt -events-cache` aligns, filters and sifts the segment and keeps its events (about 1 MB); the raw arrays are deleted unless `--keep-raw`.
 - **Blocks**: once `--block-s` seconds of data are in hand (300 by default), one `importtt` over the block's caches runs optimized Cascade (`--method ldpc5g` or `polar` for those), verification and finite-key privacy amplification, in the background while the next segments are processed, and writes the keys to `--keystore`, the KMS import directory of the link. Each block is appended to `blocks.jsonl`.
 - **Status**: one `CONT {json}` line per change, which the dashboard draws; `continuous_state.json` lets a restarted processor continue where it stopped. The search's working memory is capped at `--max-memory-gib` (1.5 by default), since it runs beside the recorder for hours.
+
+### Coincidence log for the photonics experiments
+
+`coincidence_logger.py` writes one row per integration window to a CSV: singles per channel, two-fold and higher-order coincidences in a signal ROI and in a noise ROI, and the QBER, with every setting in the file's header. It saves counts only, so a 5 h run writes kilobytes. The dashboard's Coincidence log page runs it.
+
+```bash
+python3 coincidence_logger.py --sites trnava --integration-s 300                               # one TimeTagger
+python3 coincidence_logger.py --sites bratislava trnava --integration-s 30 --windows 120        # two, aligned live
+python3 coincidence_logger.py --recordings A_timestamp_sequence.npy B_timestamp_sequence.npy   # stored recordings, offline
+```
+
+**Options** (the config's `"coincidence_log"` section, the flags, or the dashboard):
+
+| Option | Meaning |
+|---|---|
+| `sites` | one site, or two whose clocks the live tracker aligns |
+| `integration_s` | seconds per row |
+| `window_ps`, `roi_center_ps` | the signal ROI, relative to the first channel's click once delays are applied |
+| `noise_offset_ps` | the noise ROI, same width, this far away: the accidentals expected in the signal ROI; whole periods for a pulsed source |
+| `delays_ps` | software delay per channel, e.g. `{"B2": 120}` |
+| `twofold`, `higher_order` | `"all"` two-fold pairs (A-B pairs for two sites) or a list; groups of three or more |
+| `qber` | two sites: `QBER_HV`, `QBER_DA` and `QBER` on every row, on by default |
+| `derived` | other values per row, `name: formula` on the columns with `+ - * / **`, `sqrt`, `abs`, `min`, `max` |
+| `metadata` | kept in the header, e.g. `{"experiment": "...", "notes": "..."}` |
+
+**QBER**: with channels 1 and 2 the bits of the H/V basis and 3 and 4 those of D/A, as `importtt` maps them, equal bits are correct: $\mathrm{QBER_{HV}} = (C_{12} + C_{21}) / (C_{11} + C_{12} + C_{21} + C_{22})$, every count less its noise ROI, and the same with 3 and 4; `QBER` pools both bases. The dashboard also shows it over the last 10 s.
+
+**Columns**: `S_<channel>` singles, `C_<channels>` a group in the signal ROI (clicks of the first channel with a click of every other one in the ROI), `C_<channels>_noise` the same in the noise ROI, the QBER and other values, then `window`, `start`, `end`, `duration_s`, `complete` (0 only for the last row of a stopped run), `capped_reads` (reads that hit the server's batch cap) and, for two sites, `aligned`. Channels are `1`, ... for one site and `A1`, ..., `B1`, ... for two.
+
+**File**: `<output_dir>/<start>_coincidences.csv`, a header of `# ` lines holding JSON metadata (integration time, sites by name with channels, delays, trigger levels and dead times, both ROIs, groups, formulas, clock alignment, software version, a description of every column, never an address), then one row per window, on disk as soon as written. Read it with `pandas.read_csv(path, comment="#")`, or `coincidences.read_log(path)` for the metadata too.
+
+**Code**: the package `coincidences/` holds the options, the plan of a log (`plan.py`), counting (`counting.py`), clock alignment (`align.py`), the sources (`sources.py`), the outputs (`outputs.py`) and the run tying them together (`run.py`).
 
 ### Finding the coincidence peak
 

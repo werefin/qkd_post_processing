@@ -289,3 +289,42 @@ func TestOptimalSampleFractionGrowsKey(t *testing.T) {
 		}
 	}
 }
+
+// TestVerificationTagChargedOnce: the formula's log2(2/epsCor) term is the tag's cost, so a block's key length is
+// the formula on error correction's disclosure alone, while the report still counts the tag among disclosed bits
+func TestVerificationTagChargedOnce(t *testing.T) {
+	alice, bob := simulateClicks(300000, 0.05, 31)
+	res, err := RunCascade(alice, bob, CascadeRunConfig{CoincidenceWindowPS: 500, Seed: 5, ChunkSize: 1024, ExpectedQBER: 0.05})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fk := res.FiniteKey
+	b := SplitSecurityBudget(1e-10, 1e-15)
+	want := FiniteKeySecureKeyLength(len(res.CRCVerify.SurvivingAlice), fk.Phi, res.LeakedBits+fk.ChainBits, b.EpsCor, b.EpsPA)
+	if fk.Length != want || fk.LeakedBits != res.LeakedBits+fk.TagBits || fk.TagBits > int(math.Log2(2/b.EpsCor))+1 {
+		t.Fatalf("length %d, want %d; reported leak %d, tag %d", fk.Length, want, fk.LeakedBits, fk.TagBits)
+	}
+}
+
+// TestEstimationFailsWithEpsSquared: the sampling bound may fail with probability epsPE^2, split over the
+// bases (Tomamichel et al. 2012, S14), so it is wider than one failing with epsPE would be
+func TestEstimationFailsWithEpsSquared(t *testing.T) {
+	eps := 1e-10 / 3
+	if got := estimationTail(eps); math.Abs(got-eps*eps/2) > 1e-30 {
+		t.Fatalf("tail %g, want %g", got, eps*eps/2)
+	}
+	wide, narrow := HypergeomUpperRate(100_000, 20_000, 1_000, estimationTail(eps)), HypergeomUpperRate(100_000, 20_000, 1_000, eps/2)
+	if wide <= narrow {
+		t.Fatalf("bound at epsPE^2/2 %.5f should exceed the one at epsPE/2 %.5f", wide, narrow)
+	}
+}
+
+// TestChainRuleBits: f(eps) = log2(2/(1 - sqrt(1 - eps^2))), about log2(4/eps^2), exact for tiny eps
+func TestChainRuleBits(t *testing.T) {
+	for _, eps := range []float64{1e-3, 1e-8, 1e-10 / 12} {
+		want := math.Log2(4 / (eps * eps))
+		if got := float64(chainRuleBits(eps)); got < want || got > want+1.01 {
+			t.Fatalf("eps %g: %v bits, want about %.1f", eps, got, want)
+		}
+	}
+}

@@ -60,4 +60,4 @@ All seven recordings move from far above to below the roughly 11% QBER beyond wh
 
 - Drift faster than the 250 ms slices would leave residual smearing.
 - The root cause is the skew fit in `acquisition/coincidence_peak.py`; this procedure corrects its effect downstream. A shared clock between the sites would remove it at the source.
-- One ten-second recording yields about 3,300 filtered pairs, too few for a finite-key claim on its own; see Choice of PA block size in `doc/finite_key_procedure.md` for pooled and longer acquisitions.
+- One ten-second recording yields about 3,300 filtered pairs, too few for a finite-key claim on its own; see Block size in `doc/finite_key_procedure.md` for pooled and longer acquisitions.

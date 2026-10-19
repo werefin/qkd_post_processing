@@ -61,5 +61,20 @@
 
   "chsh_diagnostic": {
     "block_s": 1.0
+  },
+
+  "coincidence_log": {
+    "sites": ["site_a", "site_b"],
+    "integration_s": 30,
+    "window_ps": 1000,
+    "roi_center_ps": 0,
+    "noise_offset_ps": 100000,
+    "delays_ps": {},
+    "twofold": "all",
+    "higher_order": [],
+    "qber": true,
+    "derived": {},
+    "metadata": {"experiment": "", "notes": ""},
+    "output_dir": "coincidence_logs"
   }
 }

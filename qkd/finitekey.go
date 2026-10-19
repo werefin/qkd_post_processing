@@ -38,8 +38,8 @@ func EstimatePhaseError(q float64, ns, k int, epsPE float64, nSifted, nSurviving
 	return PhaseErrorEstimate{Mu: mu, Phi: phi, Conservative: conservative}
 }
 
-// FiniteKeySecureKeyLength: l = n*(1-h2(phi)) - leakedBits - log2(2/epsCor) -
-// 2*log2(1/(2*epsPA)); phi is a phase-error bound, error correction is inside leakedBits
+// FiniteKeySecureKeyLength: l = n*(1-h2(phi)) - leakedBits - log2(2/epsCor) - 2*log2(1/(2*epsPA)); leakedBits is
+// error correction's disclosure only, since log2(2/epsCor) already covers the ceil(log2(1/epsCor))-bit tag
 func FiniteKeySecureKeyLength(n int, phi float64, leakedBits int, epsCor, epsPA float64) int {
 	if n <= 0 || epsCor <= 0 || epsCor >= 1 || epsPA <= 0 || epsPA >= 1 || !(phi < 0.5) {
 		return 0 // phi>=0.5 bounds nothing; h2 falls again past 0.5, so it must not reach the formula
@@ -73,6 +73,9 @@ func SplitSecurityBudget(epsSec, epsCor float64) SecurityBudget {
 type FiniteKeyConfig struct {
 	EpsSec float64 // secrecy failure probability, default 1e-10
 	EpsCor float64 // correctness failure probability, default 1e-15
+	// byCorrection: every bit is key and errors are counted by correction, so each basis's key is bounded
+	// with the other basis's rounds as its test and the two joined by the chain rule (doc/security_proof.md)
+	byCorrection bool
 }
 
 func (c FiniteKeyConfig) withDefaults() FiniteKeyConfig {
@@ -93,6 +96,7 @@ type FiniteKeyReport struct {
 	Bits       int     // surviving bits entering verification and hashing
 	Verified   bool    // both sides' surviving strings hashed equal
 	LeakedBits int     // all classical disclosure charged, tag included
+	ChainBits  int     // the chain rule's cost when errors are counted by correction, 0 otherwise
 	Length     int     // final key length in bits
 }
 
@@ -127,6 +131,19 @@ func hypergeomCDF(e, population, successes, draws int) float64 {
 	return math.Min(1, math.Exp(peak)*s)
 }
 
+// estimationTail: the failure probability each basis's bound may have; Tomamichel et al. 2012 (S14) and
+// Tomamichel-Leverrier 2017 (81) need the estimate to fail with probability epsPE^2, split over the two bases
+func estimationTail(epsPE float64) float64 {
+	return epsPE * epsPE / 2
+}
+
+// chainRuleBits: f(eps) = log2(2/(1 - sqrt(1 - eps^2))) of the smooth min-entropy chain rule (Vitanov et al.
+// 2013, Theorem 13), with 1 - sqrt(1 - x) written as x/(1 + sqrt(1 - x)) to stay exact for tiny eps
+func chainRuleBits(eps float64) int {
+	e2 := eps * eps
+	return int(math.Ceil(math.Log2(2 * (1 + math.Sqrt(1-e2)) / e2)))
+}
+
 // HypergeomUpperRate bounds the error rate of n unsampled bits from e errors seen in k bits
 // drawn uniformly from the n+k: exact, so tighter than Serfling, failing with probability <= eps
 func HypergeomUpperRate(n, k, e int, eps float64) float64 {
@@ -145,9 +162,9 @@ func HypergeomUpperRate(n, k, e int, eps float64) float64 {
 	return float64(lo) / float64(n)
 }
 
-// crossBasisPhaseError bounds the phase error of the kept bits: key bits of each basis are
-// bounded by the other basis's sample errors via HypergeomUpperRate at epsPE/2, scaled for CRC drops
-func crossBasisPhaseError(sample, rem timedBits, nSurviving int, epsPE float64) (phi, point float64) {
+// crossBasisPhaseError bounds the phase error of the kept bits from the other basis's sample errors, scaled
+// for CRC drops; each basis's bound fails with probability tail
+func crossBasisPhaseError(sample, rem timedBits, nSurviving int, tail float64) (phi, point float64) {
 	var k, e, n [2]int
 	for i, b := range sample.Basis {
 		if b > 1 {
@@ -178,10 +195,25 @@ func crossBasisPhaseError(sample, rem timedBits, nSurviving int, epsPE float64) 
 		q := float64(e[other]) / float64(k[other])
 		w := float64(n[b]) / float64(total)
 		point += w * q
-		phi += w * min(0.5, HypergeomUpperRate(n[b], k[other], e[other], epsPE/2))
+		phi += w * min(0.5, HypergeomUpperRate(n[b], k[other], e[other], tail))
 	}
 	phi *= float64(total) / float64(nSurviving)
 	return min(0.5, phi), point
+}
+
+// correctionSample is the sample error correction gives for free: every key bit with Bob's original value where
+// its chunk verified, so its error is known exactly, and counted as an error where the CRC dropped its chunk
+func correctionSample(rem timedBits, correctedBob []byte, chunkSize int) timedBits {
+	ac, bc := ComputeChunkCRC(rem.Alice, chunkSize), ComputeChunkCRC(correctedBob, chunkSize)
+	s := timedBits{Alice: rem.Alice, Bob: make([]byte, len(rem.Bob)), Dt: rem.Dt, Basis: rem.Basis}
+	for i := range rem.Bob {
+		if ac[i/chunkSize] == bc[i/chunkSize] {
+			s.Bob[i] = rem.Bob[i]
+		} else {
+			s.Bob[i] = rem.Alice[i] ^ 1
+		}
+	}
+	return s
 }
 
 // sampleEcEfficiency is the declared error-correction efficiency f (disclosure / Shannon
@@ -193,7 +225,6 @@ const sampleEcEfficiency = 1.2
 func OptimalSampleFraction(nSifted int, expectedQBER float64, fk FiniteKeyConfig) float64 {
 	fk = fk.withDefaults()
 	budget := SplitSecurityBudget(fk.EpsSec, fk.EpsCor)
-	tag := UniversalHashTagBits(budget.EpsCor)
 	best, bestLen := 0.1, 0
 	for pct := 1; pct <= 60; pct++ {
 		frac := float64(pct) / 100
@@ -202,8 +233,8 @@ func OptimalSampleFraction(nSifted int, expectedQBER float64, fk FiniteKeyConfig
 		if k < 1 || nb < 1 {
 			continue
 		}
-		phi := HypergeomUpperRate(nb, k, int(math.Round(expectedQBER*float64(k))), budget.EpsPE/2)
-		leak := int(sampleEcEfficiency*binaryEntropy(expectedQBER)*float64(2*nb)) + tag
+		phi := HypergeomUpperRate(nb, k, int(math.Round(expectedQBER*float64(k))), estimationTail(budget.EpsPE))
+		leak := int(sampleEcEfficiency * binaryEntropy(expectedQBER) * float64(2*nb))
 		if l := FiniteKeySecureKeyLength(2*nb, phi, leak, budget.EpsCor, budget.EpsPA); l > bestLen {
 			best, bestLen = frac, l
 		}
@@ -218,7 +249,13 @@ func distillFiniteKey(alice, bob []byte, sample, rem timedBits, leaked int, fk F
 	budget := SplitSecurityBudget(fk.EpsSec, fk.EpsCor)
 	n := len(alice)
 	rep.Bits = n
-	rep.Phi, rep.PhiPoint = crossBasisPhaseError(sample, rem, n, budget.EpsPE)
+	tail := estimationTail(budget.EpsPE)
+	if fk.byCorrection {
+		// a quarter of the smoothing for each basis's bound and one for the chain rule, epsPE in all
+		s := budget.EpsPE / 4
+		tail, rep.ChainBits = s*s, chainRuleBits(s)
+	}
+	rep.Phi, rep.PhiPoint = crossBasisPhaseError(sample, rem, n, tail)
 	rep.TagBits = UniversalHashTagBits(budget.EpsCor)
 	rep.LeakedBits = leaked + rep.TagBits
 	if n == 0 {
@@ -234,7 +271,8 @@ func distillFiniteKey(alice, bob []byte, sample, rem timedBits, leaked int, fk F
 		return nil, nil, rep, nil // the strings differ: no key, rather than a key the sides disagree on
 	}
 
-	l := FiniteKeySecureKeyLength(n, rep.Phi, rep.LeakedBits, budget.EpsCor, budget.EpsPA)
+	// the report counts every disclosed bit, the tag included; the formula's epsCor term is the tag's cost
+	l := FiniteKeySecureKeyLength(n, rep.Phi, leaked+rep.ChainBits, budget.EpsCor, budget.EpsPA)
 	if alignBits > 0 {
 		l -= l % alignBits
 	}

@@ -282,3 +282,10 @@ textarea.input { resize: vertical; min-height: 4.5rem; }
 .eval-figure { margin: 0 0 1rem; }
 .eval-fig { width: 100%; height: auto; border-radius: 10px; background: #fff; display: block; }
 .eval-figure figcaption { color: var(--text3); font-size: .75rem; margin-top: .3rem; }
+
+/* Coincidence log: plots and the chart tooltip */
+.clog-canvas { cursor: crosshair; margin-top: .5rem; }
+.clog-tip { position: fixed; pointer-events: none; z-index: 50; background: rgba(6, 6, 15, .94); border: 1px solid var(--border2);
+  border-radius: 6px; padding: .35rem .5rem; font: 500 .72rem 'JetBrains Mono', monospace; color: var(--text); display: none; max-width: 22rem; }
+.clog-tip .sw { display: inline-block; width: .55rem; height: .55rem; border-radius: 2px; margin-right: .35rem; }
+.clog-btn { padding: .3rem .6rem; font-size: .72rem; text-decoration: none; display: inline-block; }

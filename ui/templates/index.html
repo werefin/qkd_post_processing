@@ -40,6 +40,10 @@
         <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15"/></svg></span>
         <span class="nav-label">Continuous QKD</span>
       </a>
+      <a class="nav-item" data-section="clog" href="#">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="4" x2="9" y2="20"/></svg></span>
+        <span class="nav-label">Coincidence log</span>
+      </a>
       <a class="nav-item" data-section="evaluate" href="#">
         <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="8" y1="17" x2="8" y2="11"/><line x1="12" y1="17" x2="12" y2="7"/><line x1="16" y1="17" x2="16" y2="13"/></svg></span>
         <span class="nav-label">Evaluation</span>
@@ -435,6 +439,89 @@
           </table>
         </div>
         <div class="log-panel" id="cont-log"></div>
+      </div>
+    </section>
+
+    <section class="section" id="section-clog">
+      <div class="section-header section-header--wide">
+        <h1 class="section-title">Coincidence <span class="grad-text">log</span></h1>
+        <p class="section-sub">One row per integration window: singles, coincidences in the signal ROI and in a noise ROI, and the QBER, into a CSV whose header holds every setting. Read a log with <code>pandas.read_csv(path, comment="#")</code>.</p>
+      </div>
+      <div class="card">
+        <div class="card-head"><span class="card-title">Run</span><span class="badge badge-muted" id="clog-badge">Idle</span></div>
+        <div class="card-body">
+          <div class="field-row">
+            <div class="field">
+              <label class="field-label" for="clog-source">Source</label>
+              <select class="input" id="clog-source"><option value="sites">TimeTaggers of the loaded config</option><option value="recordings">stored recordings, offline</option></select>
+            </div>
+            <div class="field clog-sites"><label class="field-label" for="clog-site-a">Site A</label><select class="input" id="clog-site-a"></select></div>
+            <div class="field clog-sites"><label class="field-label" for="clog-site-b">Site B</label><select class="input" id="clog-site-b"></select></div>
+            <div class="field clog-recs" style="display:none"><label class="field-label" for="clog-ra">Recording A</label><select class="input" id="clog-ra"></select></div>
+            <div class="field clog-recs" style="display:none"><label class="field-label" for="clog-rb">Recording B</label><select class="input" id="clog-rb"></select></div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label class="field-label" for="clog-int">Integration time</label>
+              <select class="input" id="clog-int"><option value="30">30 s</option><option value="300">5 min</option><option value="1200">20 min</option><option value="3600">1 h</option><option value="18000">5 h</option><option value="custom">custom</option></select>
+            </div>
+            <div class="field" id="clog-int-custom-f" style="display:none"><label class="field-label" for="clog-int-custom">Custom (s)</label><input class="input" id="clog-int-custom" type="number" value="60" min="0.1" step="any"></div>
+            <div class="field"><label class="field-label" for="clog-windows">Stop after (rows)</label><input class="input" id="clog-windows" type="number" min="1" placeholder="until stopped"></div>
+            <div class="field"><label class="field-label" for="clog-exp">Experiment</label><input class="input" id="clog-exp" type="text"></div>
+            <div class="field"><label class="field-label" for="clog-notes">Notes</label><input class="input" id="clog-notes" type="text"></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label class="field-label" for="clog-window">ROI width (ps)</label><input class="input" id="clog-window" type="number" min="1"></div>
+            <div class="field"><label class="field-label" for="clog-center">ROI center (ps)</label><input class="input" id="clog-center" type="number"></div>
+            <div class="field"><label class="field-label" for="clog-noise">Noise ROI offset (ps)</label><input class="input" id="clog-noise" type="number"></div>
+            <div class="field"><label class="field-label" for="clog-delays">Delays (channel=ps, comma separated)</label><input class="input" id="clog-delays" type="text" placeholder="B1=120, B2=-40"></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label class="field-label" for="clog-higher">Higher-order groups (comma separated)</label><input class="input" id="clog-higher" type="text" placeholder="A1+A2+B1, A1+A2+B1+B2"></div>
+            <div class="field"><label class="field-label" for="clog-derived">Other values per row (name = formula; one per line)</label><textarea class="input mono" id="clog-derived" rows="2" placeholder="eta_A1 = (C_A1_B1 - C_A1_B1_noise) / S_B1"></textarea></div>
+          </div>
+          <div class="hint" id="clog-labels"></div>
+          <div class="btn-row">
+            <button class="btn" id="clog-start" type="button">Start logging</button>
+            <button class="btn btn-danger" id="clog-stop" type="button" disabled>Stop</button>
+          </div>
+          <div class="error-msg" id="clog-error"></div>
+          <div class="progress-track active" title="window in progress"><div class="progress-fill" id="clog-progress"></div></div>
+        </div>
+        <div class="chips" id="clog-chips"></div>
+      </div>
+
+      <div class="card" id="clog-qber-card">
+        <div class="card-head"><span class="card-title">QBER</span><span class="badge badge-muted" id="clog-qber-badge">from the coincidences, noise ROI subtracted</span></div>
+        <div class="chips" id="clog-qber"></div>
+        <div class="card-body"><canvas id="clog-qber-plot" class="plot-canvas plot-canvas--lg clog-canvas"></canvas></div>
+      </div>
+
+      <div class="grid grid--2">
+        <div class="card">
+          <div class="card-head"><span class="card-title">Coincidence matrix</span><span class="badge badge-muted">signal minus noise, last 10 s</span></div>
+          <div class="card-body"><canvas id="clog-mx" class="plot-canvas clog-canvas" style="height:20rem"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">Delay histogram</span><select class="input" id="clog-hist-group" style="width:auto"></select></div>
+          <div class="card-body"><canvas id="clog-hist" class="plot-canvas clog-canvas" style="height:20rem"></canvas><div class="hint" id="clog-hist-v"></div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><span class="card-title">Rows</span><span class="badge badge-muted" id="clog-rows-badge">none yet</span></div>
+        <div class="data-table-wrap"><table class="data-table"><thead id="clog-head"></thead><tbody id="clog-rows"><tr><td class="empty">no row yet</td></tr></tbody></table></div>
+        <div class="log-panel" id="clog-log"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><span class="card-title">Logs on this node</span></div>
+        <div class="data-table-wrap">
+          <table class="data-table">
+            <thead><tr><th>Log</th><th>Rows</th><th>Size</th><th>Last row</th><th></th></tr></thead>
+            <tbody id="clog-files"><tr><td colspan="5" class="empty">none yet</td></tr></tbody>
+          </table>
+        </div>
       </div>
     </section>
 

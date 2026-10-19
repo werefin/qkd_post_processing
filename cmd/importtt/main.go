@@ -591,6 +591,7 @@ func main() {
 	keystoreMax := flag.Int("keystore-max", 0, "maximum keys to keep in -keystore, 0 = unlimited; existing keys are never evicted, only this run's own new keys are held back past the cap")
 	cascade := flag.Bool("cascade", false, "correct errors with optimized Cascade (cascade.go): the least disclosure, f about 1.03-1.07, interactive, so single-site only")
 	cascadePasses := flag.Int("cascade-passes", 0, "Cascade passes, 0 = the measured default of 3")
+	cascadeSample := flag.Bool("cascade-sample", false, "with -cascade: sacrifice a random sample for the QBER as the other methods do, instead of counting the errors correction finds")
 	winnow := flag.Bool("winnow", false, "correct errors with Winnow instead of discarding blocks (see winnow.go/pipeline_winnow.go)")
 	winnowBlocks := flag.String("winnow-blocks", "", "comma-separated block size per Winnow pass; empty plans them from the sample QBER: a power of two holding about 0.45 errors, doubling each pass (qkd.WinnowSchedule)")
 	winnowSample := flag.Float64("winnow-sample", 0.05, "fraction of sifted bits sacrificed to measure QBER directly before Winnow correction")
@@ -844,7 +845,15 @@ func main() {
 		if !*jsonOut {
 			field("Method (step 2/3)", "optimized Cascade (passes=%d, sample=%.2f, chunk=%d)", *cascadePasses, *winnowSample, *chunkSize)
 		}
-		finalKeyBytes, rep = runCascadePipeline(aliceEv, bobEv, window, *cascadePasses, *winnowSample, *chunkSize, alignBits, *jsonOut)
+		// with no sample, Cascade plans from the QBER the filter predicts from timing, a public number
+		plan := *expectedQBER
+		if plan <= 0 && filterResult != nil {
+			plan = filterResult.PredictedQBER
+		}
+		if *cascadeSample {
+			plan = keyOpts.expectedQBER
+		}
+		finalKeyBytes, rep = runCascadePipeline(aliceEv, bobEv, window, *cascadePasses, *winnowSample, *chunkSize, alignBits, plan, *cascadeSample, *jsonOut)
 		rep.Method = "cascade"
 	} else if *winnow {
 		var blockSizes []int
@@ -1218,11 +1227,11 @@ func runWinnowPipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, blockS
 }
 
 // runCascadePipeline runs qkd.RunCascade and prints the same report as the other methods
-func runCascadePipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, passes int, sampleFraction float64, chunkSize, alignBits int, jsonOut bool) ([]byte, jsonReport) {
+func runCascadePipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, passes int, sampleFraction float64, chunkSize, alignBits int, planQBER float64, sacrifice, jsonOut bool) ([]byte, jsonReport) {
 	res, err := qkd.RunCascade(aliceEv, bobEv, qkd.CascadeRunConfig{
 		CoincidenceWindowPS: window, SampleFraction: sampleFraction, Cascade: qkd.CascadeConfig{Passes: passes}, Seed: 1,
 		ChunkSize: chunkSize, KeyAlignBits: alignBits, Asymptotic: keyOpts.asymptotic, FiniteKey: keyOpts.finite,
-		ExpectedQBER: keyOpts.expectedQBER,
+		ExpectedQBER: planQBER, SacrificeSample: sacrifice,
 	})
 	if err != nil {
 		fail(jsonOut, "pipeline error: %v", err)
@@ -1238,10 +1247,14 @@ func runCascadePipeline(aliceEv, bobEv []qkd.DetectionEvent, window int64, passe
 		field("Bob clicks in coincidence range", "%d", len(bobEv))
 		field("Sifted bits", "%d", res.SiftedBits)
 
-		section("(4 before 2/3): QBER from a sacrificed public sample")
+		if sacrifice {
+			section("(4 before 2/3): QBER from a sacrificed public sample")
+		} else {
+			section("(4 after 2/3): QBER counted by error correction, no bit sacrificed")
+		}
 		field("Sample bits", "%d (%.1f%% of sifted)", res.QBER.SampleBits, 100*float64(res.QBER.SampleBits)/float64(max(1, res.SiftedBits)))
 		field("Error bits in sample", "%d", res.QBER.ErrorBits)
-		field("QBER estimate", "%.4f", res.QBER.QBER)
+		field("QBER", "%.4f", res.QBER.QBER)
 
 		section(fmt.Sprintf("(2): optimized Cascade (blocks=%v)", res.Cascade.BlockSizes))
 		field("Bits corrected toward Alice", "%d", res.Cascade.Corrections)
@@ -1527,6 +1540,9 @@ func printFiniteKey(r *qkd.FiniteKeyReport) {
 	fk := keyOpts.finite
 	field("Key length bound", "finite-key, eps_sec=%.0e eps_cor=%.0e", fk.EpsSec, fk.EpsCor)
 	field("Phase error", "point %.4f, bound %.4f (cross-basis, fluctuation and post-selection included)", r.PhiPoint, r.Phi)
+	if r.ChainBits > 0 {
+		field("Chain rule", "%d bits: errors counted by correction, each basis bounded from the other's rounds", r.ChainBits)
+	}
 	switch {
 	case r.Bits == 0:
 		field("Correctness check", "nothing survived error correction, nothing to verify")
@@ -1805,13 +1821,14 @@ type finiteKeyJSON struct {
 	Verified        bool    `json:"verified"`
 	SurvivingBits   int     `json:"surviving_bits"`
 	ChargedBits     int     `json:"charged_bits"`
+	ChainRuleBits   int     `json:"chain_rule_bits"` // errors counted by correction: the chain rule's cost
 }
 
 func toFiniteKeyJSON(r *qkd.FiniteKeyReport) *finiteKeyJSON {
 	if r == nil {
 		return nil
 	}
-	return &finiteKeyJSON{PhaseErrorPoint: r.PhiPoint, PhaseErrorBound: r.Phi, TagBits: r.TagBits, Verified: r.Verified, SurvivingBits: r.Bits, ChargedBits: r.LeakedBits}
+	return &finiteKeyJSON{PhaseErrorPoint: r.PhiPoint, PhaseErrorBound: r.Phi, TagBits: r.TagBits, Verified: r.Verified, SurvivingBits: r.Bits, ChargedBits: r.LeakedBits, ChainRuleBits: r.ChainBits}
 }
 
 // ecPool starts the 5G NR LDPC service in the background, so its imports overlap loading the recording

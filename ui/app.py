@@ -37,6 +37,7 @@ REPO_ROOT = BASE_DIR.parent
 sys.path.insert(0, str(REPO_ROOT / 'acquisition'))
 import coincidence_peak  # noqa: E402
 import chsh_diagnostic  # noqa: E402
+import coincidences  # noqa: E402
 
 
 def _binary(env, name):
@@ -63,6 +64,7 @@ IMPORT_DIR = _dir('IMPORT_DIR', BASE_DIR / 'import')
 # continuous-QKD runs and evaluation reports: made from real data, so kept on this node only
 CONTINUOUS_DIR = _dir('CONTINUOUS_DIR', BASE_DIR / 'continuous')
 EVAL_DIR = _dir('EVAL_DIR', BASE_DIR / 'evaluations')
+CLOG_DIR = _dir('CLOG_DIR', BASE_DIR / 'coincidence_logs')
 UPLOADED_CONFIG_PATH = CONFIG_DIR / 'config.json'
 DELAYS_PATH = CONFIG_DIR / 'detector_delays.json'
 JOBS_PATH = CONFIG_DIR / 'jobs.jsonl'
@@ -486,6 +488,8 @@ def _start_acquire(args, kind):
     '''Runs a recording or a replay as the one acquisition process; caller holds _acquire_lock'''
     if _acquire['proc'] is not None and _acquire['proc'].poll() is None:
         return jsonify({'error': 'a recording or replay is already running'}), 409
+    if _clog_running():
+        return jsonify({'error': 'a coincidence log is running on the TimeTaggers'}), 409
     _acquire['log'].clear()
     _acquire['live'] = None
     try:
@@ -654,6 +658,171 @@ def api_continuous_status():
     return jsonify({'recording': _acquire['kind'] == 'continuous' and rec is not None and rec.poll() is None,
                     'processing': _cont_running(), 'run': _cont['run'], 'params': _cont['params'],
                     'started_at': _cont['started_at'], 'status': _cont['status'], 'log': list(_cont['log'])[-150:]})
+
+
+# Coincidence log: singles and coincidences per integration window, appended to a CSV for the photonics datasets
+
+_CLOG_PREFIX = coincidences.STATUS_PREFIX
+_CLOG_LIVE = 2400  # live points kept for the page, 20 minutes of half-second reads
+_clog = {'proc': None, 'status': None, 'live': collections.deque(maxlen=_CLOG_LIVE), 'live_n': 0, 'hist': None,
+         'log': collections.deque(maxlen=400), 'params': None, 'started_at': None}
+
+
+def _clog_running():
+    return _clog['proc'] is not None and _clog['proc'].poll() is None
+
+
+def _read_clog_output(proc):
+    for line in proc.stdout:
+        if line.startswith(_CLOG_PREFIX):
+            try:
+                st = json.loads(line[len(_CLOG_PREFIX):])
+            except ValueError:
+                continue
+            if st.get('live'):
+                _clog['live'].append(st['live'])
+                _clog['live_n'] += 1
+            if st.get('histograms'):
+                _clog['hist'] = st.pop('histograms')
+            _clog['status'] = st
+            continue
+        # the logger's own lines and problems; one line per TimeTagger read would drown them
+        if '[log]' in line or line.startswith(('[WARN]', '[ERROR]', 'Traceback')):
+            _clog['log'].append(line.rstrip('\n'))
+    proc.wait()
+
+
+def _clog_config():
+    return json.loads(UPLOADED_CONFIG_PATH.read_text()) if UPLOADED_CONFIG_PATH.is_file() else {}
+
+
+@app.route('/api/clog/options')
+def api_clog_options():
+    '''Every option's default, the loaded config's section, and each site's channels'''
+    cfg = _clog_config()
+    return jsonify({'defaults': coincidences.DEFAULTS, 'config': cfg.get('coincidence_log', {}),
+                    'site_channels': {n: s.get('channels', [1, 2, 3, 4]) for n, s in sorted(cfg.get('sites', {}).items())},
+                    'loaded': bool(cfg)})
+
+
+@app.route('/api/clog/start', methods=['POST'])
+def api_clog_start():
+    '''Logs the TimeTaggers, or stored recordings offline, one row per integration window'''
+    if not UPLOADED_CONFIG_PATH.is_file():
+        return jsonify({'error': 'load a config first'}), 400
+    body = request.get_json(silent=True) or {}
+    options = body.get('options') or {}
+    if not isinstance(options, dict):
+        return jsonify({'error': 'options must be an object'}), 400
+    options.pop('output_dir', None)  # logs stay in this node's directory
+    cfg = _clog_config()
+    try:
+        merged = coincidences.merge(cfg.get('coincidence_log', {}), options)
+    except (ValueError, TypeError) as e:
+        return jsonify({'error': str(e)}), 400
+    args = [sys.executable, str(REPO_ROOT / 'acquisition' / 'coincidence_logger.py'), str(UPLOADED_CONFIG_PATH),
+            '--json', '--output-dir', str(CLOG_DIR), '--options', json.dumps(options)]
+    try:
+        if body.get('windows'):
+            args += ['--windows', str(int(body['windows']))]
+        if body.get('duration_s'):
+            args += ['--duration-s', str(float(body['duration_s']))]
+        kind = body.get('source', 'sites')
+        if kind == 'recordings':
+            names = [n for n in (body.get('a'), body.get('b')) if n]
+            have = set(_list_recordings())
+            if not names or any(n not in have for n in names) or len(set(names)) != len(names):
+                raise ValueError('pick one or two different stored recordings')
+            args += ['--recordings', *[str(RECORDINGS_DIR / n) for n in names]]
+            source = f'{len(names)} stored recording(s), offline'
+        else:
+            sites = [s for s in body.get('sites') or merged['sites'] or [] if s]
+            if not 1 <= len(sites) <= 2 or any(s not in cfg.get('sites', {}) for s in sites) or len(set(sites)) != len(sites):
+                raise ValueError('one site, or two different sites, of the loaded config')
+            args += ['--sites', *sites]
+            source = ' + '.join(sites)
+    except (TypeError, ValueError) as e:
+        return jsonify({'error': str(e)}), 400
+    live_source = kind != 'recordings'
+    with _acquire_lock:
+        busy = _clog_running() or (live_source and (_cont_running() or (_acquire['proc'] is not None and _acquire['proc'].poll() is None)))
+        if busy:
+            return jsonify({'error': 'busy: a log is running, or the TimeTaggers are recording'}), 409
+        _clog['log'].clear()
+        _clog['live'].clear()
+        _clog.update(status=None, hist=None, live_n=0)
+        try:
+            proc = subprocess.Popen(args, cwd=str(REPO_ROOT / 'acquisition'), stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True, bufsize=1)
+        except OSError as e:
+            return jsonify({'error': f'could not start: {e}'}), 500
+        _clog.update(proc=proc, started_at=time.time(), params={'source': source, 'integration_s': merged['integration_s'], 'kind': kind})
+        threading.Thread(target=_read_clog_output, args=(proc,), daemon=True).start()
+    return jsonify({'started': True})
+
+
+@app.route('/api/clog/stop', methods=['POST'])
+def api_clog_stop():
+    '''Stops the log; the window in progress is written as a last, incomplete row'''
+    if not _clog_running():
+        return jsonify({'error': 'no coincidence log is running'}), 409
+    _clog['proc'].send_signal(signal.SIGINT)
+    return jsonify({'stopping': True})
+
+
+@app.route('/api/clog/status')
+def api_clog_status():
+    proc = _clog['proc']
+    # points past the client's count; the oldest drop off the deque, so it may get fewer than it missed
+    since = request.args.get('since', type=int) or 0
+    live = list(_clog['live'])
+    live = live[max(since - (_clog['live_n'] - len(live)), 0):]
+    return jsonify({'running': _clog_running(), 'returncode': None if proc is None else proc.poll(),
+                    'params': _clog['params'], 'started_at': _clog['started_at'], 'status': _clog['status'],
+                    'histograms': _clog['hist'], 'live': live, 'live_total': _clog['live_n'],
+                    'log': list(_clog['log'])[-150:]})
+
+
+def _clog_path(name):
+    path = CLOG_DIR / secure_filename(name)
+    return path if name.endswith('_coincidences.csv') and path.is_file() else None
+
+
+@app.route('/api/clog/files')
+def api_clog_files():
+    files = []
+    for p in sorted(CLOG_DIR.glob('*_coincidences.csv'), key=lambda p: p.stat().st_mtime, reverse=True):
+        st = p.stat()
+        with p.open(encoding='utf-8') as f:
+            rows = sum(1 for line in f if line.strip() and not line.startswith('#')) - 1
+        files.append({'name': p.name, 'bytes': st.st_size, 'rows': max(rows, 0), 'modified': st.st_mtime})
+    return jsonify({'files': files})
+
+
+@app.route('/api/clog/files/<name>', methods=['GET', 'DELETE'])
+def api_clog_file(name):
+    path = _clog_path(name)
+    if path is None:
+        return jsonify({'error': 'no such log'}), 404
+    if request.method == 'DELETE':
+        if _clog_running() and _clog['status'] and _clog['status'].get('file') == path.name:
+            return jsonify({'error': 'this log is being written'}), 409
+        path.unlink()
+        return jsonify({'deleted': name})
+    return send_file(path, mimetype='text/csv', as_attachment=True, download_name=path.name)
+
+
+@app.route('/api/clog/files/<name>/data')
+def api_clog_file_data(name):
+    '''A log's metadata, columns and rows, for the page's plots and table'''
+    path = _clog_path(name)
+    if path is None:
+        return jsonify({'error': 'no such log'}), 404
+    try:
+        meta, columns, rows = coincidences.read_log(path)
+    except (ValueError, OSError) as e:
+        return jsonify({'error': f'unreadable log: {e}'}), 400
+    return jsonify({'name': path.name, 'meta': meta, 'columns': columns, 'rows': rows})
 
 
 # Coincidence-peak analysis, cached per recording pair
