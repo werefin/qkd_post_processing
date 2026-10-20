@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="QKD node">
+  <title>QKD node: a coincidence peak between the two photons of an entangled pair</title>
+  <defs>
+    <linearGradient id="peak" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2BBDE8"/>
+      <stop offset="0.5" stop-color="#9B5CF5"/>
+      <stop offset="1" stop-color="#E84B8C"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="15" fill="#0C0C1E"/>
+  <rect x="0.75" y="0.75" width="62.5" height="62.5" rx="14.25" fill="none" stroke="#232348" stroke-width="1.5"/>
+  <path d="M11 45 H21 C26.5 45 28.2 13 32 13 C35.8 13 37.5 45 43 45 H53" fill="none" stroke="url(#peak)" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="11" cy="45" r="5" fill="#2BBDE8"/>
+  <circle cx="53" cy="45" r="5" fill="#E84B8C"/>
+  <circle cx="32" cy="13" r="2.6" fill="#EDF0FF"/>
+</svg>

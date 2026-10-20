@@ -59,7 +59,8 @@ input, select { font-family: inherit; }
   backdrop-filter: blur(20px);
   padding: 1.4rem 1.1rem;
 }
-.sidebar-title { font-size: 1.05rem; font-weight: 800; letter-spacing: -0.01em; }
+.sidebar-title { font-size: 1.05rem; font-weight: 800; letter-spacing: -0.01em; display: flex; align-items: center; gap: .55rem; }
+.sidebar-logo { width: 30px; height: 30px; flex: none; border-radius: 8px; }
 .sidebar-sub { font-size: 0.72rem; color: var(--text3); margin-top: .2rem; margin-bottom: 1rem; }
 
 .sidebar-nav { flex: 1; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; margin-top: .4rem; }

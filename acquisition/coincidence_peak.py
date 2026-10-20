@@ -333,6 +333,13 @@ def _upper_limits(
     return limits
 
 
+def _coarse_fft_len(n_bins: int, max_lag_bins: int) -> int:
+    '''FFT length for the correlation at lags up to max_lag_bins only: the circular correlation's wrap-around
+    lands at lags of at least n_fft - max_lag_bins, which two n_bins-long series cannot reach once n_fft is
+    n_bins + max_lag_bins, so this gives the same values as the full 2 n_bins - 1 at about half the work'''
+    return fft.next_fast_len(min(n_bins + max(max_lag_bins, 0) + 1, 2 * n_bins - 1))
+
+
 def _coarse_search(
     a: np.ndarray,
     b: np.ndarray,
@@ -348,7 +355,7 @@ def _coarse_search(
     # Memory guard: widen the coarse bin until the FFT working set fits
     while True:
         n_bins = duration_ps // coarse_bin_ps + 2
-        n_fft = fft.next_fast_len(2 * n_bins - 1)
+        n_fft = _coarse_fft_len(n_bins, max_lag_ps // coarse_bin_ps)
         estimated_gib = (2 * n_bins * 4 + 3 * (n_fft // 2 + 1) * 8) / (1024**3)
         if (
             estimated_gib <= max_memory_gib
@@ -367,7 +374,7 @@ def _coarse_search(
     if max_lag_bins < 1:
         raise AnalysisError("maximum lag is smaller than the coarse bin width")
 
-    n_fft = fft.next_fast_len(2 * n_bins - 1)
+    n_fft = _coarse_fft_len(n_bins, max_lag_bins)
     estimated_gib = (2 * n_bins * 4 + 3 * (n_fft // 2 + 1) * 8) / (1024**3)
     if not quiet:
         log('INFO',
@@ -382,13 +389,15 @@ def _coarse_search(
     spectrum_a = fft.rfft(counts_a, n_fft, workers=-1)
     spectrum_b = fft.rfft(counts_b, n_fft, workers=-1)
     del counts_a, counts_b
-    spectrum_a *= np.conj(spectrum_b)
+    np.conjugate(spectrum_b, out=spectrum_b)  # in place: a temporary copy of the spectrum costs as much as the product
+    spectrum_a *= spectrum_b
     del spectrum_b
     correlation = fft.irfft(spectrum_a, n_fft, workers=-1)
     del spectrum_a
 
     lag_bins = np.arange(-max_lag_bins, max_lag_bins + 1, dtype=np.int64)
-    values = correlation[(-lag_bins) % n_fft]
+    # correlation[(-lag) % n_fft] for lag = -max .. max, as two reversed slices rather than an index array
+    values = np.concatenate((correlation[max_lag_bins:0:-1], correlation[:1], correlation[:n_fft - max_lag_bins - 1:-1]))
     del correlation
     # robust noise level from a 1-in-64 subsample: exact medians of tens of millions of lags cost a second,
     # and the scores are only ranked, which a monotone normalisation leaves unchanged
