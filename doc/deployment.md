@@ -82,10 +82,29 @@ Everything a node keeps is under `deploy/nodes/<ID>/`:
 | `RECORDINGS_MAX_GB` | 0 | when set, the oldest recordings are deleted beyond this size |
 | `APP_UID`, `APP_GID` | set by `install` | the user the containers run as |
 | `TWO_PARTY_AUTO_ACCEPT` | 1 | answer a neighbor's two-party extraction by itself; 0 = ignore them |
+| `ALERT_WEBHOOK` | none | URL the node posts its alerts to as JSON whenever they change, e.g. a chat or paging service |
+| `ALERT_MIN_KEYS` | 100 | warn when this node may originate fewer keys than this toward a neighbor |
+| `ALERT_MAX_QBER` | 0.11 | warn when a block's QBER is above this |
 
 ### Sizing
 
 8 GB of RAM at minimum, 16 GB comfortable: the coincidence-peak search caps itself at about 4 GiB, and a pooled extraction of seventy seconds of recordings peaks at about 2 GB. Four or more cores; the peak refinement and skew fit run in parallel. Size the disk for the recordings, which are large; keys are small.
+
+### Production: continuous two-party QKD
+
+With the nodes deployed, each link fills its pools by itself, at both ends, with the same keys under the same key_IDs; the key management system relays them to nodes further away (`doc/key_management.md`).
+
+**Clocks**: run NTP on every node. Each node cuts its recording into segments that start on the same UTC seconds as its neighbors', so the clocks must agree to well under a segment; the TimeTaggers' own clocks are aligned from the data and need nothing.
+
+**Start**: on each node, open Continuous QKD, choose this node's TimeTagger under Two-party, production, and press Start. On one end of each link, the one whose detectors click less, also tick the neighbor under Announce to: that node offers every block, the other answers by itself. Blocks of 5 minutes are a good start: shorter ones certify little key, longer ones wait longer for it.
+
+**What happens**: every block, the announcing node joins its segments into one recording and sends its timing, never a bit, to the neighbor in parts; the neighbor aligns its own segments of the same time, from the previous block's clock model, and both run optimized Cascade, verification and finite-key privacy amplification into the link's pool. Both nodes list every block with its QBER, phase-error bound, disclosure, round trips and key.
+
+**Watching it**: the Link monitor page shows each link as it runs: both systems and the channel between them, the quantum channel's stage from waiting for signal to generating secure keys, sync, fidelity, QBER and key rate, the singles and coincidences per polarization, heralding, the bit rate after each protocol stage, and the whole run's history, with every block as CSV or JSON. The sidebar and the Continuous QKD page show the alerts: the recorder stopped, a block failed, the QBER above `ALERT_MAX_QBER`, no key with a neighbor for three blocks, a pool below `ALERT_MIN_KEYS`, the key management system not answering; with `ALERT_WEBHOOK` set they are also posted there.
+
+**Restarts**: the settings are kept on the node; after a reboot or a container restart the node starts recording again and continues the schedule where it was, and a recorder left behind by a crash is stopped first. Stop ends recording and scheduling on that node until Start is pressed again.
+
+**Coincidences per polarization** are shown on the answering node only: it alone holds both bits of a pair after error correction, and sending the counts would tell the other node how many zeros the key holds.
 
 ### Lab PC, Windows included
 

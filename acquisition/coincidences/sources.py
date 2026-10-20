@@ -91,7 +91,7 @@ class FileSource:
         m = re.match(r'^(\d{8}_\d{6})_', Path(paths[0]).name)
         # rows are timed from the recording's start, which its file name holds
         self.anchor = (datetime.strptime(m[1], '%Y%m%d_%H%M%S').timestamp() if m else 0.0, self.first[0])
-        self.names = [f'recording {"AB"[i]}' for i in range(len(paths))]
+        self.names = ['A', 'B'][:len(paths)]  # by place, the first and the second recording
         self.description = f'stored recording{"s" if len(paths) == 2 else ""} started {m[1] if m else "at an unknown time"}, offline'
 
     def start(self, stop):

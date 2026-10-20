@@ -624,7 +624,7 @@ func main() {
 	expectedQBER := flag.Float64("expected-qber", 0, "declared QBER prior for -sample-auto; 0 = the coincidence filter's timing-based prediction, or 0.05 without the filter")
 	epsCor := flag.Float64("eps-cor", 1e-15, "finite-key correctness failure probability per block, sets the universal-hash tag length")
 	jsonOut := flag.Bool("json", false, "print one JSON metrics object to stdout instead of the human-readable report")
-	role := flag.String("role", "", "two-party mode, alice or bob: run one site's half on its own recording, exchanging public messages with -peer through the KMS (-ldpc5g or -polar, see twoparty.go)")
+	role := flag.String("role", "", "two-party mode, alice or bob: run one site's half on its own recording, exchanging public messages with -peer through the KMS (-cascade, -ldpc5g or -polar, see twoparty.go)")
 	peer := flag.String("peer", "", "two-party: the neighbor node running the other half")
 	session := flag.String("session", "", "two-party: the session name both halves use")
 	exportPublic := flag.String("export-public", "", "two-party, alice: write the announcement (timing, basis and multi-photon flag, never bits) into this directory and exit")
@@ -681,12 +681,14 @@ func main() {
 		}
 	}
 	if *role != "" {
-		if *winnow || *ldpc || *searchMatrix || *cascade || *epochS > 0 || *calibrateDelays != "" {
-			fail(*jsonOut, "two-party mode runs polar or 5G NR LDPC correction only")
+		if *winnow || *ldpc || *searchMatrix || *epochS > 0 || *calibrateDelays != "" {
+			fail(*jsonOut, "two-party mode runs optimized Cascade, polar or 5G NR LDPC correction only")
 		}
 		method := "polar"
 		var backend qkd.LDPC5GBackend
-		if *ldpc5g && *exportPublic == "" {
+		if *cascade {
+			method = "cascade"
+		} else if *ldpc5g && *exportPublic == "" {
 			pool, err := pyec.Start(0)
 			if err != nil {
 				fail(*jsonOut, "%v", err)
@@ -709,7 +711,8 @@ func main() {
 			timeout: *peerTimeout,
 			cfg: qkd.TwoPartyConfig{RateMargin: *polarMargin, ListSize: *polarList, BlockLength: *polarN,
 				ChunkSize: *chunkSize, KeyAlignBits: alignBits, TimingBins: *softBins, SampleShare: *polarSample,
-				Asymptotic: keyOpts.asymptotic, FiniteKey: keyOpts.finite, Method: method, LDPC: backend},
+				Asymptotic: keyOpts.asymptotic, FiniteKey: keyOpts.finite, Method: method, LDPC: backend,
+				CascadeSample: *cascadeSample},
 		})
 		return
 	}

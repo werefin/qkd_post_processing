@@ -39,8 +39,10 @@ Both ends of a link must store the same keys under the same key_IDs, so post-pro
 
 - Alice's node announces, for every click, its timestamp, basis and multi-photon flag, never its bit; the announcement goes one way only.
 - Bob's node finds its own recording of the same start time, aligns it to the announcement (offset and clock skew), removes the drift, sets the window from the HWHM of the peak, matches the coincidences and sends back only which of Alice's clicks are paired.
-- Both reveal a random sample to estimate the error rate. Alice sends 5G NR LDPC syndromes and frame tags (or, with polar codes, frozen values and short hashes per block), Bob decodes his bits onto hers and reports which frames failed, and Alice reveals more only for those, rate-adaptively. Both exchange CRCs, Alice sends the verification tag, Bob confirms.
+- Error correction is optimized Cascade by default: Bob asks Alice for the parities he needs, a whole pass's blocks in one request and then one request per halving step of all the searches under way, about a hundred round trips per block; Alice counts every parity she discloses herself. Nothing is sacrificed: after correction Bob announces, per basis, how many bits he corrected, which bound the other basis's phase errors (`doc/security_proof.md`, Theorem (errors counted by correction)). With 5G NR LDPC or polar codes instead, both reveal a random sample to estimate the error rate, Alice sends syndromes and frame tags (or frozen values and short hashes per block), Bob decodes his bits onto hers and reports which frames failed, and Alice reveals more only for those, rate-adaptively. Both then exchange CRCs, Alice sends the verification tag, Bob confirms.
 - Both hash their verified bits with the same Toeplitz seed to the certified length, and Alice names one key_ID per 256-bit record. Each node writes the records into the import folder of the link, and its KMS takes them into the pool.
+
+Continuous two-party QKD runs this for every block without anyone starting it: each node records its own TimeTagger in segments that start on the same UTC seconds as its neighbor's, the node that announces offers each block's timing in parts, and the other answers with its own segments of the same time (Production: continuous two-party QKD in `doc/deployment.md`).
 
 The messages travel between the two dashboards through the nodes' KMEs (`/kme/v1/pp/...`), so they are carried over the same mutual TLS as everything between nodes, and only between neighbors. Bob does the heavy part, filtering, matching and decoding, and never reveals his timing; Alice's node only builds events, transforms and hashes. Start a two-party extraction from the node whose detectors click less, so that its announcement is the smaller one; the other node answers by itself.
 
@@ -106,7 +108,7 @@ Every answer from a peer is checked to come from the node it was sent to. Bodies
 ### What the system does not provide
 
 - **Information-theoretic authentication of post-processing messages.** They are authenticated by TLS between the nodes, which is computational and has to hold only while the protocol runs (Two-party post-processing in `doc/security_proof.md`).
-- **Two-party extraction with regular LDPC, Winnow or block discard.** The two-party protocol uses 5G NR LDPC or polar codes; the other methods still run both parties in one process.
+- **Two-party extraction with regular LDPC, Winnow or block discard.** The two-party protocol uses optimized Cascade, 5G NR LDPC or polar codes; the other methods still run both parties in one process.
 - **Protection against a compromised node.** Every node is trusted with the keys it holds or relays.
 - **Information-theoretic authentication of reservations and of application identities.** Both rest on the certificates and TLS, which are computational.
 - **Live reconfiguration.** A changed network description takes effect when each node restarts.

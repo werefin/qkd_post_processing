@@ -52,6 +52,10 @@ services:
       TMPDIR: /data/tmp
       TWO_PARTY_AUTO_ACCEPT: ${TWO_PARTY_AUTO_ACCEPT:-1}
       RECORDINGS_MAX_GB: ${RECORDINGS_MAX_GB:-0}
+      # alerts of continuous two-party QKD: posted to the webhook when they change, if one is set
+      ALERT_WEBHOOK: ${ALERT_WEBHOOK:-}
+      ALERT_MIN_KEYS: ${ALERT_MIN_KEYS:-100}
+      ALERT_MAX_QBER: ${ALERT_MAX_QBER:-0.11}
     volumes:
       - ${NODE_DIR}/pki/app:/etc/qkd/app:ro
       - ${NODE_DIR}/data/recordings:/data/recordings

@@ -73,6 +73,14 @@ type twoPartyJSON struct {
 	LDPC5GAttempts     int            `json:"ldpc5g_attempts,omitempty"`
 	LDPC5GCorrected    int            `json:"ldpc5g_bits_corrected,omitempty"`
 	LDPC5GLeakedBits   int            `json:"ldpc5g_leaked_bits,omitempty"`
+	CascadeParities    int            `json:"cascade_parities,omitempty"`
+	CascadeRounds      int            `json:"cascade_rounds,omitempty"`
+	CascadeCorrected   int            `json:"cascade_corrections,omitempty"`
+	ECLeakedBits       int            `json:"ec_leaked_bits"`
+	BasisBits          [2]int         `json:"basis_bits"`            // key bits per basis, HV then DA
+	BasisChecked       [2]int         `json:"basis_checked"`         // estimation bits per basis
+	BasisErrors        [2]int         `json:"basis_errors"`          // errors among them
+	PairCounts         map[string]int `json:"pair_counts,omitempty"` // Bob only: verified pairs by Alice's then Bob's polarization
 	ChunksTotal        int            `json:"chunks_total"`
 	ChunksKept         int            `json:"chunks_kept"`
 	LeakedBitsTotal    int            `json:"leaked_bits_total"`
@@ -358,6 +366,22 @@ func finishRoleOutput(out twoPartyJSON, o twoPartyOptions, res qkd.TwoPartyResul
 	out.LDPC5GRows, out.LDPC5GFrames, out.LDPC5GFailed = res.LDPC.M, res.LDPC.Frames, res.LDPC.Failed
 	out.LDPC5GAttempts, out.LDPC5GCorrected, out.LDPC5GLeakedBits = res.LDPC.Attempts, res.LDPC.BitsCorrected, res.LDPC.LeakedBits
 	out.PolarBlocks, out.PolarAttempts, out.PolarBitsCorrected, out.PolarLeakedBits = res.PolarBlocks, res.PolarAttempts, res.PolarBitsCorrected, res.PolarLeakedBits
+	// Alice's ECLeakedBits is her own count of the parities she disclosed; Bob's run statistics are his
+	out.CascadeParities, out.CascadeRounds, out.CascadeCorrected = res.Cascade.Parities, res.Cascade.Rounds, res.Cascade.Corrections
+	out.ECLeakedBits = res.ECLeakedBits
+	out.BasisBits, out.BasisChecked, out.BasisErrors = res.BasisBits, res.BasisChecked, res.BasisErrors
+	if o.role == "bob" {
+		// channels 1-4 are H, V, D, A: bit 0 and 1 of the HV basis, then of the DA basis
+		names := [2][2]string{{"H", "V"}, {"D", "A"}}
+		out.PairCounts = map[string]int{}
+		for b := range 2 {
+			for a := range 2 {
+				for m := range 2 {
+					out.PairCounts[names[b][a]+names[b][m]] = res.PairCounts[b][a][m]
+				}
+			}
+		}
+	}
 	out.ChunksTotal, out.ChunksKept, out.LeakedBitsTotal = res.CRC.ChunksTotal, res.CRC.ChunksKept, res.LeakedBits
 	out.FiniteKey = toFiniteKeyJSON(res.FiniteKey)
 	out.FinalKeyBits = len(res.FinalKeyBits)

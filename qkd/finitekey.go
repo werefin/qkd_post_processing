@@ -180,6 +180,12 @@ func crossBasisPhaseError(sample, rem timedBits, nSurviving int, tail float64) (
 			n[b]++
 		}
 	}
+	return phaseErrorFromCounts(n, k, e, nSurviving, tail)
+}
+
+// phaseErrorFromCounts is crossBasisPhaseError on counts alone: n key bits, and k estimation bits with e errors,
+// per basis; what two parties hold once the error counts are announced
+func phaseErrorFromCounts(n, k, e [2]int, nSurviving int, tail float64) (phi, point float64) {
 	total := n[0] + n[1]
 	if total == 0 || nSurviving <= 0 {
 		return 0.5, 0.5
@@ -199,6 +205,12 @@ func crossBasisPhaseError(sample, rem timedBits, nSurviving int, tail float64) (
 	}
 	phi *= float64(total) / float64(nSurviving)
 	return min(0.5, phi), point
+}
+
+// correctionBudget is the estimation tail and chain-rule cost when errors are counted by correction
+func correctionBudget(epsPE float64) (tail float64, chainBits int) {
+	s := epsPE / 4 // a quarter of the smoothing for each basis's bound and one for the chain rule
+	return s * s, chainRuleBits(s)
 }
 
 // correctionSample is the sample error correction gives for free: every key bit with Bob's original value where
@@ -251,9 +263,7 @@ func distillFiniteKey(alice, bob []byte, sample, rem timedBits, leaked int, fk F
 	rep.Bits = n
 	tail := estimationTail(budget.EpsPE)
 	if fk.byCorrection {
-		// a quarter of the smoothing for each basis's bound and one for the chain rule, epsPE in all
-		s := budget.EpsPE / 4
-		tail, rep.ChainBits = s*s, chainRuleBits(s)
+		tail, rep.ChainBits = correctionBudget(budget.EpsPE)
 	}
 	rep.Phi, rep.PhiPoint = crossBasisPhaseError(sample, rem, n, tail)
 	rep.TagBits = UniversalHashTagBits(budget.EpsCor)

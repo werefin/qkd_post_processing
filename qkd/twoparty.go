@@ -39,9 +39,12 @@ type TwoPartyConfig struct {
 	AnnouncementDigest []byte
 	Asymptotic         bool
 	FiniteKey          FiniteKeyConfig
-	// Method is the error correction, "polar" (the default) or "ldpc5g"; LDPC does its matrix work
+	// Method is the error correction, "polar" (the default), "ldpc5g" or "cascade"; LDPC does its matrix work
 	Method string
 	LDPC   LDPC5GBackend
+	// CascadeSample: Cascade sacrifices a sample like the codes; by default nothing is sacrificed and Bob
+	// announces the errors correction found per basis, which bound the other basis's phase errors
+	CascadeSample bool
 }
 
 func (c TwoPartyConfig) method() string {
@@ -61,34 +64,42 @@ type TwoPartyResult struct {
 	PolarLeakedBits    int
 	Method             string
 	LDPC               LDPC5GResult
-	ECLeakedBits       int // what error correction disclosed, whichever method ran
-	CRC                ChunkReconcileResult
-	LeakedBits         int
-	FiniteKey          *FiniteKeyReport
-	FinalKeyBits       []byte
-	FinalKeyBytes      []byte
-	KeyIDs             []string // one per 256-bit block of the key, chosen by Alice
+	Cascade            CascadeStats // Bob's side of the run; Alice's ECLeakedBits is her own count of what she disclosed
+	ECLeakedBits       int          // what error correction disclosed, whichever method ran
+	// per basis (HV, DA): key bits, and the bits and errors the estimate rests on, the same on both sides
+	BasisBits    [2]int
+	BasisChecked [2]int
+	BasisErrors  [2]int
+	// Bob only, never sent: verified pairs per basis by Alice's bit (his after correction) and his own raw bit
+	PairCounts    [2][2][2]int
+	CRC           ChunkReconcileResult
+	LeakedBits    int
+	FiniteKey     *FiniteKeyReport
+	FinalKeyBits  []byte
+	FinalKeyBytes []byte
+	KeyIDs        []string // one per 256-bit block of the key, chosen by Alice
 }
 
 const twoPartyVersion = 1
 
 // tpParams is the part of the configuration both sides check is identical
 type tpParams struct {
-	Method       string
-	RateMargin   float64
-	ListSize     int
-	BlockLength  int
-	ChunkSize    int
-	KeyAlignBits int
-	TimingBins   int
-	Asymptotic   bool
-	EpsSec       float64
-	EpsCor       float64
+	Method        string
+	CascadeSample bool
+	RateMargin    float64
+	ListSize      int
+	BlockLength   int
+	ChunkSize     int
+	KeyAlignBits  int
+	TimingBins    int
+	Asymptotic    bool
+	EpsSec        float64
+	EpsCor        float64
 }
 
 func (c TwoPartyConfig) params() tpParams {
 	fk := c.FiniteKey.withDefaults()
-	return tpParams{c.method(), c.RateMargin, c.ListSize, c.BlockLength, c.ChunkSize, c.KeyAlignBits, c.TimingBins, c.Asymptotic, fk.EpsSec, fk.EpsCor}
+	return tpParams{c.method(), c.CascadeSample, c.RateMargin, c.ListSize, c.BlockLength, c.ChunkSize, c.KeyAlignBits, c.TimingBins, c.Asymptotic, fk.EpsSec, fk.EpsCor}
 }
 
 type tpHello struct {
@@ -119,6 +130,50 @@ type tpPolarRound struct{ Blocks []tpPolarBlock }
 type tpFailed struct{ Failed []int }
 
 type tpCRC struct{ CRC []uint16 }
+
+// tpCascade is one of Bob's requests: parities of ranges of a pass, or, with Done, the end of Cascade and the
+// number of parities he counted, which must match Alice's own count
+type tpCascade struct {
+	Pass     int
+	Ranges   [][2]int32
+	Done     bool
+	Parities int
+}
+
+// tpCounts is what correction found: per basis, the key bits and the errors among them, a dropped chunk's bits
+// counted as errors
+type tpCounts struct {
+	K [2]int
+	E [2]int
+}
+
+// remoteCascade is Alice's oracle as Bob sees it: one round trip per request
+type remoteCascade struct{ conn Conn }
+
+func (r remoteCascade) Parities(pass int, ranges [][2]int32) ([]byte, error) {
+	if err := r.conn.Send("cascade", tpCascade{Pass: pass, Ranges: ranges}); err != nil {
+		return nil, err
+	}
+	var out tpBits
+	if err := r.conn.Recv("cascade_parities", &out); err != nil {
+		return nil, err
+	}
+	return out.Bits, nil
+}
+
+// cascadePlanQBER is the QBER Cascade sizes its first blocks with: the sample's if one was taken, else the
+// declared expectation
+func (c TwoPartyConfig) cascadePlanQBER(sampled QBERResult) float64 {
+	if c.CascadeSample && sampled.SampleBits > 0 {
+		return sampled.QBER
+	}
+	if c.ExpectedQBER > 0 {
+		return c.ExpectedQBER
+	}
+	return 0.05
+}
+
+func (c TwoPartyConfig) byCorrection() bool { return c.method() == "cascade" && !c.CascadeSample }
 
 type tpVerify struct {
 	Seed []byte
@@ -200,7 +255,32 @@ func RunAlice(conn Conn, events []DetectionEvent, cfg TwoPartyConfig) (res TwoPa
 			return res, err
 		}
 		res.ECLeakedBits = res.LDPC.LeakedBits
-		return finishTwoParty(conn, true, res, cfg, remBits, sampleTB, remTB)
+		return finishTwoParty(conn, true, res, cfg, remBits, nil, sampleTB, remTB)
+	}
+	if res.Method == "cascade" {
+		// Alice only answers; what she discloses is counted here, on her side
+		oracle := NewCascadeAlice(remBits, sift.SampleSeed)
+		for {
+			var req tpCascade
+			if err = conn.Recv("cascade", &req); err != nil {
+				return res, err
+			}
+			if req.Done {
+				if req.Parities != oracle.Disclosed {
+					return res, fmt.Errorf("two-party: Bob counted %d Cascade parities, Alice disclosed %d", req.Parities, oracle.Disclosed)
+				}
+				break
+			}
+			par, perr := oracle.Parities(req.Pass, req.Ranges)
+			if perr != nil {
+				return res, perr
+			}
+			if err = conn.Send("cascade_parities", tpBits{par}); err != nil {
+				return res, err
+			}
+		}
+		res.ECLeakedBits = oracle.Disclosed
+		return finishTwoParty(conn, true, res, cfg, remBits, nil, sampleTB, remTB)
 	}
 
 	blockLen := polarBlockLength(cfg.BlockLength, len(remBits))
@@ -238,7 +318,7 @@ func RunAlice(conn Conn, events []DetectionEvent, cfg TwoPartyConfig) (res TwoPa
 	}
 	res.PolarBlocks, res.PolarLeakedBits = plan.blocks, plan.leaked(attempt)
 	res.ECLeakedBits = res.PolarLeakedBits
-	return finishTwoParty(conn, true, res, cfg, remBits, sampleTB, remTB)
+	return finishTwoParty(conn, true, res, cfg, remBits, nil, sampleTB, remTB)
 }
 
 // RunBob runs Bob's side: he holds Alice's announced events and his own events already on
@@ -271,6 +351,9 @@ func RunBob(conn Conn, alice []PublicEvent, bobEvents []DetectionEvent, cfg TwoP
 	share := cfg.SampleShare
 	if cfg.ExpectedQBER > 0 {
 		share = OptimalSampleFraction(len(pairs), cfg.ExpectedQBER, cfg.FiniteKey)
+	}
+	if cfg.byCorrection() {
+		share = 0 // every bit is key; the errors correction finds are the estimate
 	}
 	sift.SampleN = max(0, min(int(float64(len(pairs))*share), len(pairs)))
 	sift.SampleSeed = cfg.SampleSeed
@@ -322,7 +405,19 @@ func RunBob(conn Conn, alice []PublicEvent, bobEvents []DetectionEvent, cfg TwoP
 			return res, err
 		}
 		res.ECLeakedBits = res.LDPC.LeakedBits
-		return finishTwoParty(conn, false, res, cfg, corrected, sampleTB, remTB)
+		return finishTwoParty(conn, false, res, cfg, corrected, remBits, sampleTB, remTB)
+	}
+	if res.Method == "cascade" {
+		var corrected []byte
+		corrected, res.Cascade, err = CascadeBob(remBits, cfg.cascadePlanQBER(res.QBER), CascadeConfig{Seed: sift.SampleSeed}, remoteCascade{conn})
+		if err != nil {
+			return res, err
+		}
+		if err = conn.Send("cascade", tpCascade{Done: true, Parities: res.Cascade.Parities}); err != nil {
+			return res, err
+		}
+		res.ECLeakedBits = res.Cascade.Parities
+		return finishTwoParty(conn, false, res, cfg, corrected, remBits, sampleTB, remTB)
 	}
 
 	blockLen := polarBlockLength(cfg.BlockLength, len(remBits))
@@ -370,12 +465,13 @@ func RunBob(conn Conn, alice []PublicEvent, bobEvents []DetectionEvent, cfg TwoP
 	}
 	res.PolarBlocks, res.PolarLeakedBits = plan.blocks, plan.leaked(attempt)
 	res.ECLeakedBits = res.PolarLeakedBits
-	return finishTwoParty(conn, false, res, cfg, corrected, sampleTB, remTB)
+	return finishTwoParty(conn, false, res, cfg, corrected, remBits, sampleTB, remTB)
 }
 
-// finishTwoParty is CRC verification, the correctness check and privacy amplification;
-// alice says which side this is, since Alice picks every seed and key_ID
-func finishTwoParty(conn Conn, alice bool, res TwoPartyResult, cfg TwoPartyConfig, own []byte, sampleTB, remTB timedBits) (TwoPartyResult, error) {
+// finishTwoParty is CRC verification, the correctness check and privacy amplification; alice says which side
+// this is, since Alice picks every seed and key_ID, and raw is Bob's bits before correction when errors are
+// counted by correction, nil otherwise
+func finishTwoParty(conn Conn, alice bool, res TwoPartyResult, cfg TwoPartyConfig, own, raw []byte, sampleTB, remTB timedBits) (TwoPartyResult, error) {
 	myCRC := ComputeChunkCRC(own, cfg.ChunkSize)
 	var peer tpCRC
 	if alice {
@@ -397,6 +493,15 @@ func finishTwoParty(conn Conn, alice bool, res TwoPartyResult, cfg TwoPartyConfi
 		return res, fmt.Errorf("two-party: %d CRCs from the peer, %d here", len(peer.CRC), len(myCRC))
 	}
 	res.CRC = ReconcileChunks(own, myCRC, peer.CRC, cfg.ChunkSize)
+	for i, b := range remTB.Basis {
+		if b > 1 {
+			continue
+		}
+		res.BasisBits[b]++
+		if !alice && len(raw) == len(own) && myCRC[i/cfg.ChunkSize] == peer.CRC[i/cfg.ChunkSize] {
+			res.PairCounts[b][own[i]&1][raw[i]&1]++
+		}
+	}
 	res.LeakedBits = res.ECLeakedBits + res.CRC.LeakedBits
 	surviving := res.CRC.Surviving
 	n := len(surviving)
@@ -408,7 +513,30 @@ func finishTwoParty(conn Conn, alice bool, res TwoPartyResult, cfg TwoPartyConfi
 		l = SecureKeyLength(n, res.QBER.QBER, res.LeakedBits)
 	} else {
 		rep := FiniteKeyReport{Bits: n, TagBits: UniversalHashTagBits(budget.EpsCor)}
-		rep.Phi, rep.PhiPoint = crossBasisPhaseError(sampleTB, remTB, n, estimationTail(budget.EpsPE))
+		if cfg.byCorrection() {
+			counts, err := exchangeCounts(conn, alice, own, raw, myCRC, peer.CRC, cfg.ChunkSize, remTB)
+			if err != nil {
+				return res, err
+			}
+			res.QBER = QBERResult{ErrorBits: counts.E[0] + counts.E[1], SampleBits: counts.K[0] + counts.K[1]}
+			if res.QBER.SampleBits > 0 {
+				res.QBER.QBER = float64(res.QBER.ErrorBits) / float64(res.QBER.SampleBits)
+			}
+			tail, chain := correctionBudget(budget.EpsPE)
+			rep.Phi, rep.PhiPoint = phaseErrorFromCounts(counts.K, counts.K, counts.E, n, tail)
+			rep.ChainBits = chain
+			res.BasisChecked, res.BasisErrors = counts.K, counts.E
+		} else {
+			rep.Phi, rep.PhiPoint = crossBasisPhaseError(sampleTB, remTB, n, estimationTail(budget.EpsPE))
+			for i, b := range sampleTB.Basis {
+				if b <= 1 {
+					res.BasisChecked[b]++
+					if sampleTB.Alice[i] != sampleTB.Bob[i] {
+						res.BasisErrors[b]++
+					}
+				}
+			}
+		}
 		rep.LeakedBits = res.LeakedBits + rep.TagBits
 		res.FiniteKey = &rep
 		if n == 0 {
@@ -442,7 +570,7 @@ func finishTwoParty(conn Conn, alice bool, res TwoPartyResult, cfg TwoPartyConfi
 		if !rep.Verified {
 			return res, nil
 		}
-		l = FiniteKeySecureKeyLength(n, rep.Phi, res.LeakedBits, budget.EpsCor, budget.EpsPA) // tag in the epsCor term
+		l = FiniteKeySecureKeyLength(n, rep.Phi, res.LeakedBits+rep.ChainBits, budget.EpsCor, budget.EpsPA) // tag in the epsCor term
 	}
 	if cfg.KeyAlignBits > 0 {
 		l -= l % cfg.KeyAlignBits
@@ -488,6 +616,41 @@ func finishTwoParty(conn Conn, alice bool, res TwoPartyResult, cfg TwoPartyConfi
 		res.KeyIDs = pa.KeyIDs
 	}
 	return res, sendOrRecvDone(conn, alice)
+}
+
+// exchangeCounts: Bob counts, per basis, the bits correction changed in chunks whose CRCs matched and every bit
+// of a dropped chunk, and announces them; Alice checks the per-basis totals against her own
+func exchangeCounts(conn Conn, alice bool, own, raw []byte, myCRC, peerCRC []uint16, chunk int, remTB timedBits) (tpCounts, error) {
+	var mine [2]int
+	for _, b := range remTB.Basis {
+		if b <= 1 {
+			mine[b]++
+		}
+	}
+	var c tpCounts
+	if alice {
+		if err := conn.Recv("counts", &c); err != nil {
+			return c, err
+		}
+		if c.K != mine || c.E[0] < 0 || c.E[1] < 0 || c.E[0] > c.K[0] || c.E[1] > c.K[1] {
+			return c, fmt.Errorf("two-party: Bob's error counts %+v do not fit Alice's %v bits per basis", c, mine)
+		}
+		return c, nil
+	}
+	if len(raw) != len(own) || len(remTB.Basis) != len(own) {
+		return c, errors.New("two-party: counting errors needs Bob's bits before and after correction")
+	}
+	for i, b := range remTB.Basis {
+		if b > 1 {
+			continue
+		}
+		c.K[b]++
+		ci := i / chunk
+		if myCRC[ci] != peerCRC[ci] || raw[i] != own[i] {
+			c.E[b]++
+		}
+	}
+	return c, conn.Send("counts", c)
 }
 
 // sendOrRecvDone closes the protocol: Bob confirms he reached the end

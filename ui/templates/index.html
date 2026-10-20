@@ -41,6 +41,10 @@
         <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15"/></svg></span>
         <span class="nav-label">Continuous QKD</span>
       </a>
+      <a class="nav-item" data-section="monitor" href="#">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 14 7 14 9.5 6 14.5 20 17 12 22 12"/></svg></span>
+        <span class="nav-label">Link monitor</span>
+      </a>
       <a class="nav-item" data-section="clog" href="#">
         <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="4" x2="9" y2="20"/></svg></span>
         <span class="nav-label">Coincidence log</span>
@@ -75,6 +79,10 @@
       <div class="status-row" style="margin-top:.5rem">
         <span class="status-label" id="job-label">No job running</span>
       </div>
+      <a class="status-row" id="alerts-row" href="#continuous" style="margin-top:.5rem;text-decoration:none">
+        <span class="status-dot checking" id="alerts-dot"></span>
+        <span class="status-label" id="alerts-label">Alerts...</span>
+      </a>
     </div>
   </aside>
 
@@ -388,7 +396,37 @@
       </div>
       <div class="card">
         <div class="card-head">
-          <span class="card-title">Run</span>
+          <span class="card-title">Two-party, production</span>
+          <span class="badge badge-muted" id="tp-badge">Idle</span>
+        </div>
+        <div class="card-body">
+          <p class="hint" style="padding:0 0 .6rem">Each node records its own TimeTagger without end, in segments that start on the same UTC seconds at both sites (keep the clocks on NTP). Every block, the node announces its block's timing to each neighbor ticked below, which answers by itself with its own recording; both run optimized Cascade and both link pools receive the same keys, which the key management system relays to farther nodes. Tick a neighbor on the side whose detectors click less, and start the recording on both nodes. The settings are kept: after a restart the node resumes by itself.</p>
+          <div class="field-row">
+            <div class="field"><label class="field-label" for="tp-site">This node's TimeTagger (site)</label><select class="input" id="tp-site"></select></div>
+            <div class="field"><label class="field-label" for="tp-block">Block (s)</label><input class="input" id="tp-block" type="number" value="300" min="30" step="10"></div>
+            <div class="field"><label class="field-label" for="tp-segment">Segment (s)</label><input class="input" id="tp-segment" type="number" value="10" min="1"></div>
+            <div class="field"><label class="field-label" for="tp-qber">Expected QBER</label><input class="input" id="tp-qber" type="number" value="0.05" min="0.001" max="0.2" step="0.005"></div>
+          </div>
+          <div class="field"><span class="field-label">Announce to these neighbors</span><div class="chips" id="tp-peers" style="padding:.3rem 0;border:0"></div></div>
+          <div class="btn-row">
+            <button class="btn" id="tp-start" type="button">Start two-party QKD</button>
+            <button class="btn btn-danger" id="tp-stop" type="button" disabled>Stop</button>
+          </div>
+          <div class="error-msg" id="tp-error"></div>
+        </div>
+        <div class="chips" id="tp-chips"></div>
+        <div class="chips" id="tp-alerts" style="display:none"></div>
+        <div class="data-table-wrap">
+          <table class="data-table">
+            <thead><tr><th>Block (UTC)</th><th>Neighbor</th><th>Side</th><th>Sifted bits</th><th>QBER</th><th>Phase-error bound</th><th>Disclosed</th><th>Round trips</th><th>Key</th><th>Keys to KMS</th><th>Aligned by</th><th>Took</th></tr></thead>
+            <tbody id="tp-blocks"><tr><td colspan="12" class="empty">no block yet</td></tr></tbody>
+          </table>
+        </div>
+        <div class="log-panel" id="tp-log" style="max-height:8rem"></div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">One node, both TimeTaggers (lab)</span>
           <span class="badge badge-muted" id="cont-badge">Idle</span>
         </div>
         <div class="card-body">
@@ -443,6 +481,90 @@
       </div>
     </section>
 
+    <section class="section" id="section-monitor">
+      <div class="section-header section-header--wide">
+        <h1 class="section-title">Link <span class="grad-text">monitor</span></h1>
+        <p class="section-sub">One QKD link at a time, as it runs: both systems and the channels between them, where the quantum channel stands, the key it makes and the statistics behind it. Fed by continuous two-party QKD (Continuous QKD page); every block adds a point.</p>
+      </div>
+      <div class="mon-bar">
+        <label class="field-label" for="mon-peer">Link to</label><select class="input" id="mon-peer" style="width:auto"></select>
+        <div class="mon-tabs" id="mon-tabs">
+          <button class="mon-tab active" data-tab="overview" type="button">Overview</button>
+          <button class="mon-tab" data-tab="singles" type="button">Singles and coincidences</button>
+          <button class="mon-tab" data-tab="protocol" type="button">Protocol</button>
+          <button class="mon-tab" data-tab="history" type="button">History</button>
+        </div>
+        <label class="field-label" style="display:flex;gap:.4rem;align-items:center"><input type="checkbox" id="mon-pause"> pause</label>
+      </div>
+
+      <div class="mon-page active" data-tab="overview">
+        <div class="mon-systems">
+          <div class="mon-sys" id="mon-local"><div class="mon-sys-k">This node</div><div class="mon-sys-name">-</div><div class="mon-sys-info">-</div></div>
+          <div class="mon-link" id="mon-classical"><div class="mon-sys-k">Classical channel</div><div class="mon-link-line"></div><div class="mon-sys-info">-</div></div>
+          <div class="mon-sys" id="mon-remote"><div class="mon-sys-k">Neighbor</div><div class="mon-sys-name">-</div><div class="mon-sys-info">-</div></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">Quantum channel</span><span class="badge badge-muted" id="mon-stage-badge">-</span></div>
+          <div class="mon-stages" id="mon-stages"></div>
+        </div>
+        <div class="grid grid--4 mon-gauges">
+          <div class="card"><div class="gauge-wrap"><canvas id="mon-g-sync" class="plot-canvas" style="height:110px"></canvas><div class="gauge-value" id="mon-gv-sync">-</div><div class="gauge-label">Sync</div></div></div>
+          <div class="card"><div class="gauge-wrap"><canvas id="mon-g-fid" class="plot-canvas" style="height:110px"></canvas><div class="gauge-value" id="mon-gv-fid">-</div><div class="gauge-label">Fidelity, lower bound</div></div></div>
+          <div class="card"><div class="gauge-wrap"><canvas id="mon-g-qber" class="plot-canvas" style="height:110px"></canvas><div class="gauge-value" id="mon-gv-qber">-</div><div class="gauge-label">QBER</div></div></div>
+          <div class="card"><div class="gauge-wrap"><canvas id="mon-g-rate" class="plot-canvas" style="height:110px"></canvas><div class="gauge-value" id="mon-gv-rate">-</div><div class="gauge-label">Secure key rate, last 10 blocks</div></div></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">Keys in the link's pool (256-bit)</span><span class="badge badge-muted" id="mon-settings-brief">-</span></div>
+          <div class="chips" id="mon-pool-brief"></div>
+        </div>
+      </div>
+
+      <div class="mon-page" data-tab="singles">
+        <div class="mon-cols">
+          <div class="mon-col">
+            <div class="mon-plot"><div class="mon-plot-title">Singles per polarization, local and remote [counts/s]</div><canvas id="mon-singles-bars" class="plot-canvas clog-canvas" style="height:19rem"></canvas><div class="hint mon-plot-note" id="mon-n-singles-bars"></div></div>
+            <div class="mon-plot"><div class="mon-plot-title">Coincidences per polarization [pairs/s]</div><canvas id="mon-pair-bars" class="plot-canvas clog-canvas" style="height:19rem"></canvas><div class="hint mon-plot-note" id="mon-n-pair-bars"></div></div>
+          </div>
+          <div class="mon-col">
+            <div class="mon-plot"><div class="mon-plot-title">Singles [counts/s]</div><canvas id="mon-singles-time" class="plot-canvas clog-canvas" style="height:15rem"></canvas><div class="hint mon-plot-note" id="mon-n-singles-time"></div></div>
+            <div class="mon-plot"><div class="mon-plot-title">Coincidences [pairs/s]</div><canvas id="mon-coinc-time" class="plot-canvas clog-canvas" style="height:15rem"></canvas><div class="hint mon-plot-note" id="mon-n-coinc-time"></div></div>
+            <div class="mon-plot"><div class="mon-plot-title">Heralding [%]</div><canvas id="mon-herald-time" class="plot-canvas clog-canvas" style="height:15rem"></canvas><div class="hint mon-plot-note" id="mon-n-herald-time"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="mon-page" data-tab="protocol">
+        <div class="mon-cols">
+          <div class="mon-col">
+            <div class="mon-plot"><div class="mon-plot-title">Bitrates of protocol stages [bps]</div><canvas id="mon-rates-time" class="plot-canvas clog-canvas" style="height:17rem"></canvas><div class="hint mon-plot-note" id="mon-n-rates-time"></div></div>
+            <div class="mon-panel">
+              <div class="mon-panel-h">QKD settings</div>
+              <div class="mon-kv" id="mon-settings"></div>
+              <div class="mon-panel-h">Number of 256-bit keys in the link's pool</div>
+              <div class="mon-kv" id="mon-pool"></div>
+              <div class="mon-panel-h">Monitoring data</div>
+              <div class="btn-row"><a class="btn btn-outline" id="mon-csv" href="#">Blocks as CSV</a><a class="btn btn-outline" id="mon-json" href="#">Blocks as JSON</a></div>
+              <div class="mon-panel-h">QKD service <span class="badge badge-muted" id="mon-svc">-</span></div>
+              <div class="btn-row"><button class="btn btn-danger" id="mon-restart" type="button">Restart QKD completely</button></div>
+              <div class="error-msg" id="mon-error"></div>
+            </div>
+          </div>
+          <div class="mon-col">
+            <div class="mon-plot"><div class="mon-plot-title">QBER, quantum bit error [%]</div><canvas id="mon-qber-time" class="plot-canvas clog-canvas" style="height:17rem"></canvas><div class="hint mon-plot-note" id="mon-n-qber-time"></div></div>
+            <div class="mon-plot"><div class="mon-plot-title">Fidelity [%]</div><canvas id="mon-fid-time" class="plot-canvas clog-canvas" style="height:17rem"></canvas><div class="hint mon-plot-note" id="mon-n-fid-time"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="mon-page" data-tab="history">
+        <div class="card"><div class="plots plots--lg">
+          <div class="plot"><div class="plot-title"><span>Singles over the whole run (counts/s): this node, neighbor</span><span class="plot-val" id="mon-v-h-singles">-</span></div><canvas id="mon-h-singles" class="plot-canvas plot-canvas--lg clog-canvas"></canvas></div>
+          <div class="plot"><div class="plot-title"><span>QBER over the whole run (%)</span><span class="plot-val" id="mon-v-h-qber">-</span></div><canvas id="mon-h-qber" class="plot-canvas plot-canvas--lg clog-canvas"></canvas></div>
+          <div class="plot"><div class="plot-title"><span>Secure key rate over the whole run (bits/s)</span><span class="plot-val" id="mon-v-h-rate">-</span></div><canvas id="mon-h-rate" class="plot-canvas plot-canvas--lg clog-canvas"></canvas></div>
+        </div></div>
+      </div>
+    </section>
+
     <section class="section" id="section-clog">
       <div class="section-header section-header--wide">
         <h1 class="section-title">Coincidence <span class="grad-text">log</span></h1>
@@ -475,11 +597,11 @@
             <div class="field"><label class="field-label" for="clog-window">ROI width (ps)</label><input class="input" id="clog-window" type="number" min="1"></div>
             <div class="field"><label class="field-label" for="clog-center">ROI center (ps)</label><input class="input" id="clog-center" type="number"></div>
             <div class="field"><label class="field-label" for="clog-noise">Noise ROI offset (ps)</label><input class="input" id="clog-noise" type="number"></div>
-            <div class="field"><label class="field-label" for="clog-delays">Delays (channel=ps, comma separated)</label><input class="input" id="clog-delays" type="text" placeholder="B1=120, B2=-40"></div>
+            <div class="field"><label class="field-label" for="clog-delays">Delays (channel=ps, comma separated)</label><input class="input" id="clog-delays" type="text" placeholder="D1=120, D2=-40"></div>
           </div>
           <div class="field-row">
-            <div class="field"><label class="field-label" for="clog-higher">Higher-order groups (comma separated)</label><input class="input" id="clog-higher" type="text" placeholder="A1+A2+B1, A1+A2+B1+B2"></div>
-            <div class="field"><label class="field-label" for="clog-derived">Other values per row (name = formula; one per line)</label><textarea class="input mono" id="clog-derived" rows="2" placeholder="eta_A1 = (C_A1_B1 - C_A1_B1_noise) / S_B1"></textarea></div>
+            <div class="field"><label class="field-label" for="clog-higher">Higher-order groups (comma separated)</label><input class="input" id="clog-higher" type="text" placeholder="C1+C2+D1, C1+C2+D1+D2"></div>
+            <div class="field"><label class="field-label" for="clog-derived">Other values per row (name = formula; one per line)</label><textarea class="input mono" id="clog-derived" rows="2" placeholder="eta_C1 = (C_C1_D1 - C_C1_D1_noise) / S_D1"></textarea></div>
           </div>
           <div class="hint" id="clog-labels"></div>
           <div class="btn-row">

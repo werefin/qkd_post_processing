@@ -457,7 +457,8 @@ function navigate(section) {
   else if (section === 'align') { refreshRecordings().then(() => { redrawAlignPlots(); poll('align', refreshAlignment, 5000); }); }
   else if (section === 'extract') { refreshRecordings(); refreshNode(); poll('jobs', refreshJobs, 2000); }
   else if (section === 'network') { poll('node', refreshNode, 10000); refreshAudit(); }
-  else if (section === 'continuous') { refreshConfigLinks(); refreshRecordings(); refreshNode(); poll('continuous', refreshContinuous, 1500); }
+  else if (section === 'continuous') { refreshConfigLinks(); refreshRecordings(); refreshNode(); tpLoadChoices(); poll('continuous', refreshContinuous, 1500); poll('twoparty', refreshTwoParty, 3000); }
+  else if (section === 'monitor') { poll('monitor', refreshMonitor, 3000); }
   else if (section === 'clog') { clogLoadOptions(); refreshRecordings().then(fillClogRecordings); refreshClogFiles(); poll('clog', refreshClog, 1000); }
   else if (section === 'evaluate') { refreshRecordings().then(renderEvalPairs); refreshEvaluations(); poll('evaljob', refreshEvalJob, 2000); }
   else if (section === 'chsh') refreshRecordings();
@@ -578,11 +579,20 @@ async function refreshStatus() {
     if (!d.kms) {
       document.getElementById('kms-dot').className = 'status-dot offline';
       setEl('kms-label', 'No KMS configured');
+    } else {
+      document.getElementById('kms-dot').className = 'status-dot ' + (d.kms_ok === false ? 'offline' : 'online');
+      setEl('kms-label', d.kms_ok === false ? 'KMS unreachable' : 'KMS connected');
     }
   } catch (e) {
     document.getElementById('status-dot').className = 'status-dot offline';
     setEl('status-label', 'Dashboard unreachable');
   }
+  try {
+    const a = (await apiFetch('/api/alerts')).alerts || [];
+    const critical = a.some(x => x.level === 'critical');
+    document.getElementById('alerts-dot').className = 'status-dot ' + (a.length ? (critical ? 'offline' : 'checking') : 'online');
+    setEl('alerts-label', a.length ? `${a.length} alert${a.length > 1 ? 's' : ''}: ${a[0].text}` : 'No alerts');
+  } catch (e) { /* shown by the line above */ }
 }
 refreshStatus();
 setInterval(refreshStatus, 10000);
@@ -1365,7 +1375,7 @@ function clogPlot(canvas, series, o = {}) {
     return;
   }
   const mini = !!o.mini;
-  const L = mini ? 4 : 52, R = mini ? 4 : 10, T = mini ? 4 : (series.length >= 2 ? 22 : 8), B = mini ? 4 : 20;
+  const L = mini ? 4 : 52, R = mini ? 4 : (o.badges ? 84 : 10), T = mini ? 4 : (series.length >= 2 ? 22 : 8), B = mini ? 4 : 20;
   let xmn = Math.min(...pts.map(p => p[0])), xmx = Math.max(...pts.map(p => p[0]));
   if (o.xRange) [xmn, xmx] = o.xRange;
   if (xmn === xmx) { xmn -= 1; xmx += 1; }
@@ -1416,6 +1426,7 @@ function clogPlot(canvas, series, o = {}) {
       continue;
     }
     ctx.lineWidth = mini ? 1.2 : 2; ctx.lineJoin = 'round';
+    ctx.setLineDash(s.dashed ? [6, 5] : []);
     ctx.beginPath();
     let pen = false;
     s.xs.forEach((x, i) => {
@@ -1424,6 +1435,17 @@ function clogPlot(canvas, series, o = {}) {
       if (pen) ctx.lineTo(X(x), Y(y)); else { ctx.moveTo(X(x), Y(y)); pen = true; }
     });
     ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  if (o.badges && !mini) {
+    // each series' latest value, in text ink beside its colour, in a column right of the plot
+    ctx.font = '600 10px "JetBrains Mono", monospace'; ctx.textAlign = 'left';
+    series.filter(sr => sr.badge !== false).forEach((sr, i) => {
+      const v = [...sr.ys].reverse().find(y => y != null && isFinite(y));
+      const y0 = T + i * 16;
+      ctx.fillStyle = sr.color; ctx.fillRect(W - R + 10, y0, 9, 9);
+      ctx.fillStyle = CLOG_INK.text; ctx.fillText(v == null ? '-' : (o.yFmt || clogFmt)(v), W - R + 24, y0 + 8);
+    });
   }
   if (!mini && series.length >= 2) {
     // legend in text ink, the colored swatch beside each name carries the identity
@@ -1544,11 +1566,22 @@ function clogTwoSites() {
   return $c('clog-source').value === 'sites' ? !!$c('clog-site-b').value : !!$c('clog-rb').value;
 }
 
+// two sites' channels are labelled by site name, as the logger does it (coincidences/plan.py site_prefixes)
+function clogPrefixes(names) {
+  const p = names.map(n => String(n).replace(/[^A-Za-z0-9]/g, ''));
+  return new Set(p).size !== p.length || p.some(x => !x || /[0-9]$/.test(x)) ? ['X', 'Y'] : p;
+}
+
 function clogLabels() {
-  const two = clogTwoSites();
-  $c('clog-labels').textContent = two
-    ? 'Channels A1-A4 and B1-B4; columns S_A1 (singles), C_A1_B1 (coincidences), C_A1_B1_noise, and QBER_HV, QBER_DA, QBER with channels 1-2 the H/V bits and 3-4 the D/A bits.'
-    : 'Channels 1-4; columns S_1 (singles), C_1_2 (coincidences) and C_1_2_noise.';
+  const recs = $c('clog-source').value !== 'sites';
+  const names = recs ? (clogTwoSites() ? ['A', 'B'] : ['A']) : [$c('clog-site-a').value, $c('clog-site-b').value].filter(Boolean);
+  if (names.length === 2) {
+    const [p, q] = clogPrefixes(names);
+    $c('clog-labels').textContent = `Channels ${p}1-${p}4 and ${q}1-${q}4; columns S_${p}1 (singles), C_${p}1_${q}1 (coincidences), C_${p}1_${q}1_noise, `
+      + 'and QBER_HV, QBER_DA, QBER with channels 1-2 the H/V bits and 3-4 the D/A bits.';
+  } else {
+    $c('clog-labels').textContent = 'Channels 1-4; columns S_1 (singles), C_1_2 (coincidences) and C_1_2_noise.';
+  }
 }
 
 function clogOptions() {
@@ -1582,7 +1615,7 @@ $c('clog-source').addEventListener('change', e => {
   document.querySelectorAll('.clog-recs').forEach(el => { el.style.display = sites ? 'none' : ''; });
   clogLabels();
 });
-['clog-site-b', 'clog-rb'].forEach(id => $c(id).addEventListener('change', clogLabels));
+['clog-site-a', 'clog-site-b', 'clog-rb'].forEach(id => $c(id).addEventListener('change', clogLabels));
 $c('clog-int').addEventListener('change', e => { $c('clog-int-custom-f').style.display = e.target.value === 'custom' ? '' : 'none'; });
 
 $c('clog-start').addEventListener('click', async () => {
@@ -1783,6 +1816,291 @@ function clogDrawAll() {
 }
 window.addEventListener('resize', clogDrawAll);
 
+// Continuous two-party QKD: this node's TimeTagger recorded without end, a block at a time with each neighbor
+let tpLast = null;
+
+async function tpLoadChoices() {
+  try {
+    const [cfg, st] = await Promise.all([apiFetch('/api/config'), apiFetch('/api/twoparty/status')]);
+    const sel = document.getElementById('tp-site');
+    const keep = sel.value || st.state.site || '';
+    sel.innerHTML = cfg.loaded ? (cfg.sites || []).map(x => `<option value="${esc(x)}">${esc(x)}</option>`).join('') : '<option value="">load a config on the Acquisition page</option>';
+    if (keep) sel.value = keep;
+    document.getElementById('tp-block').value = st.state.block_s;
+    document.getElementById('tp-segment').value = st.state.segment_s;
+    document.getElementById('tp-qber').value = st.state.expected_qber;
+    let peers = [];
+    try { peers = ((await apiFetch('/api/node')).links || []).map(l => l.neighbor); } catch (e) { /* no KMS */ }
+    document.getElementById('tp-peers').innerHTML = peers.length ? peers.map(p => `<label class="chip" style="display:flex;gap:.35rem;align-items:center"><input type="checkbox" value="${esc(p)}" ${st.state.announce_to.includes(p) ? 'checked' : ''}>${esc(p)}</label>`).join('')
+      : '<span class="hint">this node has no QKD link in the key management system</span>';
+  } catch (e) { /* backend not reachable yet */ }
+}
+
+document.getElementById('tp-start').addEventListener('click', async () => {
+  const err = document.getElementById('tp-error');
+  err.textContent = '';
+  const body = {
+    site: document.getElementById('tp-site').value, block_s: Number(document.getElementById('tp-block').value),
+    segment_s: Number(document.getElementById('tp-segment').value), expected_qber: Number(document.getElementById('tp-qber').value),
+    announce_to: [...document.querySelectorAll('#tp-peers input:checked')].map(x => x.value),
+  };
+  try { await postJSON('/api/twoparty/start', body); refreshTwoParty(); } catch (e) { err.textContent = e.message; }
+});
+document.getElementById('tp-stop').addEventListener('click', async () => {
+  try { await postJSON('/api/twoparty/stop', {}); refreshTwoParty(); } catch (e) { document.getElementById('tp-error').textContent = e.message; }
+});
+
+async function refreshTwoParty() {
+  let d;
+  try { d = await apiFetch('/api/twoparty/status'); } catch (e) { return; }
+  tpLast = d;
+  const active = d.state.active;
+  setBadge('tp-badge', active ? (d.recording ? 'Recording and distilling' : 'Recorder restarting') : 'Idle', active ? (d.recording ? 'success' : 'warn') : 'muted');
+  document.getElementById('tp-start').disabled = active;
+  document.getElementById('tp-stop').disabled = !active;
+  const blocks = (d.blocks || []).slice().reverse();
+  const ok = blocks.filter(b => b.ok);
+  const chips = [];
+  if (active) {
+    chips.push(['Site', d.state.site], ['Blocks', `${fmtDur(d.state.block_s)} of ${fmtDur(d.state.segment_s)} segments`],
+      ['Segments on disk', `${d.segments}` + (d.last_segment ? `, newest ${d.last_segment.slice(9, 11)}:${d.last_segment.slice(11, 13)}:${d.last_segment.slice(13, 15)} UTC` : '')],
+      ['Announcing to', d.state.announce_to.join(', ') || 'none (this node answers)'],
+      ['Working on', d.running ? `${d.running.role === 'alice' ? 'offering' : 'answering'} a block with ${d.running.peer}` : (d.queued ? `${d.queued} queued` : 'waiting for the next block')]);
+  }
+  for (const [peer, ppb] of Object.entries(d.skew_ppb || {})) chips.push([`Clock skew to ${peer}`, `${fmtNum(ppb, 2)} ppb`]);
+  if (ok.length) chips.push(['Key in the last blocks', `${ok.slice(0, 12).reduce((a, b) => a + (b.key_bits || 0), 0)} bits in ${Math.min(12, ok.length)} blocks`]);
+  document.getElementById('tp-chips').innerHTML = chipsHTML(chips);
+  const al = document.getElementById('tp-alerts');
+  al.style.display = d.alerts.length ? '' : 'none';
+  al.innerHTML = chipsHTML(d.alerts.map(a => [a.level, a.text]));
+  const utc = t => t ? new Date(t * 1000).toISOString().slice(11, 19) : '-';
+  document.getElementById('tp-blocks').innerHTML = blocks.length ? blocks.slice(0, 50).map(b => `<tr>
+      <td>${utc(b.block)}</td><td>${esc(b.peer)}</td><td>${b.role === 'alice' ? 'offered' : 'answered'}</td><td>${b.sifted ?? '-'}</td>
+      <td>${b.qber != null ? fmtNum(100 * b.qber, 2) + '%' : '-'}</td><td>${b.phase_error_bound != null ? fmtNum(100 * b.phase_error_bound, 1) + '%' : '-'}</td>
+      <td>${b.ec_leak ?? '-'}</td><td>${b.rounds ?? '-'}</td>
+      <td class="${b.key_bits > 0 ? 'positive' : ''}">${b.ok ? b.key_bits + ' bits' : 'failed: ' + esc(b.error || '')}</td><td>${b.keys_saved ?? 0}</td>
+      <td>${esc(b.aligned_by || '-')}</td><td>${fmtNum((b.finished || 0) - (b.started || 0), 1)} s</td></tr>`).join('') : emptyRow(12, 'no block yet');
+  const logEl = document.getElementById('tp-log');
+  logEl.textContent = (d.log || []).join('\n');
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+// Link monitor: one QKD link as it runs, the same views as the TimeTagger vendor's QKD monitor, from this
+// node's continuous two-party blocks; channels 1-4 are H, V, D, A as importtt wires them
+let monLast = null, monTab = 'overview';
+const MON_CH = ['H', 'V', 'D', 'A'];
+const monSum = a => (a || []).reduce((x, y) => x + (y || 0), 0);
+const monClock = t => new Date(t * 1000).toISOString().slice(11, 16);
+
+// a bar per category, its label under it, values in text ink on top
+function monBars(canvasId, labels, values, color) {
+  const c = document.getElementById(canvasId);
+  const dpr = window.devicePixelRatio || 1, W = c.clientWidth, H = c.clientHeight;
+  if (W <= 0 || H <= 0) return;
+  c.width = W * dpr; c.height = H * dpr;
+  const ctx = c.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const L = 8, R = 8, T = 22, B = 22, n = labels.length, slot = (W - L - R) / n, w = Math.min(64, slot * 0.6);
+  const vmax = Math.max(...values, 1);
+  ctx.strokeStyle = CLOG_INK.grid; ctx.beginPath(); ctx.moveTo(L, H - B); ctx.lineTo(W - R, H - B); ctx.stroke();
+  ctx.font = '10px "JetBrains Mono", monospace'; ctx.textAlign = 'center';
+  labels.forEach((lab, i) => {
+    const x = L + slot * (i + 0.5), h = (H - T - B) * (values[i] || 0) / vmax;
+    ctx.fillStyle = Array.isArray(color) ? color[i] : color;
+    ctx.beginPath(); ctx.roundRect(x - w / 2, H - B - h, w, Math.max(h, 1), [4, 4, 0, 0]); ctx.fill();
+    ctx.fillStyle = CLOG_INK.text2; ctx.fillText(lab, x, H - 6);
+    ctx.fillStyle = CLOG_INK.text; ctx.fillText(clogFmt(values[i] || 0), x, H - B - h - 6);
+  });
+}
+
+// breaks a series where blocks are missing, so a stopped link shows as a gap and not a straight line
+function monGaps(xs, ys, gap) {
+  const ox = [], oy = [];
+  xs.forEach((x, i) => {
+    if (i && x - xs[i - 1] > gap) { ox.push((x + xs[i - 1]) / 2); oy.push(null); }
+    ox.push(x); oy.push(ys[i]);
+  });
+  return { xs: ox, ys: oy };
+}
+
+function monDerive(b) {
+  const secs = b.seconds || (monLast && monLast.local.block_s) || 1;
+  const rate = (b.basis_checked || []).map((k, i) => (k ? (b.basis_errors || [])[i] / k : null));
+  const fid = rate.length === 2 && rate[0] != null && rate[1] != null ? Math.max(0, 1 - rate[0] - rate[1]) : null;
+  const local = monSum(b.singles_local), remote = monSum(b.singles_remote), sift = (b.sifted || 0) / secs;
+  return {
+    t: b.block, ok: !!b.ok, secs, local: b.singles_local ? local : null, remote: b.singles_remote ? remote : null,
+    sift: b.ok ? sift : null, qber: b.ok && b.qber != null ? 100 * b.qber : null, fid: fid == null || !b.ok ? null : 100 * fid,
+    herLocal: b.ok && local ? 100 * sift / local : null, herRemote: b.ok && remote ? 100 * sift / remote : null,
+    afterEC: b.ok ? Math.max(0, (b.sifted || 0) - (b.ec_leak || 0)) / secs : null,
+    afterVer: b.ok && b.surviving != null ? Math.max(0, b.surviving - (b.charged || 0)) / secs : null,
+    key: b.ok ? (b.key_bits || 0) / secs : null,
+  };
+}
+
+// a value per block, and its running average, minimum and maximum over the last n blocks
+function monRolling(xs, ys, n = 10) {
+  const avg = [], lo = [], hi = [];
+  ys.forEach((_, i) => {
+    const w = ys.slice(Math.max(0, i - n + 1), i + 1).filter(v => v != null);
+    avg.push(w.length ? w.reduce((a, b) => a + b, 0) / w.length : null);
+    lo.push(w.length ? Math.min(...w) : null);
+    hi.push(w.length ? Math.max(...w) : null);
+  });
+  return { avg, lo, hi };
+}
+
+async function refreshMonitor(force) {
+  if (document.getElementById('mon-pause').checked && !force) return;
+  const sel = document.getElementById('mon-peer');
+  let d;
+  try { d = await apiFetch('/api/monitor' + (sel.value ? `?peer=${encodeURIComponent(sel.value)}` : '')); } catch (e) { return; }
+  monLast = d;
+  if (sel.options.length !== d.peers.length) {
+    sel.innerHTML = d.peers.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('') || '<option value="">no QKD link</option>';
+    if (d.peer) sel.value = d.peer;
+  }
+  document.getElementById('mon-csv').href = `/api/monitor/blocks.csv?peer=${encodeURIComponent(d.peer || '')}`;
+  document.getElementById('mon-json').href = `/api/monitor/blocks.json?peer=${encodeURIComponent(d.peer || '')}`;
+  drawMonitor();
+}
+
+function monBox(id, cls, name, info) {
+  const el = document.getElementById(id);
+  el.className = (id === 'mon-classical' ? 'mon-link ' : 'mon-sys ') + cls;
+  if (name != null) el.querySelector('.mon-sys-name') && (el.querySelector('.mon-sys-name').textContent = name);
+  el.querySelector('.mon-sys-info').textContent = info;
+}
+
+function drawMonitor() {
+  const d = monLast;
+  if (!d) return;
+  const der = d.blocks.map(monDerive);
+  const ok = der.filter(x => x.ok);
+  const last = d.blocks[d.blocks.length - 1], lastOk = ok[ok.length - 1];
+  const okRaw = d.blocks.filter(b => b.ok), lastOkRaw = okRaw[okRaw.length - 1];
+  // systems and the channel between them
+  monBox('mon-local', d.local.recording ? 'ok' : 'idle', `${d.node || 'this node'}, ${d.local.site || 'no site'}`,
+    d.local.recording ? `TimeTagger recording\nfor ${fmtDur((Date.now() / 1000) - (d.local.since || Date.now() / 1000))}` : 'not recording');
+  monBox('mon-remote', d.remote.reachable ? 'ok' : 'idle', d.remote.node || '-', d.remote.reachable ? 'key management system reachable' : (d.remote.error || 'not reachable'));
+  const ann = okRaw.filter(b => b.announced_bytes).slice(-5);
+  const mbit = ann.length ? ann.reduce((a, b) => a + 8 * b.announced_bytes / 1e6 / (b.role === 'alice' ? Math.max(b.announce_s || 1, 1e-3) : (b.seconds || d.local.block_s)), 0) / ann.length : null;
+  monBox('mon-classical', d.remote.reachable ? 'ok' : '', null,
+    d.remote.reachable ? `mutual TLS between the key servers\nround trip ${fmtNum(d.remote.rtt_ms, 1)} ms` + (mbit != null ? `\nannouncements ${fmtNum(mbit, 1)} Mbit/s, ${d.announces ? 'sent' : 'received'}` : '') : 'broken');
+  // the quantum channel's stage
+  document.getElementById('mon-stages').innerHTML = d.stages.map((s, i) => `<div class="mon-stage ${i < d.stage ? 'done' : ''} ${i === d.stage ? 'now' + (i === 4 ? ' good' : '') : ''}">${esc(s)}</div>`).join('');
+  setBadge('mon-stage-badge', d.stages[d.stage], d.stage === 4 ? 'success' : d.stage === 3 ? 'warn' : 'muted');
+  // gauges
+  const how = last && (last.aligned_by || last.aligned_by_peer);
+  const sync = !last ? 0 : !last.ok ? 20 : how && how.startsWith('previous') ? 100 : 60;
+  const recent = ok.slice(-10).map(x => x.key);
+  const keyRate = recent.length ? recent.reduce((a, b) => a + b, 0) / recent.length : 0;
+  drawGauge('mon-g-sync', sync, 100); setEl('mon-gv-sync', `${sync}%`);
+  drawGauge('mon-g-fid', lastOk && lastOk.fid != null ? lastOk.fid : 0, 100); setEl('mon-gv-fid', lastOk && lastOk.fid != null ? `${fmtNum(lastOk.fid, 1)}%` : '-');
+  drawGauge('mon-g-qber', lastOk && lastOk.qber != null ? lastOk.qber : 0, 100 * d.qber_threshold * 1.5); setEl('mon-gv-qber', lastOk && lastOk.qber != null ? `${fmtNum(lastOk.qber, 2)}%` : '-');
+  const kmax = Math.max(...ok.map(x => x.key || 0), 1);
+  drawGauge('mon-g-rate', keyRate, kmax * 1.2); setEl('mon-gv-rate', `${fmtNum(keyRate, 1)} bit/s`);
+  // gaps where blocks or reads are missing break the lines: seconds for live charts, minutes for block charts
+  const gap = 2.5 * (d.local.block_s || 300);
+  const plot = (id, series, opts) => {
+    const g = opts.xFmt && opts.xFmt(1) === '1s' ? 5 : opts.xFmt && opts.xFmt(1) === '1 min' ? gap / 60 : gap;
+    clogPlot(id, series.map(sr => (sr.dashed ? sr : { ...sr, ...monGaps(sr.xs, sr.ys, g) })), opts);
+  };
+  // settings, pool and service, as label and value rows
+  const kv = rows => rows.map(([k, v]) => `<span class="k">${esc(k)}</span><span class="v">${esc(v)}</span>`).join('');
+  const win = okRaw.map(b => b.window_ps ?? b.window_ps_peer).filter(v => v != null).pop();
+  document.getElementById('mon-settings').innerHTML = kv([
+    ['Coincidence time window', win != null ? `±${fmtNum(win / 1e3, 2)} ns` : '-- ns'],
+    ['Privacy amplification ratio', lastOkRaw && lastOkRaw.compression != null ? fmtNum(lastOkRaw.compression, 2) : '--'],
+    ['Error correction', 'optimized Cascade'], ['Block', `${fmtDur(d.local.block_s)} (${fmtDur(d.local.segment_s)} segments)`],
+    ['This node', d.announces ? 'announces its timing' : 'answers'], ['Blocks with key', `${d.ok_blocks} of ${d.blocks.length}`]]);
+  document.getElementById('mon-pool').innerHTML = kv([['Originated here (ETSI 014)', d.pool.mine ?? '-'], ['Originated by the neighbor (ETSI 014)', d.pool.theirs ?? '-'],
+    ['In all', d.pool.mine != null ? d.pool.mine + d.pool.theirs : '-']]);
+  document.getElementById('mon-pool-brief').innerHTML = chipsHTML([['Originated here', d.pool.mine ?? '-'], ['Originated by the neighbor', d.pool.theirs ?? '-']]);
+  setBadge('mon-settings-brief', win != null ? `window ±${fmtNum(win / 1e3, 2)} ns` : '-', 'muted');
+  setBadge('mon-svc', d.local.active ? (d.local.recording ? 'running' : 'restarting') : 'stopped', d.local.active && d.local.recording ? 'success' : 'warn');
+  // live charts span the last 120 s, block charts the last two hours, both counted back from now
+  const now = Date.now() / 1000;
+  const LOCAL = CLOG_COLORS[3], REMOTE = CLOG_COLORS[0], TOTAL = CLOG_INK.text2;
+  const secAgo = v => `${Math.round(v)}s`, minAgo = v => `${Math.round(v)} min`;
+  const fast = (d.fast || []).filter(p => p.t > now - 120), rfast = (d.remote_fast || []).filter(p => p.t > now - 120);
+  const recentOk = ok.filter(x => x.t > now - 7200);
+  const okT = recentOk.map(x => (x.t + (x.secs || 0) - now) / 60);
+  const note = (id, text) => setEl('mon-n-' + id, text);
+  if (monTab === 'singles') {
+    const lastFast = fast[fast.length - 1], lastRemote = rfast[rfast.length - 1];
+    const loc = lastFast ? lastFast.singles : [0, 0, 0, 0], rem = lastRemote ? lastRemote.singles : (lastOkRaw && lastOkRaw.singles_remote) || [0, 0, 0, 0];
+    monBars('mon-singles-bars', MON_CH.concat(MON_CH), loc.concat(rem), loc.map(() => LOCAL).concat(rem.map(() => REMOTE)));
+    note('singles-bars', `left four: this node (${d.local.site || '-'}); right four: ${d.peer || 'the neighbor'}` + (lastRemote ? '' : ', from the last block'));
+    const pc = lastOkRaw && lastOkRaw.pair_counts;
+    const PAIRS = ['HH', 'VV', 'HV', 'VH', 'DD', 'AA', 'DA', 'AD'];
+    const secsP = (lastOkRaw && lastOkRaw.seconds) || d.local.block_s;
+    monBars('mon-pair-bars', PAIRS, PAIRS.map(k => (pc ? (pc[k] || 0) / secsP : 0)), CLOG_COLORS[2]);
+    note('pair-bars', pc ? 'verified pairs of the last block; first letter the announcing node, second the answering node'
+      : 'shown on the answering node, which alone holds both bits of a pair after error correction; sending the counts would reveal how many zeros the key holds');
+    const tot = fast.map(p => {
+      const r = rfast.length ? rfast.reduce((best, q) => (Math.abs(q.t - p.t) < Math.abs(best.t - p.t) ? q : best)) : null;
+      return r ? monSum(p.singles) + monSum(r.singles) : null;
+    });
+    plot('mon-singles-time', [
+      { name: 'total', color: TOTAL, xs: fast.map(p => p.t - now), ys: tot },
+      { name: 'singles local', color: LOCAL, xs: fast.map(p => p.t - now), ys: fast.map(p => monSum(p.singles)) },
+      { name: 'singles remote', color: REMOTE, xs: rfast.map(p => p.t - now), ys: rfast.map(p => monSum(p.singles)) }],
+      { xFmt: secAgo, xRange: [-120, 0], badges: true });
+    plot('mon-coinc-time', [{ name: 'sifted coincidences', color: CLOG_COLORS[7], xs: okT, ys: recentOk.map(x => x.sift) }],
+      { xFmt: minAgo, xRange: [-120, 0], badges: true });
+    note('coinc-time', 'per block: coincidences in the window and in the same basis, as both nodes count them');
+    plot('mon-herald-time', [{ name: 'heralding local', color: LOCAL, xs: okT, ys: recentOk.map(x => x.herLocal) },
+      { name: 'heralding remote', color: REMOTE, xs: okT, ys: recentOk.map(x => x.herRemote) }],
+      { xFmt: minAgo, xRange: [-120, 0], badges: true, yFmt: v => `${clogFmt(v)}%` });
+    note('herald-time', 'sifted coincidences per single, per block');
+  }
+  if (monTab === 'protocol') {
+    plot('mon-rates-time', [{ name: 'sifting', color: CLOG_COLORS[7], xs: okT, ys: recentOk.map(x => x.sift) },
+      { name: 'error detection', color: CLOG_COLORS[1], xs: okT, ys: recentOk.map(x => x.afterEC) },
+      { name: 'verification', color: CLOG_COLORS[3], xs: okT, ys: recentOk.map(x => x.afterVer) },
+      { name: 'secure key', color: CLOG_COLORS[2], xs: okT, ys: recentOk.map(x => x.key) }], { xFmt: minAgo, xRange: [-120, 0], badges: true });
+    note('rates-time', 'bits per second of data after each stage: sifted, left after error correction\'s disclosure, left after verification, the secure key');
+    const thr = 100 * d.qber_threshold;
+    plot('mon-qber-time', [{ name: 'QBER', color: CLOG_COLORS[0], xs: okT, ys: recentOk.map(x => x.qber) },
+      { name: 'threshold for QKD protocol', color: CLOG_COLORS[7], dashed: true, xs: [-120, 0], ys: [thr, thr] }],
+      { xFmt: minAgo, xRange: [-120, 0], badges: true, yFmt: v => `${clogFmt(v)}%` });
+    plot('mon-fid-time', [{ name: 'fidelity', color: CLOG_COLORS[6], xs: okT, ys: recentOk.map(x => x.fid) }],
+      { xFmt: minAgo, xRange: [-120, 0], badges: true, yFmt: v => `${clogFmt(v)}%` });
+    note('fid-time', 'Bell-state fidelity lower bound 1 - QBER_HV - QBER_DA, per block');
+  }
+  if (monTab === 'history') {
+    const okAll = ok.map(x => x.t);
+    const xFmtDay = v => new Date(v * 1000).toISOString().slice(5, 16).replace('T', ' ');
+    plot('mon-h-singles', [{ name: 'local', color: LOCAL, xs: okAll, ys: ok.map(x => x.local) }, { name: 'remote', color: REMOTE, xs: okAll, ys: ok.map(x => x.remote) }], { xFmt: xFmtDay, badges: true });
+    plot('mon-h-qber', [{ name: 'QBER', color: CLOG_COLORS[0], xs: okAll, ys: ok.map(x => x.qber) }], { xFmt: xFmtDay, badges: true, yFmt: v => `${clogFmt(v)}%` });
+    plot('mon-h-rate', [{ name: 'secure key', color: CLOG_COLORS[2], xs: okAll, ys: ok.map(x => x.key) }], { xFmt: xFmtDay, badges: true });
+    setEl('mon-v-h-singles', `${ok.length} blocks`); setEl('mon-v-h-qber', ''); setEl('mon-v-h-rate', `${clogFmt(monSum(ok.map(x => x.key * x.secs)))} key bits in all`);
+  }
+}
+
+document.getElementById('mon-tabs').addEventListener('click', e => {
+  const b = e.target.closest('.mon-tab');
+  if (!b) return;
+  monTab = b.dataset.tab;
+  document.querySelectorAll('.mon-tab').forEach(x => x.classList.toggle('active', x === b));
+  document.querySelectorAll('.mon-page').forEach(x => x.classList.toggle('active', x.dataset.tab === monTab));
+  drawMonitor();
+});
+document.getElementById('mon-peer').addEventListener('change', () => refreshMonitor(true));
+document.getElementById('mon-restart').addEventListener('click', async () => {
+  const err = document.getElementById('mon-error');
+  err.textContent = '';
+  try {
+    await postJSON('/api/twoparty/stop', {});
+    await postJSON('/api/twoparty/start', {});
+    refreshMonitor(true);
+  } catch (e) { err.textContent = e.message; }
+});
+window.addEventListener('resize', drawMonitor);
+
 // #section in the address opens that page, so a page can be bookmarked or linked; last, once everything is defined
-const startSection = location.hash.slice(1);
+const [startSection, startTab] = location.hash.slice(1).split('/');
+if (startSection === 'monitor' && startTab) document.querySelector(`.mon-tab[data-tab="${startTab}"]`)?.click();
 navigate(startSection && document.getElementById('section-' + startSection) ? startSection : 'home');

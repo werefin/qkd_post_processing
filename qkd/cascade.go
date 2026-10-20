@@ -1,12 +1,15 @@
 package qkd
 
 import (
-	"container/heap"
+	"fmt"
 	"math"
+	"sort"
 )
 
 // Cascade as optimized by Martinez-Mateo et al., QIC 15 (2015): blocks of 2^ceil(log2(1/QBER)) growing x4,
-// no parity disclosed twice, the other half of a split inferred, corrections reopening earlier blocks
+// no parity disclosed twice, the other half of a split inferred, corrections reopening earlier blocks.
+// Bob runs it and asks Alice for parities through a CascadeOracle, in batches: one request per pass for its
+// blocks, then one per halving step of all the searches under way, so two processes need few round trips
 
 // CascadeConfig is one run; zero values take the defaults below
 type CascadeConfig struct {
@@ -24,6 +27,7 @@ type CascadeStats struct {
 	Inferred    int // parities derived from known ones instead of disclosed
 	Corrections int
 	Searches    int // binary searches run, the cascade's own included
+	Rounds      int // requests to Alice, each one round trip between two processes
 }
 
 // cascadeTargetErrors is the expected errors in a first-pass block, cascadeGrowth the block growth per pass;
@@ -41,6 +45,64 @@ func CascadeFirstBlock(qber float64, n int) int {
 	q := math.Max(qber, 1e-4)
 	k := 1 << max(1, int(math.Ceil(math.Log2(cascadeTargetErrors/q))))
 	return max(2, min(k, max(2, n/2)))
+}
+
+// CascadeOracle answers Bob's one question: the parities of Alice's bits over ranges [start, end) of a pass's
+// order; pass 0 is the bits' own order and pass i the permutation GeneratePermutation(n, seed+i)
+type CascadeOracle interface {
+	Parities(pass int, ranges [][2]int32) ([]byte, error)
+}
+
+// cascadePerm is pass i's order, the same on both sides
+func cascadePerm(n int, seed int64, i int) []int32 {
+	perm := make([]int32, n)
+	if i == 0 {
+		for j := range perm {
+			perm[j] = int32(j)
+		}
+		return perm
+	}
+	for j, v := range GeneratePermutation(n, seed+int64(i)) {
+		perm[j] = int32(v)
+	}
+	return perm
+}
+
+// CascadeAlice is Alice's side: her bits' prefix parities per pass, built when a pass is first asked about,
+// and a count of every parity she disclosed, which is her own account of the leak
+type CascadeAlice struct {
+	bits      []byte
+	seed      int64
+	prefix    map[int][]byte
+	Disclosed int
+}
+
+func NewCascadeAlice(bits []byte, seed int64) *CascadeAlice {
+	return &CascadeAlice{bits: bits, seed: seed, prefix: map[int][]byte{}}
+}
+
+func (a *CascadeAlice) Parities(pass int, ranges [][2]int32) ([]byte, error) {
+	if pass < 0 || pass >= cascadeMaxPasses {
+		return nil, fmt.Errorf("cascade: pass %d out of range", pass)
+	}
+	n := len(a.bits)
+	pre, ok := a.prefix[pass]
+	if !ok {
+		pre = make([]byte, n+1)
+		for j, b := range cascadePerm(n, a.seed, pass) {
+			pre[j+1] = pre[j] ^ (a.bits[b] & 1)
+		}
+		a.prefix[pass] = pre
+	}
+	out := make([]byte, len(ranges))
+	for i, r := range ranges {
+		if r[0] < 0 || r[1] > int32(n) || r[0] >= r[1] {
+			return nil, fmt.Errorf("cascade: range [%d, %d) outside %d bits", r[0], r[1], n)
+		}
+		out[i] = pre[r[1]] ^ pre[r[0]]
+	}
+	a.Disclosed += len(ranges)
+	return out, nil
 }
 
 // fenwick keeps Bob's bits in one pass's order, giving the parity of any prefix in log time as bits flip
@@ -72,117 +134,183 @@ func (f fenwick) prefix(i int) byte { // parity of the first i bits
 }
 
 type cascadePass struct {
-	perm    []int32 // pass position -> bit
-	pos     []int32 // bit -> pass position
-	block   int
-	alice   []byte // prefix parities of Alice's bits in pass order: Alice's side of the protocol
-	bob     fenwick
-	known   map[int64]byte // Alice parity of [start, end), disclosed or inferred
-	checked int            // blocks of this pass already opened
+	perm  []int32 // pass position -> bit
+	pos   []int32 // bit -> pass position
+	block int
+	bob   fenwick
+	known map[int64]byte // Alice parity of [start, end), disclosed or inferred
 }
 
 func (p *cascadePass) key(start, end int) int64 { return int64(start)<<32 | int64(end) }
 
+func (p *cascadePass) bobParity(start, end int) byte { return p.bob.prefix(end) ^ p.bob.prefix(start) }
+
 type cascadeRun struct {
-	alice, bob      []byte
-	passes          []*cascadePass
-	stats           CascadeStats
-	passCorrections int // corrections made in the last pass, its own and those it cascaded
+	n      int
+	bob    []byte
+	passes []*cascadePass
+	alice  CascadeOracle
+	stats  CascadeStats
 }
 
-// aliceParity is the protocol's one question to Alice: from the cache when known, else disclosed and counted
-func (r *cascadeRun) aliceParity(p *cascadePass, start, end int) byte {
-	k := p.key(start, end)
-	if v, ok := p.known[k]; ok {
-		return v
-	}
-	v := p.alice[end] ^ p.alice[start]
-	p.known[k] = v
-	r.stats.Parities++
-	return v
-}
-
-func (r *cascadeRun) bobParity(p *cascadePass, start, end int) byte {
-	return p.bob.prefix(end) ^ p.bob.prefix(start)
-}
-
-// search halves [start, end) of pass p, whose parities differ, down to the erroneous bit, and flips it
-func (r *cascadeRun) search(p *cascadePass, start, end int) int {
-	r.stats.Searches++
-	whole := r.aliceParity(p, start, end)
-	for end-start > 1 {
-		mid := start + (end-start)/2
-		left := r.aliceParity(p, start, mid)
-		// the right half's parity follows from the whole and the left: known, never disclosed
-		if k := p.key(mid, end); func() bool { _, ok := p.known[k]; return !ok }() {
-			p.known[k] = whole ^ left
-			r.stats.Inferred++
-		}
-		if left != r.bobParity(p, start, mid) {
-			end, whole = mid, left
-		} else {
-			start, whole = mid, whole^left
+// ask discloses the parities of ranges of pass pi not yet known, in one request
+func (r *cascadeRun) ask(pi int, ranges [][2]int32) error {
+	p := r.passes[pi]
+	var need [][2]int32
+	for _, rg := range ranges {
+		if _, ok := p.known[p.key(int(rg[0]), int(rg[1]))]; !ok {
+			need = append(need, rg)
 		}
 	}
-	bit := int(p.perm[start])
+	if len(need) == 0 {
+		return nil
+	}
+	par, err := r.alice.Parities(pi, need)
+	if err != nil {
+		return err
+	}
+	if len(par) != len(need) {
+		return fmt.Errorf("cascade: %d parities for %d ranges", len(par), len(need))
+	}
+	for i, rg := range need {
+		p.known[p.key(int(rg[0]), int(rg[1]))] = par[i] & 1
+	}
+	r.stats.Parities += len(need)
+	r.stats.Rounds++
+	return nil
+}
+
+func (r *cascadeRun) flip(bit int) {
 	r.bob[bit] ^= 1
 	for _, q := range r.passes {
 		q.bob.flip(int(q.pos[bit]))
 	}
 	r.stats.Corrections++
-	return bit
 }
 
-// pending is a block awaiting a check, ordered shortest first
-type pending struct {
-	pass, start, end int
-}
-type pendingHeap []pending
-
-func (h pendingHeap) Len() int            { return len(h) }
-func (h pendingHeap) Less(i, j int) bool  { return h[i].end-h[i].start < h[j].end-h[j].start }
-func (h pendingHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
-func (h *pendingHeap) Push(x interface{}) { *h = append(*h, x.(pending)) }
-func (h *pendingHeap) Pop() interface{} {
-	old := *h
-	x := old[len(old)-1]
-	*h = old[:len(old)-1]
-	return x
-}
-
-// cascade reopens, after a correction, the block holding the bit in every pass already opened; blocks whose
-// parities now differ are searched, shortest first, and their corrections reopen blocks in turn
-func (r *cascadeRun) cascade(bit int, upto int) {
-	h := &pendingHeap{}
-	push := func(bit int) {
-		for qi := 0; qi <= upto; qi++ {
-			q := r.passes[qi]
-			at := int(q.pos[bit])
-			start := (at / q.block) * q.block
-			if start/q.block >= q.checked {
-				continue // not opened yet: its own turn will check it
+// searchAll halves blocks of pass pi whose parities differ, all at once, down to their erroneous bits and flips
+// them; the blocks do not overlap, so no two searches can meet on one bit
+func (r *cascadeRun) searchAll(pi int, blocks [][2]int) ([]int, error) {
+	p := r.passes[pi]
+	type search struct {
+		start, end int
+		whole      byte
+	}
+	active := make([]search, 0, len(blocks))
+	for _, b := range blocks {
+		active = append(active, search{b[0], b[1], p.known[p.key(b[0], b[1])]})
+	}
+	r.stats.Searches += len(blocks)
+	var fixed []int
+	for len(active) > 0 {
+		var ranges [][2]int32
+		for _, s := range active {
+			if s.end-s.start > 1 {
+				ranges = append(ranges, [2]int32{int32(s.start), int32(s.start + (s.end-s.start)/2)})
 			}
-			heap.Push(h, pending{qi, start, min(start+q.block, len(r.alice))})
 		}
+		if err := r.ask(pi, ranges); err != nil {
+			return nil, err
+		}
+		next := active[:0]
+		for _, s := range active {
+			if s.end-s.start > 1 {
+				mid := s.start + (s.end-s.start)/2
+				left := p.known[p.key(s.start, mid)]
+				// the right half's parity follows from the whole and the left: known, never disclosed
+				if k := p.key(mid, s.end); !hasKey(p.known, k) {
+					p.known[k] = s.whole ^ left
+					r.stats.Inferred++
+				}
+				if left != p.bobParity(s.start, mid) {
+					s.end, s.whole = mid, left
+				} else {
+					s.start, s.whole = mid, s.whole^left
+				}
+			}
+			if s.end-s.start == 1 {
+				bit := int(p.perm[s.start])
+				r.flip(bit)
+				fixed = append(fixed, bit)
+				continue
+			}
+			next = append(next, s)
+		}
+		active = next
 	}
-	push(bit)
-	for h.Len() > 0 {
-		b := heap.Pop(h).(pending)
-		q := r.passes[b.pass]
-		// only a block whose disclosed parity is known can be compared; every opened block's is
-		if r.aliceParity(q, b.start, b.end) != r.bobParity(q, b.start, b.end) {
-			push(r.search(q, b.start, b.end))
+	return fixed, nil
+}
+
+func hasKey(m map[int64]byte, k int64) bool {
+	_, ok := m[k]
+	return ok
+}
+
+// resolve searches the given blocks of pass pi, then the blocks every correction reopens in the passes opened
+// so far, in waves of one pass at a time, shortest blocks first, until every opened block's parities agree
+func (r *cascadeRun) resolve(pi int, odd [][2]int) error {
+	queue := make([]map[int]bool, len(r.passes)) // per pass, block starts to check
+	for i := range queue {
+		queue[i] = map[int]bool{}
+	}
+	for _, b := range odd {
+		queue[pi][b[0]] = true
+	}
+	for {
+		qi := -1
+		for i := range queue {
+			if len(queue[i]) > 0 {
+				qi = i
+				break
+			}
+		}
+		if qi < 0 {
+			return nil
+		}
+		q := r.passes[qi]
+		starts := make([]int, 0, len(queue[qi]))
+		for s := range queue[qi] {
+			starts = append(starts, s)
+		}
+		queue[qi] = map[int]bool{}
+		sort.Ints(starts)
+		var blocks [][2]int
+		for _, s := range starts {
+			e := min(s+q.block, r.n)
+			// every opened block's parity is known; only those that now differ are searched
+			if q.known[q.key(s, e)] != q.bobParity(s, e) {
+				blocks = append(blocks, [2]int{s, e})
+			}
+		}
+		fixed, err := r.searchAll(qi, blocks)
+		if err != nil {
+			return err
+		}
+		for _, bit := range fixed {
+			for qj := 0; qj <= pi; qj++ {
+				q := r.passes[qj]
+				queue[qj][(int(q.pos[bit])/q.block)*q.block] = true
+			}
 		}
 	}
 }
 
-// CascadeReconcile corrects bob toward alice; it returns Bob's corrected bits and the run's statistics, whose
-// Parities is everything disclosed about Alice's bits
+// CascadeReconcile corrects bob toward alice in one process; it returns Bob's corrected bits and the run's
+// statistics, whose Parities is everything disclosed about Alice's bits
 func CascadeReconcile(alice, bob []byte, qber float64, cfg CascadeConfig) ([]byte, CascadeStats) {
-	n := len(alice)
-	r := &cascadeRun{alice: alice, bob: append([]byte(nil), bob...)}
+	out, stats, err := CascadeBob(bob, qber, cfg, NewCascadeAlice(alice, cfg.Seed))
+	if err != nil {
+		panic(err) // the local oracle fails only on a malformed request, which would be a bug here
+	}
+	return out, stats
+}
+
+// CascadeBob runs Bob's side against Alice's oracle, local or across the network
+func CascadeBob(bob []byte, qber float64, cfg CascadeConfig, alice CascadeOracle) ([]byte, CascadeStats, error) {
+	n := len(bob)
+	r := &cascadeRun{n: n, bob: append([]byte(nil), bob...), alice: alice}
 	if n == 0 {
-		return r.bob, r.stats
+		return r.bob, r.stats, nil
 	}
 	sizes := cfg.BlockSizes
 	if len(sizes) == 0 {
@@ -199,37 +327,12 @@ func CascadeReconcile(alice, bob []byte, qber float64, cfg CascadeConfig) ([]byt
 			k *= cascadeGrowth
 		}
 	}
-	addPass := func(i, k int) {
-		var perm []int32
-		if i == 0 {
-			perm = make([]int32, n)
-			for j := range perm {
-				perm[j] = int32(j)
-			}
-		} else {
-			full := GeneratePermutation(n, cfg.Seed+int64(i))
-			perm = make([]int32, n)
-			for j, v := range full {
-				perm[j] = int32(v)
-			}
-		}
-		p := &cascadePass{perm: perm, pos: make([]int32, n), block: max(2, min(k, n)), alice: make([]byte, n+1), known: map[int64]byte{}}
-		ordered := make([]byte, n)
-		for j, b := range perm {
-			p.pos[b] = int32(j)
-			p.alice[j+1] = p.alice[j] ^ (alice[b] & 1)
-			ordered[j] = r.bob[b] & 1
-		}
-		p.bob = newFenwick(ordered)
-		r.passes = append(r.passes, p)
-		r.stats.BlockSizes = append(r.stats.BlockSizes, p.block)
-	}
 	// the planned passes, then half-frame passes until enough in a row find nothing: two parities each, and a
 	// pair of errors sharing every block so far is split by a new shuffle with probability one half
-	clean := 0
+	clean, passCorrections := 0, 0
 	for pi := 0; pi < cascadeMaxPasses; pi++ {
 		if pi >= len(sizes) {
-			if r.passCorrections == 0 {
+			if passCorrections == 0 {
 				clean++
 			} else {
 				clean = 0
@@ -239,22 +342,37 @@ func CascadeReconcile(alice, bob []byte, qber float64, cfg CascadeConfig) ([]byt
 			}
 			sizes = append(sizes, min(sizes[len(sizes)-1]*cascadeGrowth, max(2, n/2)))
 		}
-		addPass(pi, sizes[pi])
+		perm := cascadePerm(n, cfg.Seed, pi)
+		p := &cascadePass{perm: perm, pos: make([]int32, n), block: max(2, min(sizes[pi], n)), known: map[int64]byte{}}
+		ordered := make([]byte, n)
+		for j, b := range perm {
+			p.pos[b] = int32(j)
+			ordered[j] = r.bob[b] & 1
+		}
+		p.bob = newFenwick(ordered)
+		r.passes = append(r.passes, p)
+		r.stats.BlockSizes = append(r.stats.BlockSizes, p.block)
+
 		before := r.stats.Corrections
-		p := r.passes[pi]
+		var ranges [][2]int32
 		for start := 0; start < n; start += p.block {
-			end := min(start+p.block, n)
-			p.checked++
-			if r.aliceParity(p, start, end) != r.bobParity(p, start, end) {
-				bit := r.search(p, start, end)
-				if pi > 0 {
-					r.cascade(bit, pi)
-				}
+			ranges = append(ranges, [2]int32{int32(start), int32(min(start+p.block, n))})
+		}
+		if err := r.ask(pi, ranges); err != nil {
+			return nil, r.stats, err
+		}
+		var odd [][2]int
+		for _, rg := range ranges {
+			s, e := int(rg[0]), int(rg[1])
+			if p.known[p.key(s, e)] != p.bobParity(s, e) {
+				odd = append(odd, [2]int{s, e})
 			}
 		}
-		r.passCorrections = r.stats.Corrections - before
+		if err := r.resolve(pi, odd); err != nil {
+			return nil, r.stats, err
+		}
+		passCorrections = r.stats.Corrections - before
 	}
-	passes := len(r.passes)
-	r.stats.Passes = passes
-	return r.bob, r.stats
+	r.stats.Passes = len(r.passes)
+	return r.bob, r.stats, nil
 }

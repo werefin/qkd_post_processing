@@ -121,20 +121,21 @@ class CounterTest(unittest.TestCase):
 
 class PlanTest(unittest.TestCase):
     def test_groups_and_qber(self):
-        plan = co.Plan(opts(), [('a', [1, 2, 3, 4]), ('b', [1, 2, 3, 4])])
+        plan = co.Plan(opts(), [('C', [1, 2, 3, 4]), ('D', [1, 2, 3, 4])])
         self.assertEqual(len(plan.groups), 16)
-        self.assertEqual(plan.groups[1]['name'], 'C_A1_B2')
+        self.assertEqual(plan.groups[1]['name'], 'C_C1_D2')  # channels labelled by their site's name
         self.assertEqual(list(plan.derived), ['QBER_HV', 'QBER_DA', 'QBER'])
         self.assertIn('aligned', plan.columns)
         self.assertEqual(len(co.Plan(opts(), [('lab', [1, 2, 3, 4])]).groups), 6)
-        self.assertEqual(co.Plan(opts(qber=False), [('a', [1, 2, 3, 4]), ('b', [1, 2, 3, 4])]).derived, {})
-        row = {f'C_A{a}_B{b}{s}': ((100 if a == b else 5) if not s else 1) for a in range(1, 5) for b in range(1, 5) for s in ('', '_noise')}
+        self.assertEqual(co.Plan(opts(qber=False), [('C', [1, 2, 3, 4]), ('D', [1, 2, 3, 4])]).derived, {})
+        self.assertEqual(co.site_prefixes(['x-1', 'x-1']), ['X', 'Y'])  # unusable as prefixes: placed by order
+        row = {f'C_C{a}_D{b}{s}': ((100 if a == b else 5) if not s else 1) for a in range(1, 5) for b in range(1, 5) for s in ('', '_noise')}
         plan.with_derived(row)
         self.assertAlmostEqual(row['QBER_HV'], 8 / (8 + 198))  # noise taken off every count
 
     def test_mistakes_are_refused(self):
-        sites = [('a', [1, 2]), ('b', [1, 2])]
-        for bad in (dict(twofold=[['A1', 'B7']]), dict(delays_ps={'9': 5}), dict(derived={'S_A1': 'S_A2'}), dict(derived={'q': 'S_A1 +'})):
+        sites = [('C', [1, 2]), ('D', [1, 2])]
+        for bad in (dict(twofold=[['C1', 'D7']]), dict(delays_ps={'9': 5}), dict(derived={'S_C1': 'S_C2'}), dict(derived={'q': 'S_C1 +'})):
             with self.assertRaises(ValueError, msg=str(bad)):
                 co.Plan(opts(**bad), sites)
         for bad in ({'colour': 1}, {'integration_s': 0}, {'sites': 'a'}):

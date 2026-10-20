@@ -27,6 +27,7 @@ The catch: two TimeTaggers run on independent local clocks, and there's no wire 
 | `live_peak.py` | `LiveTracker`: `feed` appends each stream's new timestamps (relative to its first one, since raw TimeTagger timestamps exceed float64's exact range), `step` runs the lock (`_coarse_search` candidates, then `_pair_residuals` and the parallel `_skew_scan` over trial skews) or the per-chunk tracking (`_chunk_point`, `_refit`), `status` builds the JSON the dashboard draws. `tracker_kwargs` maps `config.json` onto it; `main` replays two recordings through it. |
 | `continuous_qkd.py` | `Processor`: `process_segment` (`fast_align` on the previous segment's clock model, else the full search, then `importtt -events-cache`), `run_block` in a background thread, `status`/`emit` for the dashboard, state saved to `continuous_state.json`. |
 | `coincidence_logger.py`, `coincidences/` | Singles, coincidences and QBER per integration window into a CSV; see "Coincidence log for the photonics experiments". |
+| `two_party_blocks.py` | Continuous two-party QKD a block at a time, used by the dashboard: segments chosen and joined by UTC start (`segments_in`, `join_segments`), the public announcement split into mailbox-sized parts and rebuilt (`announcement_parts`, `join_announcement`), and the answering node's block aligned to it from the previous block's clock model (`align_block`). |
 | `tt_replay.py` | `ReplayStream`, a stand-in for `TimeTaggerStream` playing a recording back at stream speed, looped; `pair_skew` gives B's loop its skew-scaled period. |
 | `chsh_diagnostic.py` | Standalone CHSH/Bell diagnostic, unrelated to the QKD chain; see "Optional: CHSH self-testing diagnostic" below. |
 | `config.json` | `"sites"` (per-TT connection + detector settings), `"links"` (named site pairs), `"record_dual"` (which link + recording-mode defaults), `"live_coincidence"` (live tracker settings while recording), `"coincidence_peak"` (final-analysis defaults, also reused by the live monitor's algorithm settings). |
@@ -71,7 +72,7 @@ python3 tt_record_dual.py
 All configuration lives in `config.json` (both scripts read it; nothing is hardcoded in the source):
 
 - `"sites"`: one entry per physical TimeTagger endpoint (`tt_ip`/`tt_port`/`auth_key_hex` plus its `channels`/`delays_ps`/`deadtimes_ps`/`triggers_volt`/`loop_period_s`). Add a new site here once, use it in any link.
-- `"links"`: every known pair of sites that's actually been recorded together (e.g. `bratislava_nitra`, `bratislava_trnava`), each just `{"site_a": ..., "site_b": ...}`. This is the full set of possibilities that used to live as commented-out `TT_A`/`TT_B` blocks in the script; add a link here once it's been tried, and it stays selectable by name from then on.
+- `"links"`: every known pair of sites that's actually been recorded together (e.g. `C_A`, `C_D`), each just `{"site_a": ..., "site_b": ...}`. This is the full set of possibilities that used to live as commented-out `TT_A`/`TT_B` blocks in the script; add a link here once it's been tried, and it stays selectable by name from then on.
 - `"record_dual"`: which single link to record this run (`link`, any name from `"links"`), `stop_mode`/`record_duration_s`/`target_detection_count`, and `output_dir`. Only one link is ever recorded per run; `"links"` just makes every previously-known pair reachable by name instead of by editing the file.
 
 Recording a different link, or a one-off duration, doesn't require editing the file --> every `record_dual` setting has a CLI override:
@@ -79,8 +80,8 @@ Recording a different link, or a one-off duration, doesn't require editing the f
 ```bash
 python3 tt_record_dual.py                                        # config.json's record_dual.link, as-is
 python3 tt_record_dual.py path/to/other-config.json              # a different config file
-python3 tt_record_dual.py --link bratislava_nitra                # any named link from "links"
-python3 tt_record_dual.py --site-a trencin --site-b trnava       # an ad hoc pair, bypassing "links"
+python3 tt_record_dual.py --link C_A                             # any named link from "links"
+python3 tt_record_dual.py --site-a C --site-b D                  # an ad hoc pair, bypassing "links"
 python3 tt_record_dual.py --stop-mode detection_count --target-count 2000000
 python3 tt_record_dual.py --help                                 # full flag list
 ```
@@ -130,7 +131,9 @@ python3 live_peak.py example/20260909/*_timestamp_sequence.npy --speed 1   # the
 
 `tt_record_dual.py --stop-mode continuous` records until stopped and cuts the streams every `--segment-s` seconds (`record_dual.segment_s`, 10 by default) into a directory per segment, holding the usual recording pair, built under a hidden name and renamed when complete. A `.recording_done` marker follows the last segment. `--replay A.npy B.npy` plays two stored recordings instead of connecting to TimeTaggers (`tt_replay.py`), looping them with B's period scaled by the pair's clock skew so the lag runs on across loops as on a real link; `--replay-speed` plays faster than real time.
 
-`continuous_qkd.py <segments dir>` processes each segment as it appears:
+`tt_record_dual.py --site NAME --stop-mode continuous` records one site's TimeTagger only, as each node of a two-party link does: segments are cut on UTC multiples of `--segment-s` and named by their UTC start, so two sites on NTP-synced clocks name the same stretch of time alike, and every read prints a `RATES` line with its counts per channel for the dashboard's live singles. The dashboard's continuous two-party QKD runs it and `two_party_blocks.py` (Production: continuous two-party QKD in `doc/deployment.md`).
+
+`continuous_qkd.py <segments dir>` processes each segment as it appears, for one machine reading both TimeTaggers:
 
 - **Alignment**: every segment starts from a clock model, the first from the live tracker's (the recorder writes it into each segment's `*_meta.json` as `live_model`), every later one from the previous segment's: the clicks more than 50 ns from where the model puts a partner are dropped, the predicted skew is taken out of B, and the lag and residual skew are found on what is left. The pruned arrays replace the raw ones, so everything downstream reads a fraction of a percent of a busy detector's clicks; a segment with no model, or where the model fails, gets the full search of `coincidence_peak.py`.
 - **Sifting**: `importtt -events-cache` aligns, filters and sifts the segment and keeps its events (about 1 MB); the raw arrays are deleted unless `--keep-raw`.
@@ -142,8 +145,8 @@ python3 live_peak.py example/20260909/*_timestamp_sequence.npy --speed 1   # the
 `coincidence_logger.py` writes one row per integration window to a CSV: singles per channel, two-fold and higher-order coincidences in a signal ROI and in a noise ROI, and the QBER, with every setting in the file's header. It saves counts only, so a 5 h run writes kilobytes. The dashboard's Coincidence log page runs it.
 
 ```bash
-python3 coincidence_logger.py --sites trnava --integration-s 300                               # one TimeTagger
-python3 coincidence_logger.py --sites bratislava trnava --integration-s 30 --windows 120        # two, aligned live
+python3 coincidence_logger.py --sites C --integration-s 300                                    # one TimeTagger
+python3 coincidence_logger.py --sites C D --integration-s 30 --windows 120                     # two, aligned live
 python3 coincidence_logger.py --recordings A_timestamp_sequence.npy B_timestamp_sequence.npy   # stored recordings, offline
 ```
 
@@ -155,15 +158,15 @@ python3 coincidence_logger.py --recordings A_timestamp_sequence.npy B_timestamp_
 | `integration_s` | seconds per row |
 | `window_ps`, `roi_center_ps` | the signal ROI, relative to the first channel's click once delays are applied |
 | `noise_offset_ps` | the noise ROI, same width, this far away: the accidentals expected in the signal ROI; whole periods for a pulsed source |
-| `delays_ps` | software delay per channel, e.g. `{"B2": 120}` |
-| `twofold`, `higher_order` | `"all"` two-fold pairs (A-B pairs for two sites) or a list; groups of three or more |
+| `delays_ps` | software delay per channel, e.g. `{"D2": 120}` |
+| `twofold`, `higher_order` | `"all"` two-fold pairs (every pair across the two sites) or a list; groups of three or more |
 | `qber` | two sites: `QBER_HV`, `QBER_DA` and `QBER` on every row, on by default |
 | `derived` | other values per row, `name: formula` on the columns with `+ - * / **`, `sqrt`, `abs`, `min`, `max` |
 | `metadata` | kept in the header, e.g. `{"experiment": "...", "notes": "..."}` |
 
 **QBER**: with channels 1 and 2 the bits of the H/V basis and 3 and 4 those of D/A, as `importtt` maps them, equal bits are correct: $\mathrm{QBER_{HV}} = (C_{12} + C_{21}) / (C_{11} + C_{12} + C_{21} + C_{22})$, every count less its noise ROI, and the same with 3 and 4; `QBER` pools both bases. The dashboard also shows it over the last 10 s.
 
-**Columns**: `S_<channel>` singles, `C_<channels>` a group in the signal ROI (clicks of the first channel with a click of every other one in the ROI), `C_<channels>_noise` the same in the noise ROI, the QBER and other values, then `window`, `start`, `end`, `duration_s`, `complete` (0 only for the last row of a stopped run), `capped_reads` (reads that hit the server's batch cap) and, for two sites, `aligned`. Channels are `1`, ... for one site and `A1`, ..., `B1`, ... for two.
+**Columns**: `S_<channel>` singles, `C_<channels>` a group in the signal ROI (clicks of the first channel with a click of every other one in the ROI), `C_<channels>_noise` the same in the noise ROI, the QBER and other values, then `window`, `start`, `end`, `duration_s`, `complete` (0 only for the last row of a stopped run), `capped_reads` (reads that hit the server's batch cap) and, for two sites, `aligned`. Channels are `1`, ... for one site, and named after their site for two: sites C and D give `C1`, ..., `D1`, ....
 
 **File**: `<output_dir>/<start>_coincidences.csv`, a header of `# ` lines holding JSON metadata (integration time, sites by name with channels, delays, trigger levels and dead times, both ROIs, groups, formulas, clock alignment, software version, a description of every column, never an address), then one row per window, on disk as soon as written. Read it with `pandas.read_csv(path, comment="#")`, or `coincidences.read_log(path)` for the metadata too.
 

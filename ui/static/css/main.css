@@ -290,3 +290,42 @@ textarea.input { resize: vertical; min-height: 4.5rem; }
   border-radius: 6px; padding: .35rem .5rem; font: 500 .72rem 'JetBrains Mono', monospace; color: var(--text); display: none; max-width: 22rem; }
 .clog-tip .sw { display: inline-block; width: .55rem; height: .55rem; border-radius: 2px; margin-right: .35rem; }
 .clog-btn { padding: .3rem .6rem; font-size: .72rem; text-decoration: none; display: inline-block; }
+
+/* Link monitor: the link bar, both systems and the channel between them, the quantum channel's stages */
+.mon-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .8rem; margin-bottom: 1rem; }
+.mon-tabs { display: flex; gap: .35rem; flex-wrap: wrap; }
+.mon-tab { font: 600 .78rem 'Inter', sans-serif; color: var(--text2); background: var(--surface); border: 1px solid var(--border2); border-radius: 999px; padding: .4rem .9rem; cursor: pointer; }
+.mon-tab.active { color: var(--text); border-color: var(--purple); background: var(--surface2); }
+.mon-page { display: none; }
+.mon-page.active { display: block; }
+.mon-systems { display: grid; grid-template-columns: 1fr 1.3fr 1fr; gap: 1rem; margin-bottom: 1rem; align-items: stretch; }
+@media (max-width: 760px) { .mon-systems { grid-template-columns: 1fr; } }
+.mon-sys, .mon-link { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: .9rem 1.1rem; }
+.mon-sys.ok { border-color: var(--success); }
+.mon-sys.idle { opacity: .55; }
+.mon-sys-k { font: 600 .68rem 'JetBrains Mono', monospace; color: var(--text3); text-transform: uppercase; letter-spacing: .06em; }
+.mon-sys-name { font: 700 1.05rem 'Inter', sans-serif; margin: .25rem 0; }
+.mon-sys-info { font: 500 .75rem 'JetBrains Mono', monospace; color: var(--text2); white-space: pre-line; }
+.mon-link-line { height: 4px; border-radius: 2px; background: var(--danger); margin: .7rem 0; }
+.mon-link.ok .mon-link-line { background: var(--success); }
+.mon-stages { display: grid; grid-template-columns: repeat(5, 1fr); gap: .4rem; padding: 1rem 1.25rem 1.2rem; }
+@media (max-width: 760px) { .mon-stages { grid-template-columns: 1fr; } }
+.mon-stage { font: 600 .72rem 'Inter', sans-serif; color: var(--text3); background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: .55rem .6rem; text-align: center; }
+.mon-stage.done { color: var(--text2); border-color: var(--border2); }
+.mon-stage.now { color: var(--text); border-color: var(--warn); }
+.mon-stage.now.good { border-color: var(--success); }
+.grid--4 { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.mon-gauges { margin-bottom: 1rem; }
+.mon-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 900px) { .mon-grid { grid-template-columns: 1fr; } }
+.mon-cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.25rem; }
+@media (max-width: 1000px) { .mon-cols { grid-template-columns: 1fr; } }
+.mon-col { display: flex; flex-direction: column; gap: 1.25rem; min-width: 0; }
+.mon-plot, .mon-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem 1.1rem .8rem; }
+.mon-plot-title { font: 700 .95rem 'Inter', sans-serif; }
+.mon-plot-note:empty { display: none; }
+.mon-panel-h { font: 700 .9rem 'Inter', sans-serif; color: var(--text2); margin: .9rem 0 .5rem; display: flex; gap: .6rem; align-items: center; }
+.mon-panel-h:first-child { margin-top: 0; }
+.mon-kv { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .35rem 1rem; font: 500 .85rem 'Inter', sans-serif; }
+.mon-kv .k { color: var(--text2); }
+.mon-kv .v { font-family: 'JetBrains Mono', monospace; color: var(--text); text-align: right; }

@@ -7,6 +7,6 @@ from .align import LiveModel, OneClock
 from .counting import PS_PER_S, WindowCounter
 from .options import DEFAULTS, merge
 from .outputs import STATUS_PREFIX, CsvLog, StatusLines, read_log
-from .plan import FORMAT, Plan, compile_expr
+from .plan import FORMAT, Plan, compile_expr, site_prefixes
 from .run import Run
 from .sources import FileSource, TaggerSource

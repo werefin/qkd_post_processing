@@ -4,6 +4,7 @@ Plan of a log: its channels, coincidence groups, columns, derived values and met
 
 import ast
 import math
+import re
 import subprocess
 from datetime import datetime
 from itertools import combinations, product
@@ -53,16 +54,26 @@ def compile_expr(text: str, names: set):
     return run
 
 
+def site_prefixes(names: list) -> list:
+    '''Two sites' channels are labelled by site name, as C1 or D3: letters and digits only; a name that cannot
+    prefix a label (empty, ending in a digit, or the same as the other) falls back to X and Y'''
+    p = [re.sub(r'[^A-Za-z0-9]', '', str(n)) for n in names]
+    if len(set(p)) != len(p) or any(not x or x[-1].isdigit() for x in p):
+        return ['X', 'Y'][:len(names)]
+    return p
+
+
 class Plan:
-    '''sites: (name, channels) per TimeTagger; one site's channels are labelled 1, 2, ..., two sites' A1, ..., B1, ...'''
+    '''sites: (name, channels) per TimeTagger; one site's channels are labelled 1, 2, ..., two sites' by site name'''
 
     def __init__(self, opts: dict, sites: list):
         self.opts = opts
         self.n_sites = len(sites)
         self.labels, self.where = [], {}
+        self.prefix = site_prefixes([n for n, _ in sites]) if self.n_sites == 2 else ['']
         for s, (_, chans) in enumerate(sites):
             for ch in chans:
-                label = f'{"AB"[s]}{ch}' if self.n_sites == 2 else str(ch)
+                label = f'{self.prefix[s]}{ch}'
                 self.labels.append(label)
                 self.where[label] = (s, int(ch))
         self.delay = {l: 0 for l in self.labels}
@@ -99,10 +110,11 @@ class Plan:
         if not self.opts['qber'] or self.n_sites != 2:
             return {}
         have = {g['name'] for g in self.groups}
-        net = lambda a, b: f'(C_A{a}_B{b} - C_A{a}_B{b}_noise)'
+        pa, pb = self.prefix
+        net = lambda a, b: f'(C_{pa}{a}_{pb}{b} - C_{pa}{a}_{pb}{b}_noise)'
         out, parts = {}, []
         for basis, (x, y) in (('HV', (1, 2)), ('DA', (3, 4))):
-            if not all(f'C_A{a}_B{b}' in have for a in (x, y) for b in (x, y)):
+            if not all(f'C_{pa}{a}_{pb}{b}' in have for a in (x, y) for b in (x, y)):
                 continue
             wrong, right = f'{net(x, y)} + {net(y, x)}', f'{net(x, x)} + {net(y, y)}'
             out[f'QBER_{basis}'] = f'({wrong}) / ({wrong} + {right})'

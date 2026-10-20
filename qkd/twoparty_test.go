@@ -154,3 +154,36 @@ func TestTwoPartyLDPC5G(t *testing.T) {
 		t.Fatalf("two-party LDPC off the joint run by %.1f%% or not above polar", 100*d)
 	}
 }
+
+// TestTwoPartyCascade: Cascade with Bob asking Alice for parities across the connection gives both ends the
+// same key under the same IDs, as long as the one-process pipeline's on the same data, the chain rule charged
+// when errors are counted by correction and not when a sample is sacrificed
+func TestTwoPartyCascade(t *testing.T) {
+	t.Parallel() // heavy and independent: runs beside the other heavy tests
+	alice, bob := simulateClicks(300000, 0.05, 23)
+	for _, sample := range []bool{false, true} {
+		cfg := TwoPartyConfig{WindowPS: 500, ChunkSize: 1024, ExpectedQBER: 0.05, SampleSeed: 5, KeyAlignBits: 256,
+			Method: "cascade", CascadeSample: sample}
+		joint, err := RunCascade(alice, bob, CascadeRunConfig{CoincidenceWindowPS: 500, Seed: 5, ChunkSize: 1024,
+			ExpectedQBER: 0.05, KeyAlignBits: 256, SacrificeSample: sample})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ra, rb, ea, eb := runBoth(alice, bob, cfg, cfg)
+		if ea != nil || eb != nil {
+			t.Fatalf("sample %v: alice %v, bob %v", sample, ea, eb)
+		}
+		t.Logf("sample %v: %d-bit key, %d parities in %d round trips, phi %.4f, chain rule %d bits; one process %d bits",
+			sample, len(ra.FinalKeyBits), rb.Cascade.Parities, rb.Cascade.Rounds, ra.FiniteKey.Phi, ra.FiniteKey.ChainBits, len(joint.FinalKeyBits))
+		if len(ra.FinalKeyBits) == 0 || !bytes.Equal(ra.FinalKeyBytes, rb.FinalKeyBytes) || strings.Join(ra.KeyIDs, ",") != strings.Join(rb.KeyIDs, ",") {
+			t.Fatalf("sample %v: keys of %d and %d bits, equal %v", sample, len(ra.FinalKeyBits), len(rb.FinalKeyBits), bytes.Equal(ra.FinalKeyBytes, rb.FinalKeyBytes))
+		}
+		if ra.ECLeakedBits != rb.Cascade.Parities || len(ra.FinalKeyBits) != len(joint.FinalKeyBits) || ra.FiniteKey.Phi != joint.FiniteKey.Phi {
+			t.Fatalf("sample %v: Alice charged %d, Bob %d; key %d vs %d bits, phi %.5f vs %.5f", sample, ra.ECLeakedBits,
+				rb.Cascade.Parities, len(ra.FinalKeyBits), len(joint.FinalKeyBits), ra.FiniteKey.Phi, joint.FiniteKey.Phi)
+		}
+		if (ra.FiniteKey.ChainBits > 0) == sample {
+			t.Fatalf("sample %v: chain rule charged %d bits", sample, ra.FiniteKey.ChainBits)
+		}
+	}
+}

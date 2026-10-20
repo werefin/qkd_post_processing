@@ -1,6 +1,6 @@
 {
   "sites": {
-    "site_a": {
+    "A": {
       "tt_ip": "192.0.2.1",
       "tt_port": 40404,
       "auth_key_hex": "REPLACE_ME",
@@ -11,7 +11,7 @@
       "triggers_volt": [0.200, 0.200, 0.200, 0.200],
       "loop_period_s": 0.5
     },
-    "site_b": {
+    "B": {
       "tt_ip": "192.0.2.2",
       "tt_port": 40404,
       "auth_key_hex": "REPLACE_ME",
@@ -25,11 +25,11 @@
   },
 
   "links": {
-    "site_a_site_b": {"site_a": "site_a", "site_b": "site_b"}
+    "A_B": {"site_a": "A", "site_b": "B"}
   },
 
   "record_dual": {
-    "link": "site_a_site_b",
+    "link": "A_B",
     "stop_mode": "duration",
     "record_duration_s": 3,
     "target_detection_count": 4000000,
@@ -64,7 +64,7 @@
   },
 
   "coincidence_log": {
-    "sites": ["site_a", "site_b"],
+    "sites": ["A", "B"],
     "integration_s": 30,
     "window_ps": 1000,
     "roi_center_ps": 0,

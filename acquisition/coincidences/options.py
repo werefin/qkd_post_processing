@@ -11,8 +11,8 @@ DEFAULTS = {
     'window_ps': 1000,          # full width of the signal ROI and of the noise ROI
     'roi_center_ps': 0,         # signal ROI center, relative to the first channel's click once delays are applied
     'noise_offset_ps': 100_000,  # the noise ROI, this far from the signal ROI; whole periods for a pulsed source
-    'delays_ps': {},            # software delay per channel, e.g. {"B2": 120}
-    'twofold': 'all',           # "all" pairs, or a list of groups such as ["A1", "B1"]
+    'delays_ps': {},            # software delay per channel, e.g. {"D2": 120}
+    'twofold': 'all',           # "all" pairs, or a list of groups such as ["C1", "D1"]
     'higher_order': [],         # groups of three or more channels
     'derived': {},              # name: arithmetic on the columns, evaluated on every row
     'qber': True,               # two sites: QBER_HV, QBER_DA and QBER from the coincidences, as importtt wires channels

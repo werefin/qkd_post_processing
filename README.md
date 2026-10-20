@@ -118,7 +118,8 @@ Each node runs three hardened containers: `kms` (the key management system, a 13
 - **Alignment**: coincidence-peak lag, window, score and clock skew for any pair, with zoomable plots.
 - **Two-party key extraction**: the production mode; this node announces its own recordings' timing to a neighbor, which aligns, matches and decodes with its own, and both pools receive the same certified key under the same key_IDs.
 - **Key extraction**: the chain on one pair or several pooled at one site, as a background job with a live log; detector delay calibration.
-- **Continuous QKD**: records without end and distils a key block every few minutes into a link's KMS pool, with the current block's progress, per-segment QBER, rate, skew and processing time, and every block's disclosure, efficiency and key. A replay of two stored recordings stands in for the TimeTaggers.
+- **Continuous QKD**: in production, each node records its own TimeTagger without end and, every block, offers it to the neighbor it announces to; both run optimized Cascade and both pools receive the same keys, resuming by themselves after a restart. On one machine with both TimeTaggers, the lab mode distils a key block every few minutes into a link's KMS pool.
+- **Link monitor**: one link as it runs, with the same views as the TimeTagger vendor's QKD monitor: both systems and the channel between them, the quantum channel's stage, sync, fidelity, QBER and key-rate gauges, singles and coincidences per polarization, heralding, the bit rate after each protocol stage, the run's history, and every block as CSV or JSON.
 - **Evaluation**: every stage of the chain on chosen recordings, with figures, kept on the node.
 - **Network and KMS**: links and their reachability, each end's half of every pool, routes, applications, an end-to-end ETSI key exchange between two dashboards (key IDs and fingerprints only), the audit trail.
 - **CHSH diagnostic** and the **simulator**, whose demo keys never reach the KMS.
@@ -138,6 +139,8 @@ go run ./cmd/importtt -dir acquisition/<recording dir> -cascade
 A single recording of a few seconds is too short for a finite key; continuous mode distils blocks of minutes (Continuous QKD below), and `evaluation/evaluate.py` follows any recording through every stage with figures, kept locally, never committed. Fine timestamps must be announced in one direction only (Alice to Bob), see Per-detector delays and the timing side channel in [`doc/coincidence_filtering.md`](doc/coincidence_filtering.md).
 
 ### Continuous QKD
+
+In production each node runs continuous two-party QKD from its dashboard: Production: continuous two-party QKD in [`doc/deployment.md`](doc/deployment.md). From the command line, one machine reading both TimeTaggers, as in the lab:
 
 ```bash
 cd acquisition

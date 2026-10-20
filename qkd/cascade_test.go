@@ -29,7 +29,7 @@ func TestCascadeEfficiency(t *testing.T) {
 		alice, bob, p := bscFrame(100_000, c.q, int64(c.q*1e4))
 		got, s := CascadeReconcile(alice, bob, c.q, CascadeConfig{Seed: 3})
 		f := float64(s.Parities) / (float64(len(alice)) * binaryEntropy(p))
-		t.Logf("QBER %.0f%%: blocks %v, %d parities (%d inferred), %d corrections, f = %.4f", 100*c.q, s.BlockSizes, s.Parities, s.Inferred, s.Corrections, f)
+		t.Logf("QBER %.0f%%: blocks %v, %d parities (%d inferred), %d corrections, %d round trips, f = %.4f", 100*c.q, s.BlockSizes, s.Parities, s.Inferred, s.Corrections, s.Rounds, f)
 		if !bytes.Equal(got, alice) || f > c.maxF {
 			t.Fatalf("QBER %.2f: corrected %v, f %.4f above %.2f", c.q, bytes.Equal(got, alice), f, c.maxF)
 		}

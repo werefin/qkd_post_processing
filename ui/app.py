@@ -1085,15 +1085,19 @@ def _pp_recv(peer, session, timeout=_PP_WAIT_S):
     raise RuntimeError(f'{peer} did not answer within {timeout} s')
 
 
-_TWO_PARTY_PARAMS = ('method', 'polar_margin', 'polar_list', 'soft_bins', 'asymptotic', 'filter', 'chunk', 'delays')
+_TWO_PARTY_PARAMS = ('method', 'cascade_sample', 'expected_qber', 'polar_margin', 'polar_list', 'soft_bins', 'asymptotic', 'filter', 'chunk', 'delays')
 
 
 def _two_party_args(p):
     '''The error-correction and key options both halves must agree on, as importtt flags'''
-    method = p.get('method') or 'ldpc5g'
-    if method not in ('ldpc5g', 'polar'):
-        raise ValueError('two-party extraction runs 5G NR LDPC or polar codes')
+    method = p.get('method') or 'cascade'
+    if method not in ('cascade', 'ldpc5g', 'polar'):
+        raise ValueError('two-party extraction runs optimized Cascade, 5G NR LDPC or polar codes')
     args = ['-' + method, '-chunk', str(int(p.get('chunk') or 1024))]
+    if method == 'cascade':
+        if p.get('cascade_sample'):
+            args.append('-cascade-sample')
+        _add_arg(p, args, '-expected-qber', 'expected_qber', float)
     _add_arg(p, args, '-polar-margin', 'polar_margin', float)
     _add_arg(p, args, '-polar-list', 'polar_list', int)
     _add_arg(p, args, '-soft-bins', 'soft_bins', int)
@@ -1215,9 +1219,14 @@ def _two_party_listener():
             continue
         for s in sessions:
             key = (s['peer'], s['session'])
-            if s.get('first_kind') == 'offer' and key not in seen:
+            if key in seen:
+                continue
+            if s.get('first_kind') == 'offer':
                 seen.add(key)
                 _queue_job('twoparty-bob', {'peer': s['peer'], 'session': s['session']})
+            elif s.get('first_kind') == 'cont-offer':
+                seen.add(key)
+                _tp['queue'].put(('bob', s['peer'], s['session']))
 
 
 def _job_evaluate(job):
@@ -1392,9 +1401,563 @@ def api_chsh_download():
     return resp
 
 
+
+# Continuous two-party QKD, the production mode: each node records its TimeTagger in UTC-aligned segments, offers
+# each block to the neighbors it announces to and resumes after a restart; both pools receive the same keys
+
+import two_party_blocks as tpb  # noqa: E402
+
+TP_DIR = _dir('TWO_PARTY_DIR', CONTINUOUS_DIR / 'two-party')
+TP_SEGMENTS = TP_DIR / 'segments'
+TP_WORK = TP_DIR / 'work'
+TP_STATE = CONFIG_DIR / 'two_party.json'
+TP_BLOCKS = TP_DIR / 'blocks.jsonl'
+TP_MODELS = TP_DIR / 'models.json'
+TP_RECORDER_PID = TP_DIR / 'recorder.pid'
+_TP_DEFAULTS = {'active': False, 'site': None, 'segment_s': 10.0, 'block_s': 300.0, 'announce_to': [],
+                'expected_qber': 0.05, 'keep_blocks': 4, 'next_block': {}, 'replay': None, 'started': None}
+_TP_GRACE_S = 5  # after a block ends, for both sites to write the segment that closes it
+_tp = {'rec': None, 'rec_log': collections.deque(maxlen=300), 'queue': queue.Queue(), 'running': None, 'rec_started': None,
+       'blocks': collections.deque(maxlen=200), 'lock': threading.Lock(), 'alerts': [], 'alerted': None,
+       'live': collections.deque(maxlen=1440), 'live_seen': set(),
+       'fast': collections.deque(maxlen=600), 'remote_fast': {}}  # per read, about two a second; the neighbors' own
+
+
+def _tp_state():
+    try:
+        return {**_TP_DEFAULTS, **json.loads(TP_STATE.read_text())}
+    except (OSError, ValueError):
+        return dict(_TP_DEFAULTS)
+
+
+def _tp_save(state):
+    tmp = TP_STATE.with_suffix('.tmp')
+    tmp.write_text(json.dumps(state, indent=1))
+    os.replace(tmp, TP_STATE)
+
+
+def _tp_models():
+    try:
+        return json.loads(TP_MODELS.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _tp_recording():
+    return _tp['rec'] is not None and _tp['rec'].poll() is None
+
+
+def _tp_stop_stale_recorder():
+    '''A recorder left by a dashboard that died without its container would write the same segments twice'''
+    try:
+        pid = int(TP_RECORDER_PID.read_text())
+        cmdline = Path(f'/proc/{pid}/cmdline').read_bytes().decode(errors='replace')
+    except (OSError, ValueError):
+        return
+    if 'tt_record_dual.py' not in cmdline or str(TP_SEGMENTS) not in cmdline:
+        return
+    # asked politely first; an orphan whose output pipe broke with its dashboard may not get through that
+    for sig, wait_s in ((signal.SIGINT, 15), (signal.SIGTERM, 5), (signal.SIGKILL, 5)):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            return
+        for _ in range(int(wait_s * 2)):
+            if not Path(f'/proc/{pid}').exists():
+                return
+            time.sleep(0.5)
+
+
+def _tp_start_recorder(state):
+    '''This node's TimeTagger, recorded without end in UTC-aligned segments; caller holds _acquire_lock'''
+    if _tp_recording():
+        return
+    TP_SEGMENTS.mkdir(parents=True, exist_ok=True)
+    (TP_SEGMENTS / '.recording_done').unlink(missing_ok=True)
+    args = [sys.executable, str(REPO_ROOT / 'acquisition' / 'tt_record_dual.py'), str(UPLOADED_CONFIG_PATH),
+            '--site', state['site'], '--stop-mode', 'continuous', '--segment-s', str(state['segment_s']),
+            '--output-dir', str(TP_SEGMENTS), '--no-live']
+    if state.get('replay'):
+        args += ['--replay', str(RECORDINGS_DIR / state['replay'])]  # a stored recording standing in, for tests
+    _tp_stop_stale_recorder()
+    proc = subprocess.Popen(args, cwd=str(REPO_ROOT / 'acquisition'), stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, bufsize=1)
+    _tp['rec'], _tp['rec_started'] = proc, time.time()
+    TP_RECORDER_PID.write_text(str(proc.pid))
+
+    def read():
+        for line in proc.stdout:
+            if line.startswith('RATES '):
+                try:
+                    r = json.loads(line[6:])
+                    if r['dt_s'] > 0:
+                        _tp['fast'].append({'t': r['t'], 'singles': [round(c / r['dt_s'], 1) for c in r['counts']]})
+                except (ValueError, KeyError):
+                    pass
+            elif 'detections this cycle' not in line:
+                _tp['rec_log'].append(line.rstrip('\n'))
+    threading.Thread(target=read, daemon=True).start()
+
+
+def _tp_record_block(entry):
+    entry['finished'] = time.time()
+    with _tp['lock']:
+        _tp['blocks'].append(entry)
+    try:
+        with TP_BLOCKS.open('a') as f:
+            f.write(json.dumps(entry) + '\n')
+    except OSError:
+        pass
+
+
+def _tp_run_importtt(entry, args):
+    proc = subprocess.run(args, capture_output=True, text=True, timeout=3600)
+    lines = proc.stdout.strip().splitlines()
+    try:
+        out = json.loads(lines[-1])
+    except (IndexError, ValueError):
+        raise RuntimeError((proc.stderr.strip().splitlines() or [f'importtt exit status {proc.returncode}'])[-1][:300])
+    if out.get('error'):
+        raise RuntimeError(out['error'][:300])
+    fk = out.get('finite_key') or {}
+    entry.update(sifted=out.get('sifted_bits'), qber=out.get('qber'), key_bits=out.get('final_key_bits', 0),
+                 keys_saved=out.get('keys_saved', 0), ec_leak=out.get('ec_leaked_bits'), rounds=out.get('cascade_rounds'),
+                 phase_error_bound=fk.get('phase_error_bound'), verified=fk.get('verified'), surviving=fk.get('surviving_bits'),
+                 charged=fk.get('charged_bits'), window_ps=out.get('filter_window_ps'), compression=out.get('compression_rate'),
+                 basis_bits=out.get('basis_bits'), basis_checked=out.get('basis_checked'), basis_errors=out.get('basis_errors'),
+                 pair_counts=out.get('pair_counts'))
+
+
+def _tp_singles(ts_path):
+    '''Singles per second of channels 1 to 4 over a joined block, and its length in seconds'''
+    import numpy as np
+    ts = np.load(ts_path, mmap_mode='r')
+    ch = np.load(Path(str(ts_path).replace('_timestamp_sequence.npy', '_channel_sequence.npy')), mmap_mode='r')
+    secs = max((int(ts[-1]) - int(ts[0])) / 1e12, 1e-9) if len(ts) > 1 else 0.0
+    counts = np.bincount(np.asarray(ch, dtype=np.int64).clip(0, 8), minlength=9)[1:5]
+    return [round(float(c) / secs, 1) if secs else 0.0 for c in counts], round(secs, 3)
+
+
+def _tp_params(state):
+    return {'method': 'cascade', 'expected_qber': state['expected_qber'], 'chunk': 1024}
+
+
+def _tp_alice(peer, start):
+    '''Offers one block to peer: this node's segments joined, their public timing announced in parts, then
+    Alice's half; the keys go to the link's import folder, the neighbor's to its own'''
+    state = _tp_state()
+    end = start + state['block_s']
+    entry = {'role': 'alice', 'peer': peer, 'block': start, 'started': time.time()}
+    work = Path(tempfile.mkdtemp(prefix='alice_', dir=TP_WORK))
+    try:
+        segs = tpb.segments_in(TP_SEGMENTS, start, end)
+        if not segs:
+            raise ValueError('no segments recorded in this block')
+        entry['segments'] = len(segs)
+        own_ts = tpb.join_segments(segs, work / 'own')
+        own = own_ts.parent
+        entry['singles_local'], entry['seconds'] = _tp_singles(own_ts)
+        pub = work / 'pub'
+        subprocess.run([IMPORTTT_BIN, '-role', 'alice', '-dir', str(own), '-export-public', str(pub), '-json'],
+                       capture_output=True, text=True, timeout=1800, check=True)
+        files = {f.name: f.read_bytes() for f in pub.iterdir()}
+        session = f'{NODE_ID or "node"}-tp-{int(start)}-{secrets.token_hex(3)}'
+        params = _tp_params(state)
+        t_send = time.time()
+        for part in tpb.announcement_parts(files, start):
+            _pp_send(peer, session, 'cont-offer', {**part, 'block_s': state['block_s'], 'params': params,
+                                                   'singles': entry['singles_local'], 'seconds': entry['seconds']})
+        entry['announced_bytes'], entry['announce_s'] = sum(len(v) for v in files.values()), time.time() - t_send
+        kind, body = _pp_recv(peer, session, timeout=_PP_WAIT_S)
+        if kind != 'accept':
+            raise RuntimeError(f'{peer} declined: {body.get("reason", kind)}')
+        entry['singles_remote'], entry['window_ps_peer'] = body.get('singles'), body.get('window_ps')
+        entry['aligned_by_peer'], entry['skew_ppb'] = body.get('aligned_by'), body.get('skew_ppb')
+        _tp_run_importtt(entry, [IMPORTTT_BIN, '-role', 'alice', '-dir', str(own), '-peer', peer, '-session', session,
+                                 '-json', '-keystore', str(IMPORT_DIR / peer)] + _two_party_args(params))
+        entry['ok'] = True
+    except Exception as e:
+        entry.update(ok=False, error=str(e)[:300])
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    _tp_record_block(entry)
+
+
+def _tp_bob(peer, session):
+    '''Answers a neighbor's block with this node's own segments of the same time, aligned to its announcement'''
+    entry = {'role': 'bob', 'peer': peer, 'started': time.time()}
+    work = Path(tempfile.mkdtemp(prefix='bob_', dir=TP_WORK))
+    try:
+        parts = []
+        while True:
+            kind, body = _pp_recv(peer, session, timeout=300)
+            if kind != 'cont-offer':
+                raise RuntimeError(f'expected a block announcement from {peer}, got {kind}')
+            parts.append(body)
+            if len(parts) >= body['parts']:
+                break
+        start, block_s = float(parts[0]['block']), float(parts[0]['block_s'])
+        params = {k: v for k, v in (parts[0].get('params') or {}).items() if k in _TWO_PARTY_PARAMS}
+        entry['block'] = start
+        try:
+            files = tpb.join_announcement(parts)
+            # this node's segments of the block: wait until the one after it exists, or the recorder stopped
+            deadline = time.time() + 120
+            while time.time() < deadline and _tp_recording() and not tpb.segments_in(TP_SEGMENTS, start + block_s, start + 2 * block_s + 3600):
+                time.sleep(2)
+            segs = tpb.segments_in(TP_SEGMENTS, start, start + block_s)
+            if not segs:
+                raise ValueError('this node recorded nothing in that block')
+            entry['segments'] = len(segs)
+            own = tpb.join_segments(segs, work / 'pair')
+            entry['singles_local'], entry['seconds'] = _tp_singles(own)
+            entry['singles_remote'] = parts[0].get('singles')
+            entry['announced_bytes'] = sum(len(v) for v in files.values())
+            for name, data in files.items():
+                (work / 'pair' / name).write_bytes(data)
+            pub = next((work / 'pair').glob('*_public_timestamp_sequence.npy'))
+            cfg = json.loads(UPLOADED_CONFIG_PATH.read_text()) if UPLOADED_CONFIG_PATH.is_file() else {}
+            models = _tp_models()
+            report, models[peer], entry['aligned_by'] = tpb.align_block(pub, own, models.get(peer), coincidence_peak.kwargs_from_config(cfg))
+            entry['skew_ppb'] = report['clock_skew']['skew_ppb']
+            TP_MODELS.write_text(json.dumps(models))
+        except Exception as e:
+            _pp_send(peer, session, 'reject', {'reason': str(e)[:300]})
+            raise
+        with _tp['lock']:
+            # the window this side's filter chose last time, which the announcing side cannot see
+            window = next((b.get('window_ps') for b in reversed(_tp['blocks']) if b.get('peer') == peer and b.get('window_ps')), None)
+        _pp_send(peer, session, 'accept', {'singles': entry['singles_local'], 'window_ps': window,
+                                           'aligned_by': entry.get('aligned_by'), 'skew_ppb': entry.get('skew_ppb')})
+        _tp_run_importtt(entry, [IMPORTTT_BIN, '-role', 'bob', '-dir', str(work / 'pair'), '-peer', peer, '-session', session,
+                                 '-json', '-keystore', str(IMPORT_DIR / peer)] + _two_party_args(params))
+        entry['ok'] = True
+    except Exception as e:
+        entry.update(ok=False, error=str(e)[:300])
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    _tp_record_block(entry)
+
+
+def _tp_worker():
+    '''Blocks one at a time, apart from the manual jobs, so neither holds up the other'''
+    TP_WORK.mkdir(parents=True, exist_ok=True)
+    while True:
+        role, peer, arg = _tp['queue'].get()
+        _tp['running'] = {'role': role, 'peer': peer, 'since': time.time()}
+        try:
+            (_tp_alice if role == 'alice' else _tp_bob)(peer, arg)
+        finally:
+            _tp['running'] = None
+
+
+def _tp_live_singles():
+    '''Singles per channel of every new segment, for the monitor's live view'''
+    if not TP_SEGMENTS.is_dir():
+        return
+    for d in sorted(TP_SEGMENTS.iterdir()):
+        if not d.is_dir() or d.name.startswith('.') or d.name in _tp['live_seen']:
+            continue
+        files = list(d.glob('*_timestamp_sequence.npy'))
+        if len(files) != 1:
+            continue
+        try:
+            rates, secs = _tp_singles(files[0])
+            _tp['live'].append({'t': tpb.segment_start(d.name), 'singles': rates, 'seconds': secs})
+        except (OSError, ValueError):
+            pass
+        _tp['live_seen'].add(d.name)
+    if len(_tp['live_seen']) > 5000:
+        _tp['live_seen'] = set(sorted(_tp['live_seen'])[-2000:])
+
+
+def _tp_scheduler():
+    '''Starts what the saved settings ask for, then queues each finished block toward every neighbor this node
+    announces to, and drops segments no block will need'''
+    time.sleep(5)
+    with _acquire_lock:
+        state = _tp_state()
+        if state['active'] and state['site'] and UPLOADED_CONFIG_PATH.is_file():
+            _tp_start_recorder(state)  # resuming after a restart
+    while True:
+        time.sleep(2)
+        state = _tp_state()
+        if not state['active']:
+            continue
+        block_s, now = float(state['block_s']), time.time()
+        last_done = (now - _TP_GRACE_S) // block_s * block_s - block_s  # the newest block both sites have written
+        oldest = now - state['keep_blocks'] * block_s
+        changed = False
+        for peer in state['announce_to']:
+            nxt = state['next_block'].get(peer)
+            if nxt is None or nxt < oldest:
+                nxt = last_done  # a new link, or blocks too old to still be on disk: start from the newest
+            while nxt <= last_done:
+                _tp['queue'].put(('alice', peer, nxt))
+                nxt += block_s
+            if state['next_block'].get(peer) != nxt:
+                state['next_block'][peer], changed = nxt, True
+        if changed:
+            _tp_save(state)
+        _tp_live_singles()
+        tpb.drop_old_segments(TP_SEGMENTS, oldest)
+
+
+@app.route('/api/twoparty/status')
+def api_twoparty_status():
+    state = _tp_state()
+    with _tp['lock']:
+        blocks = list(_tp['blocks'])[-60:]
+    segs = sorted(d.name for d in TP_SEGMENTS.iterdir() if d.is_dir() and not d.name.startswith('.')) if TP_SEGMENTS.is_dir() else []
+    models = _tp_models()
+    return jsonify({'state': {k: v for k, v in state.items() if k != 'next_block'}, 'next_block': state['next_block'],
+                    'recording': _tp_recording(), 'segments': len(segs), 'last_segment': segs[-1] if segs else None,
+                    'queued': _tp['queue'].qsize(), 'running': _tp['running'], 'blocks': blocks,
+                    'skew_ppb': {p: m['slope'] / 1e3 for p, m in models.items()}, 'alerts': _tp['alerts'],
+                    'log': list(_tp['rec_log'])[-80:]})
+
+
+@app.route('/api/twoparty/start', methods=['POST'])
+def api_twoparty_start():
+    if not UPLOADED_CONFIG_PATH.is_file():
+        return jsonify({'error': 'load a config first'}), 400
+    body = request.get_json(silent=True) or {}
+    cfg = json.loads(UPLOADED_CONFIG_PATH.read_text())
+    state = _tp_state()
+    try:
+        site = body.get('site') or state['site']
+        if site not in cfg.get('sites', {}):
+            raise ValueError("choose this node's site from the loaded config")
+        segment_s, block_s = float(body.get('segment_s', state['segment_s'])), float(body.get('block_s', state['block_s']))
+        if not 1 <= segment_s <= 600 or not 30 <= block_s <= 86400 or block_s % segment_s:
+            raise ValueError('segments of 1-600 s, blocks of 30 s to a day and a whole number of segments')
+        announce = [p for p in body.get('announce_to', state['announce_to']) if p]
+        known = set(_neighbors())
+        if any(p not in known for p in announce):
+            raise ValueError(f'announce only to neighbors of this node: {", ".join(sorted(known)) or "none"}')
+        replay = body.get('replay', state.get('replay')) or None  # a start without settings keeps the saved ones
+        if replay and replay not in _list_recordings():
+            raise ValueError('the replay recording is not stored on this node')
+    except (TypeError, ValueError) as e:
+        return jsonify({'error': str(e)}), 400
+    with _acquire_lock:
+        if _cont_running() or _clog_running() or (_acquire['proc'] is not None and _acquire['proc'].poll() is None):
+            return jsonify({'error': 'the TimeTagger is busy with a recording, a replay, a coincidence log or continuous QKD'}), 409
+        # a fresh start begins at the newest block; resuming after a restart keeps the schedule where it was
+        state.update(active=True, site=site, segment_s=segment_s, block_s=block_s, announce_to=announce, replay=replay, started=time.time(), next_block={},
+                     expected_qber=float(body.get('expected_qber', state['expected_qber'])))
+        _tp_save(state)
+        _tp_start_recorder(state)
+    return jsonify({'started': True})
+
+
+@app.route('/api/twoparty/stop', methods=['POST'])
+def api_twoparty_stop():
+    '''Stops recording and scheduling; blocks already queued still finish'''
+    state = _tp_state()
+    state['active'] = False
+    _tp_save(state)
+    if _tp_recording():
+        _tp['rec'].send_signal(signal.SIGINT)
+        try:
+            _tp['rec'].wait(timeout=60)  # it writes its last segment first; a start right after must find it gone
+        except subprocess.TimeoutExpired:
+            _tp['rec'].kill()
+    return jsonify({'stopped': True})
+
+
+def _tp_history(peer, limit=3000):
+    """This link's blocks from the log on disk, oldest first, so the history outlives a restart"""
+    out = []
+    try:
+        with TP_BLOCKS.open() as f:
+            for line in collections.deque(f, maxlen=4 * limit):
+                try:
+                    b = json.loads(line)
+                except ValueError:
+                    continue
+                if b.get('peer') == peer:
+                    out.append(b)
+    except OSError:
+        pass
+    return out[-limit:]
+
+
+_LIVE_SESSION = 'live-status'
+
+
+def _tp_live_status():
+    '''Every two seconds, this node's singles of the last read to every neighbor, and theirs taken in, as the
+    TimeTagger vendor's monitor shows the remote count rates beside the local ones'''
+    peers, peers_at = [], 0.0
+    while True:
+        time.sleep(2)
+        if not KMS_URL:
+            continue
+        if time.time() - peers_at > 60:
+            peers, peers_at = _neighbors(), time.time()
+        fast = list(_tp['fast'])[-4:]
+        mine = {'t': time.time(), 'recording': _tp_recording(),
+                'singles': [round(sum(p['singles'][c] for p in fast) / len(fast), 1) for c in range(4)] if fast else None}
+        for peer in peers:
+            if _tp_state()['active']:
+                try:
+                    _pp_send(peer, _LIVE_SESSION, 'status', mine)
+                except Exception:
+                    pass
+            q = urllib.parse.urlencode({'peer': peer, 'session': _LIVE_SESSION, 'wait': 0})
+            for _ in range(50):  # whatever arrived since the last pass
+                try:
+                    status, data = _kms('admin', 'GET', f'/kme/v1/pp/recv?{q}', timeout=10)
+                except Exception:
+                    break
+                if status != 200:
+                    break
+                body = data.get('body') or {}
+                if body.get('singles'):
+                    _tp['remote_fast'].setdefault(peer, collections.deque(maxlen=600)).append(
+                        {'t': body.get('t'), 'singles': body['singles'], 'recording': body.get('recording')})
+
+
+@app.route('/api/monitor')
+def api_monitor():
+    """Everything the link monitor shows for one neighbor: systems, channels, stage, pools and the block series"""
+    state = _tp_state()
+    links = []
+    try:
+        links = _kms_json('admin', 'GET', '/kme/v1/node?probe=1').get('links') or []
+    except Exception:
+        pass
+    peers = [l['neighbor'] for l in links] or sorted({b['peer'] for b in _tp['blocks']})
+    peer = request.args.get('peer') or (state['announce_to'][0] if state['announce_to'] else (peers[0] if peers else None))
+    link = next((l for l in links if l['neighbor'] == peer), {})
+    blocks = _tp_history(peer) if peer else []
+    done = [b for b in blocks if b.get('ok')]
+    last = blocks[-1] if blocks else None
+    live = list(_tp['live'])
+    # the quantum channel's stage, as the TimeTagger vendor's monitor names them
+    signal_ok = bool(live) and sum(live[-1]['singles']) > 0 and _tp_recording()
+    if not signal_ok:
+        stage = 0
+    elif not link.get('reachable'):
+        stage = 1
+    elif not last or not last.get('ok') or last.get('sifted') in (None, 0):
+        stage = 2
+    elif (last.get('qber') or 0) > ALERT_MAX_QBER:
+        stage = 3
+    else:
+        stage = 4
+    return jsonify({
+        'peer': peer, 'peers': peers, 'node': NODE_ID,
+        'local': {'site': state['site'], 'recording': _tp_recording(), 'since': _tp['rec_started'], 'active': state['active'],
+                  'segment_s': state['segment_s'], 'block_s': state['block_s']},
+        'remote': {'node': peer, 'reachable': link.get('reachable'), 'rtt_ms': link.get('rtt_ms'), 'error': link.get('error')},
+        'pool': {'mine': link.get('mine'), 'theirs': link.get('theirs')},
+        'stage': stage, 'stages': ['Waiting for quantum signal', 'Waiting for classical channel', 'Waiting for sync',
+                                   'QBER too high', 'Generating secure keys'],
+        'qber_threshold': ALERT_MAX_QBER, 'announces': peer in state['announce_to'],
+        'live': live[-720:], 'fast': list(_tp['fast'])[-300:], 'remote_fast': list(_tp['remote_fast'].get(peer, []))[-150:],
+        'blocks': blocks, 'ok_blocks': len(done), 'alerts': _tp['alerts']})
+
+
+@app.route('/api/monitor/blocks.<fmt>')
+def api_monitor_blocks(fmt):
+    """This link's blocks as CSV or JSON, for spreadsheets and offline analysis"""
+    peer = request.args.get('peer', '')
+    blocks = _tp_history(peer) if peer else []
+    name = f'qkd_blocks_{secure_filename(peer) or "none"}'
+    if fmt == 'json':
+        resp = app.response_class(json.dumps(blocks, indent=1), mimetype='application/json')
+        resp.headers['Content-Disposition'] = f'attachment; filename="{name}.json"'
+        return resp
+    if fmt != 'csv':
+        return jsonify({'error': 'csv or json'}), 404
+    cols = ['block', 'role', 'ok', 'segments', 'seconds', 'sifted', 'qber', 'phase_error_bound', 'ec_leak', 'charged',
+            'surviving', 'key_bits', 'keys_saved', 'compression', 'window_ps', 'rounds', 'aligned_by', 'skew_ppb', 'error']
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(cols + ['basis_bits_hv', 'basis_bits_da', 'basis_errors_hv', 'basis_errors_da', 'basis_checked_hv', 'basis_checked_da']
+               + [f'singles_local_{c}' for c in range(1, 5)] + [f'singles_remote_{c}' for c in range(1, 5)])
+    for b in blocks:
+        pair = lambda k: (b.get(k) or [None, None])[:2]
+        quad = lambda k: (b.get(k) or [None] * 4)[:4]
+        w.writerow([b.get(c) for c in cols] + pair('basis_bits') + pair('basis_errors') + pair('basis_checked')
+                   + quad('singles_local') + quad('singles_remote'))
+    resp = app.response_class(buf.getvalue(), mimetype='text/csv')
+    resp.headers['Content-Disposition'] = f'attachment; filename="{name}.csv"'
+    return resp
+
+
+# Alerts: what an operator must know without watching the dashboard, also posted to ALERT_WEBHOOK when they change
+
+ALERT_WEBHOOK = os.environ.get('ALERT_WEBHOOK', '')
+ALERT_MIN_KEYS = int(os.environ.get('ALERT_MIN_KEYS', '100'))
+ALERT_MAX_QBER = float(os.environ.get('ALERT_MAX_QBER', '0.11'))
+
+
+def _alerts_now():
+    out, state, now = [], _tp_state(), time.time()
+    if state['active']:
+        if not _tp_recording():
+            out.append({'level': 'critical', 'what': 'recorder', 'text': "this node's TimeTagger recorder has stopped; restarting it"})
+        with _tp['lock']:
+            blocks = list(_tp['blocks'])
+        for peer in sorted(set(state['announce_to']) | {b['peer'] for b in blocks}):
+            mine = [b for b in blocks if b['peer'] == peer]
+            ok = [b for b in mine if b.get('ok') and b.get('key_bits')]
+            if mine and not mine[-1].get('ok'):
+                out.append({'level': 'warning', 'what': f'block:{peer}', 'text': f'last block with {peer} failed: {mine[-1].get("error", "")}'})
+            if mine and mine[-1].get('qber') is not None and mine[-1]['qber'] > ALERT_MAX_QBER:
+                out.append({'level': 'warning', 'what': f'qber:{peer}', 'text': f'QBER with {peer} is {100 * mine[-1]["qber"]:.1f}%'})
+            since = ok[-1]['finished'] if ok else state.get('started') or now
+            if peer in state['announce_to'] and now - since > 3 * state['block_s'] + 600:
+                out.append({'level': 'critical', 'what': f'nokey:{peer}', 'text': f'no key with {peer} for {(now - since) / 60:.0f} min'})
+    if KMS_URL:
+        try:
+            for link in _kms_json('admin', 'GET', '/kme/v1/node').get('links') or []:
+                if link.get('mine', 0) < ALERT_MIN_KEYS:
+                    out.append({'level': 'warning', 'what': f'pool:{link["neighbor"]}',
+                                'text': f'{link.get("mine", 0)} keys left toward {link["neighbor"]} (under {ALERT_MIN_KEYS})'})
+        except Exception:
+            out.append({'level': 'critical', 'what': 'kms', 'text': 'the key management system does not answer'})
+    return out
+
+
+def _watchdog():
+    while True:
+        time.sleep(15)
+        try:
+            alerts = _alerts_now()
+        except Exception as e:  # the watchdog itself must keep running
+            alerts = [{'level': 'warning', 'what': 'watchdog', 'text': f'alert check failed: {e}'[:200]}]
+        state = _tp_state()
+        if state['active'] and not _tp_recording() and UPLOADED_CONFIG_PATH.is_file():
+            with _acquire_lock:
+                _tp_start_recorder(state)
+        _tp['alerts'] = alerts
+        key = sorted(a['what'] for a in alerts)
+        if ALERT_WEBHOOK and key != _tp['alerted']:
+            _tp['alerted'] = key
+            try:
+                req = urllib.request.Request(ALERT_WEBHOOK, data=json.dumps({'node': NODE_ID, 'alerts': alerts}).encode(),
+                                             headers={'Content-Type': 'application/json'})
+                urllib.request.urlopen(req, timeout=10).close()
+            except Exception:
+                pass  # tried again when the alerts change
+
+
+@app.route('/api/alerts')
+def api_alerts():
+    return jsonify({'alerts': _tp['alerts']})
+
+
 _load_job_history()
 threading.Thread(target=_job_worker, daemon=True).start()
 threading.Thread(target=_two_party_listener, daemon=True).start()
+threading.Thread(target=_tp_worker, daemon=True).start()
+threading.Thread(target=_tp_scheduler, daemon=True).start()
+threading.Thread(target=_watchdog, daemon=True).start()
+threading.Thread(target=_tp_live_status, daemon=True).start()
 
 if __name__ == '__main__':
     # Werkzeug's debugger runs arbitrary code for whoever reaches it: off unless asked, then localhost only

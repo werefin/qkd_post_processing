@@ -72,7 +72,7 @@ def main(argv=None) -> int:
         if files:
             if len(files) not in (1, 2):
                 raise ValueError('one or two recordings')
-            source = FileSource(files) if args.recordings else TaggerSource([(f'replay {"AB"[i]}', None) for i in range(len(files))], replay=sorted(files))
+            source = FileSource(files) if args.recordings else TaggerSource([(n, None) for n in ['A', 'B'][:len(files)]], replay=sorted(files))
             sites = [(n, None) for n in source.names]
             description = getattr(source, 'description', f'replay of {len(files)} recording(s)')
         else:
