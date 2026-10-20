@@ -87,6 +87,26 @@ Everything a node keeps is under `deploy/nodes/<ID>/`:
 
 8 GB of RAM at minimum, 16 GB comfortable: the coincidence-peak search caps itself at about 4 GiB, and a pooled extraction of seventy seconds of recordings peaks at about 2 GB. Four or more cores; the peak refinement and skew fit run in parallel. Size the disk for the recordings, which are large; keys are small.
 
+### Lab PC, Windows included
+
+A photonics lab PC needs the dashboard only, for recordings, alignment and the coincidence log: no key management system, no certificates and no login. `deploy/lab.yml` runs it as one container, the same on Windows, macOS and Linux.
+
+**Windows**: install Docker Desktop with the WSL2 backend (`wsl --install` in an administrator PowerShell, reboot, then Docker Desktop), and clone the repository. In PowerShell, from the repository:
+
+```powershell
+docker compose -f deploy/lab.yml up -d --build      # first start builds the image, a few minutes
+start http://localhost:9823                         # the dashboard; load the config on the Acquisition page
+docker compose -f deploy/lab.yml down               # stop; the data stays
+```
+
+**Data**: config, recordings and coincidence logs live in the Docker volume `qkd-lab_lab-data` and survive restarts and rebuilds; logs and recordings are downloaded and uploaded from the dashboard. `docker compose -f deploy/lab.yml down -v` deletes them.
+
+**TimeTaggers**: the container reaches them through Docker Desktop's network like any program on the PC, so the PC must reach their address and port (40404 by default); allow it in the Windows firewall if asked.
+
+**Access**: the dashboard listens on this PC only (`127.0.0.1:9823`) because it has no login. To open it to other machines, run the full node with its HTTPS login instead (Administration machine, On each node).
+
+**Updating**: `git pull`, then the same `up -d --build`.
+
 ### Updating
 
 ```bash

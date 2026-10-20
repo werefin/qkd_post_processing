@@ -109,7 +109,7 @@ cd deploy
 ./setup.sh install A.tar.gz && ./setup.sh up A
 ```
 
-Each node runs three hardened containers: `kms` (the key management system, a 13 MB distroless image, the only holder of the node's key and master key), `app` (the dashboard and the post-processing) and `ui` (HTTPS with a certificate from the network CA, behind a login). Trust the CA once with `./trust-ca.sh`, then every node's dashboard opens without warnings. Images build for amd64 and arm64 from the same `Dockerfile`. [`doc/deployment.md`](doc/deployment.md) is the full guide.
+Each node runs three hardened containers: `kms` (the key management system, a 13 MB distroless image, the only holder of the node's key and master key), `app` (the dashboard and the post-processing) and `ui` (HTTPS with a certificate from the network CA, behind a login). Trust the CA once with `./trust-ca.sh`, then every node's dashboard opens without warnings. A lab PC that only needs the dashboard, Windows included, runs `docker compose -f deploy/lab.yml up -d --build` and opens `http://localhost:9823` (Lab PC in [`doc/deployment.md`](doc/deployment.md)). Images build for amd64 and arm64 from the same `Dockerfile`. [`doc/deployment.md`](doc/deployment.md) is the full guide.
 
 ### What a node does from its dashboard
 
@@ -153,8 +153,7 @@ The recorder writes one recording pair per segment, each complete before it appe
 An application gets a certificate from `./setup.sh sae <SAE_ID> <NODE_ID>` and calls its node's KMS with ETSI GS QKD 014:
 
 ```bash
-curl --cert sae.pem --key sae.key --cacert ca.pem \
-    "https://a.example.org:8443/api/v1/keys/bob/enc_keys?number=2"
+curl --cert sae.pem --key sae.key --cacert ca.pem "https://a.example.org:8443/api/v1/keys/bob/enc_keys?number=2"
 ```
 
 The answer's key_IDs go to the peer application, which fetches the same keys once from its own node at `/api/v1/keys/<master>/dec_keys`. Between neighbors the key is QKD pool material reserved at both ends; for distant nodes it is relayed hop by hop. [`doc/key_management.md`](doc/key_management.md) specifies the system.

@@ -31,9 +31,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_
 COPY ui/requirements.txt /tmp/requirements.txt
 COPY ec/requirements.txt /tmp/ec-requirements.txt
 RUN pip install -r /tmp/requirements.txt -r /tmp/ec-requirements.txt && rm /tmp/*requirements.txt \
- && useradd -u 1000 -m -s /usr/sbin/nologin app
+ && useradd -u 1000 -m -s /usr/sbin/nologin app \
+ && mkdir -p /data/tmp && chown -R 1000:1000 /data
 COPY --from=build /out/qkd_post_processing /out/importtt /usr/local/bin/
 COPY acquisition/*.py /app/acquisition/
+COPY acquisition/coincidences/*.py /app/acquisition/coincidences/
 # evaluation/evaluate.py: the dashboard's Evaluation page and the tools image run it
 COPY evaluation/*.py /app/evaluation/
 # 5G NR LDPC's matrix work, run by the Go pipeline as a pool of service processes (pyec)
@@ -41,10 +43,11 @@ COPY ec/ldpc5g.py /app/ec/
 COPY ui/app.py /app/ui/
 COPY ui/templates/ /app/ui/templates/
 COPY ui/static/ /app/ui/static/
-# Every writable path is a mounted volume or /tmp, so the container runs with a read-only root
+# Every writable path is a mounted volume or /tmp, so the container runs with a read-only root; /data belongs
+# to the app user so that a fresh named volume mounted there does too
 ENV QKD_BIN=/usr/local/bin/qkd_post_processing IMPORTTT_BIN=/usr/local/bin/importtt \
     RECORDINGS_DIR=/data/recordings CONFIG_DIR=/data/config IMPORT_DIR=/data/import \
-    CONTINUOUS_DIR=/data/continuous EVAL_DIR=/data/evaluations \
+    CONTINUOUS_DIR=/data/continuous EVAL_DIR=/data/evaluations CLOG_DIR=/data/coincidence_logs \
     KEYSTORE_DIR=/data/sim-keys NUMBA_CACHE_DIR=/data/cache/numba MPLCONFIGDIR=/tmp \
     QKD_EC_PYTHON=python QKD_EC_SCRIPT=/app/ec/ldpc5g.py HOME=/tmp
 USER 1000:1000

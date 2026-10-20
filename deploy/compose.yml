@@ -57,6 +57,7 @@ services:
       - ${NODE_DIR}/data/recordings:/data/recordings
       - ${NODE_DIR}/data/continuous:/data/continuous
       - ${NODE_DIR}/data/evaluations:/data/evaluations
+      - ${NODE_DIR}/data/coincidence_logs:/data/coincidence_logs
       - ${NODE_DIR}/data/config:/data/config
       - ${NODE_DIR}/data/import:/data/import
       - ${NODE_DIR}/data/sim-keys:/data/sim-keys

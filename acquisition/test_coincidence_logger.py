@@ -88,6 +88,27 @@ class CounterTest(unittest.TestCase):
         h = c.histograms()['groups']['C_1_2']
         self.assertGreater(sum(h[len(h) // 2 - 10:len(h) // 2 + 10]), 0.8 * sum(h))  # the peak in the middle bins
 
+    def test_dense_windows_count_each_reference_click_once(self):
+        '''Rates high enough that ROIs hold several clicks on both sides, where counting from the partner side
+        must still count each reference click once'''
+        rng = np.random.default_rng(7)
+        t0, span = 10**15, 10**9  # a millisecond
+        ch = {'1': np.sort(rng.integers(0, span, 20_000)) + t0, '2': np.sort(rng.integers(0, span, 15_000)) + t0,
+              '3': np.sort(rng.integers(0, span, 2_000)) + t0}
+        # a 100 ns ROI holds 1.5 clicks of channel 2 on average
+        plan = co.Plan(opts(integration_s=0.00025, window_ps=100_000, noise_offset_ps=-150_000), [('lab', [1, 2, 3])])
+        period, n = int(0.00025 * PS), 4
+        c = co.WindowCounter(plan, t0)
+        for k, v in ch.items():
+            c.feed(k, v)
+        rows = c.advance(t0 + n * period)
+        for g in plan.groups:
+            ref, other = ch[g['channels'][0]], [ch[g['channels'][1]]]
+            for name, (lo, hi) in ((g['name'], plan.roi), (g['name'] + '_noise', plan.noise)):
+                want = brute(ref[ref < t0 + n * period], other, lo, hi, t0, period, n)
+                np.testing.assert_array_equal([r[1][plan.counts.index(name)] for r in rows], want, err_msg=name)
+        self.assertGreater(rows[0][1][plan.counts.index('C_1_2')], 3_000)  # most reference clicks have a partner
+
     def test_closing_gives_the_partial_window(self):
         ch, t0 = clicks()
         plan = co.Plan(opts(), [('lab', [1, 2, 3, 4])])

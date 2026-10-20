@@ -122,7 +122,7 @@ install)
 up)
 	id="${1:?node ID}"; need_node "$id"
 	[[ -f "$NODES/$id/network.json" ]] || cp "$NETWORK" "$NODES/$id/network.json"
-	for d in kms import recordings continuous evaluations config sim-keys cache caddy tmp; do mkdir -p "$NODES/$id/data/$d"; done
+	for d in kms import recordings continuous evaluations coincidence_logs config sim-keys cache caddy tmp; do mkdir -p "$NODES/$id/data/$d"; done
 	# NO_BUILD=1 starts from images already present (built elsewhere or pulled from a registry)
 	if [[ -n "${NO_BUILD:-}" ]]; then compose "$id" up -d --remove-orphans; else compose "$id" up -d --build --remove-orphans; fi
 	compose "$id" ps

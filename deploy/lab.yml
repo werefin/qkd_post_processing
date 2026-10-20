@@ -1,0 +1,23 @@
+# Dashboard alone, for a lab PC: Windows with Docker Desktop, or any Docker host --> no key management system
+# and no login, so it listens on this PC only --> docker compose -f deploy/lab.yml up -d --build
+name: qkd-lab
+
+services:
+  app:
+    build: { context: .., target: app }
+    image: qkd_post_processing/app:lab
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      # uploads and job scratch space are spooled to disk: recordings are far larger than memory
+      TMPDIR: /data/tmp
+      RECORDINGS_MAX_GB: ${RECORDINGS_MAX_GB:-0}
+    # one Docker-managed volume holds config, recordings and logs; the web page uploads and downloads them
+    volumes: ["lab-data:/data"]
+    tmpfs: ["/tmp:size=512m"]
+    ports: ["127.0.0.1:9823:9823"]
+
+volumes:
+  lab-data:

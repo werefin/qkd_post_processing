@@ -7,7 +7,9 @@ import time
 from collections import deque
 from datetime import datetime
 
-from .counting import PS_PER_S, WindowCounter
+import numpy as np
+
+from .counting import PS_PER_S, WindowCounter, partition
 
 TICK_S = 0.5           # how often a live source is read
 HIST_EVERY_S = 2.0
@@ -30,6 +32,14 @@ class Run:
         self.anchor = None  # (host time, common clock) of the first counted click
         self.written = 0
         self.last_row = None
+        # per TimeTagger: its labels and the channel-to-slot table partition() splits a read with
+        self.slots = []
+        for i in range(plan.n_sites):
+            labels = [l for l, (s, _) in plan.where.items() if s == i]
+            slot_of = np.full(256, -1, np.int64)
+            for k, l in enumerate(labels):
+                slot_of[plan.where[l][1] + 128] = k
+            self.slots.append((labels, slot_of))
         self.recent = deque()  # (counts, span) of the reads in the last ten seconds
         self.t_start = time.time()
         self.last_hist = self.last_status = 0.0
@@ -53,11 +63,11 @@ class Run:
                 self.counter = WindowCounter(self.plan, origin)
                 self.anchor = self.source.anchor or (time.time(), int(ts[-1]))
                 log('INFO', f'counting, {self.plan.opts["integration_s"]:g} s per row into {self.file_name}')
-            for label, (site, channel) in self.plan.where.items():
-                if site == i:
-                    sel = ts[ch == channel]
-                    if sel.size:
-                        self.counter.feed(label, sel + self.plan.delay[label])
+            labels, slot_of = self.slots[i]
+            grouped, offsets = partition(ch.astype(np.int8, copy=False), ts, slot_of, len(labels))
+            for k, label in enumerate(labels):
+                if offsets[k + 1] > offsets[k]:
+                    self.counter.feed(label, grouped[offsets[k]:offsets[k + 1]] + self.plan.delay[label])
             self.cover[i] = int(ts[-1])
             k = self.counter.current()
             self.capped[k] = self.capped.get(k, 0) + capped
