@@ -1,5 +1,5 @@
 '''
-Node's TimeTagger serves one mode at a time: a recording or replay, lab continuous QKD, a coincidence log or
+Node's TimeTagger serves one mode at a time: a recording or replay, a coincidence log or
 the two-party recorder; each mode registers how to tell that it runs, and starts only under the lock
 '''
 

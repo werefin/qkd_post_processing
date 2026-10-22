@@ -457,7 +457,7 @@ function navigate(section) {
   else if (section === 'align') { refreshRecordings().then(() => { redrawAlignPlots(); poll('align', refreshAlignment, 5000); }); }
   else if (section === 'extract') { refreshRecordings(); refreshNode(); poll('jobs', refreshJobs, 2000); }
   else if (section === 'network') { poll('node', refreshNode, 10000); refreshAudit(); }
-  else if (section === 'continuous') { refreshConfigLinks(); refreshRecordings(); refreshNode(); tpLoadChoices(); poll('continuous', refreshContinuous, 1500); poll('twoparty', refreshTwoParty, 3000); }
+  else if (section === 'continuous') { tpLoadChoices(); poll('twoparty', refreshTwoParty, 3000); }
   else if (section === 'monitor') { poll('monitor', refreshMonitor, 3000); }
   else if (section === 'clog') { clogLoadOptions(); refreshRecordings().then(fillClogRecordings); refreshClogFiles(); poll('clog', refreshClog, 1000); }
   else if (section === 'evaluate') { refreshRecordings().then(renderEvalPairs); refreshEvaluations(); poll('evaljob', refreshEvalJob, 2000); }
@@ -479,12 +479,7 @@ function metricItems(m) {
     items.push(['Window (fit HWHM)', `±${m.filter_window_ps} ps`],
       ['Predicted accidentals', ((m.filter_predicted_accidental_fraction || 0) * 100).toFixed(1) + '%']);
   }
-  if (m.method === 'cascade') items.push(['Cascade parities', `${m.cascade_parities || 0} in ${m.cascade_rounds || 0} round trips`], ['Corrections', m.cascade_corrections || 0], ['Leaked (parities, CRCs)', m.leaked_bits_total || m.ec_leaked_bits || 0]);
-  else if (m.method === 'ldpc5g') items.push(['5G NR frames', `${m.ldpc5g_frames || 0} (${m.ldpc5g_failed || 0} failed, ${m.ldpc5g_attempts || 0} attempts)`], ['Bits corrected', m.ldpc5g_bits_corrected || 0], ['Leaked (syndromes, tags)', m.ldpc5g_leaked_bits]);
-  else if (m.method === 'polar') items.push(['Polar blocks', m.polar_blocks], ['Bits corrected', m.polar_bits_corrected], ['Leaked (frozen values)', m.polar_leaked_bits]);
-  else if (m.method === 'winnow') items.push(['Corrections', m.winnow_corrections], ['Leaked (syndromes)', m.winnow_leaked_bits]);
-  else if (m.method === 'ldpc') items.push(['Blocks converged', `${m.ldpc_converged || 0} / ${m.ldpc_blocks}`], ['Leaked (syndromes)', m.ldpc_leaked_bits]);
-  else items.push(['Blocks kept', `${m.blocks_kept} / ${m.blocks_total}`]);
+  items.push(['Cascade parities', `${m.cascade_parities || 0}` + (m.cascade_rounds ? ` in ${m.cascade_rounds} round trips` : '')], ['Corrections', m.cascade_corrections || 0], ['Leaked (parities, CRCs)', m.leaked_bits_total || m.ec_leaked_bits || 0]);
   items.push(['QBER', (m.qber * 100).toFixed(2) + '%']);
   const fk = m.finite_key;
   if (fk) {
@@ -646,11 +641,6 @@ function renderNode(n) {
   linkSel.innerHTML = links.map(l => `<option value="${esc(l.neighbor)}">${esc(n.node_id)}-${esc(l.neighbor)}</option>`).join('') +
     '<option value="">do not save the key</option>';
   if (keepLink !== undefined && [...linkSel.options].some(o => o.value === keepLink)) linkSel.value = keepLink;
-  const contSel = document.getElementById('cont-neighbor');
-  const keepCont = contSel.value;
-  contSel.innerHTML = links.map(l => `<option value="${esc(l.neighbor)}">${esc(n.node_id)}-${esc(l.neighbor)}</option>`).join('') +
-    '<option value="">do not save the key</option>';
-  if ([...contSel.options].some(o => o.value === keepCont)) contSel.value = keepCont;
 }
 
 document.getElementById('kx-enc-btn').addEventListener('click', async () => {
@@ -910,7 +900,7 @@ document.getElementById('tp-recordings').addEventListener('change', e => {
   if (f) { if (e.target.checked) tpChosen.add(f); else tpChosen.delete(f); }
 });
 document.getElementById('tp-start-btn').addEventListener('click', async () => {
-  const err = document.getElementById('tp-error');
+  const err = document.getElementById('tpx-error');
   err.textContent = '';
   const p = extractParams();
   const params = { peer: document.getElementById('tp-peer').value, recordings: [...tpChosen], filter: p.filter, asymptotic: p.asymptotic, delays: p.delays };
@@ -1118,111 +1108,8 @@ document.getElementById('live-replay').addEventListener('click', async () => {
 });
 window.addEventListener('resize', drawLive);
 
-// Continuous QKD: recorder in continuous mode plus the block processor
-async function refreshConfigLinks() {
-  try {
-    const d = await apiFetch('/api/config');
-    const sel = document.getElementById('cont-link');
-    if (!d.loaded) { sel.innerHTML = '<option value="">load a config on the Acquisition page</option>'; return; }
-    const keep = sel.value;
-    sel.innerHTML = d.links.map(l => `<option value="${esc(l.name)}">${esc(l.name)} (${esc(l.site_a)} + ${esc(l.site_b)})</option>`).join('');
-    sel.value = keep || d.default_link || '';
-  } catch (e) { /* backend not reachable yet */ }
-}
-
-document.getElementById('cont-source').addEventListener('change', e => {
-  const replay = e.target.value === 'replay';
-  document.getElementById('cont-replay-row').style.display = replay ? '' : 'none';
-  document.getElementById('cont-link').disabled = replay;
-});
-
-document.getElementById('cont-start').addEventListener('click', async () => {
-  const errEl = document.getElementById('cont-error');
-  errEl.textContent = '';
-  const replay = document.getElementById('cont-source').value === 'replay';
-  const body = {
-    segment_s: Number(document.getElementById('cont-segment').value), block_s: Number(document.getElementById('cont-block').value),
-    method: 'cascade', neighbor: document.getElementById('cont-neighbor').value,
-  };
-  if (replay) body.replay = { a: document.getElementById('cont-a').value, b: document.getElementById('cont-b').value, speed: Number(document.getElementById('cont-speed').value) };
-  else body.link = document.getElementById('cont-link').value;
-  try { await postJSON('/api/continuous/start', body); refreshContinuous(); } catch (e) { errEl.textContent = e.message; }
-});
-
-document.getElementById('cont-stop').addEventListener('click', async () => {
-  const errEl = document.getElementById('cont-error');
-  errEl.textContent = '';
-  try { await apiFetch('/api/continuous/stop', { method: 'POST' }); refreshContinuous(); } catch (e) { errEl.textContent = e.message; }
-});
-
-let contLast = null;
 const fmtDur = s => s == null ? '-' : s >= 3600 ? `${(s / 3600).toFixed(1)} h` : s >= 60 ? `${(s / 60).toFixed(1)} min` : `${s.toFixed(0)} s`;
 
-function drawContinuous() {
-  const st = contLast && contLast.status;
-  const h = st ? st.history : null;
-  if (!h || !h.name.length) { ['cont-c0', 'cont-c1', 'cont-c2', 'cont-c3'].forEach(id => drawSeriesPlot(id, [], [])); return; }
-  // x axis: data time at the end of each segment, skipped segments drawn as gaps of zero length
-  const xs = []; let t = 0;
-  h.seconds.forEach(v => { t += v || 0; xs.push(t / 60); });
-  const keep = (ys) => { const px = [], py = []; ys.forEach((v, i) => { if (v != null) { px.push(xs[i]); py.push(v); } }); return [px, py]; };
-  const [qx, qy] = keep(h.qber_vis.map(v => v == null ? null : 100 * v));
-  const [rx, ry] = keep(h.sifted.map((v, i) => v == null || !h.seconds[i] ? null : v / h.seconds[i]));
-  const [kx, ky] = keep(h.skew_ppb);
-  const [px, py] = keep(h.processing_s);
-  drawSeriesPlot('cont-c0', qx, qy, '#F59E0B', { xUnit: ' min', yMin: 0 });
-  drawSeriesPlot('cont-c1', rx, ry, '#2BBDE8', { xUnit: ' min', yMin: 0 });
-  drawSeriesPlot('cont-c2', kx, ky, '#9B5CF5', { xUnit: ' min' });
-  drawSeriesPlot('cont-c3', px, py, '#22C55E', { xUnit: ' min', yMin: 0 });
-  const last = (arr) => arr.length ? arr[arr.length - 1] : null;
-  setEl('cont-v0', qy.length ? fmtNum(last(qy), 2) + '%' : '-');
-  setEl('cont-v1', ry.length ? fmtNum(last(ry), 0) + ' /s' : '-');
-  setEl('cont-v2', ky.length ? fmtNum(last(ky), 2) + ' ppb' : '-');
-  setEl('cont-v3', py.length ? `${fmtNum(last(py), 1)} s per ${fmtNum(last(h.seconds.filter(Boolean)), 0)} s` : '-');
-}
-
-async function refreshContinuous() {
-  let d;
-  try { d = await apiFetch('/api/continuous/status'); } catch (e) { return; }
-  contLast = d;
-  const st = d.status;
-  const running = d.recording || d.processing;
-  setBadge('cont-badge', d.recording ? 'Recording and distilling' : d.processing ? 'Finishing the last block' : st ? 'Finished' : 'Idle',
-    d.recording ? 'success' : d.processing ? 'warn' : 'muted');
-  document.getElementById('cont-start').disabled = running;
-  document.getElementById('cont-stop').disabled = !d.recording;
-  const chips = [];
-  if (st) {
-    const b = st.block;
-    document.getElementById('cont-progress').style.width = `${Math.min(100, 100 * b.seconds / st.block_s).toFixed(1)}%`;
-    chips.push(['Running', fmtDur(st.uptime_s)], ['Data distilled or in hand', fmtDur(st.data_s)],
-      ['Segments', `${st.segments_done} kept, ${st.segments_skipped} skipped`], ['Backlog', `${st.backlog} segment(s)`],
-      [`Block ${b.index}`, `${fmtDur(b.seconds)} of ${fmtDur(st.block_s)}, ${b.sifted} sifted bits` + (b.qber_vis != null ? `, QBER ${fmtNum(100 * b.qber_vis, 2)}%` : '')],
-      ['Distilling', st.distilling ? `block ${st.distilling.index} (${fmtDur(st.distilling.seconds)})` : 'no'],
-      ['Key', `${st.key_bits} bits, ${fmtNum(st.key_rate, 1)} bit/s of data`], ['Keys to the KMS', st.keystore ? st.keys_saved : 'not saved']);
-    const blocks = (st.blocks || []).slice().reverse();
-    setBadge('cont-blocks-badge', blocks.length ? `${blocks.length} block(s), ${st.key_bits} key bits` : 'none yet', blocks.some(x => x.key_bits > 0) ? 'success' : 'muted');
-    document.getElementById('cont-blocks').innerHTML = blocks.length ? blocks.map(x => `<tr>
-        <td>${x.index}</td><td>${fmtDur(x.seconds)} (${x.segments} seg.)</td><td>${x.sifted ?? '-'}</td>
-        <td>${x.qber != null ? fmtNum(100 * x.qber, 2) + '%' : '-'}</td><td>${x.ec_leak ?? '-'}</td><td>${x.f != null ? fmtNum(x.f, 2) : '-'}</td>
-        <td>${x.phase_error_bound != null ? fmtNum(100 * x.phase_error_bound, 1) + '%' : '-'}</td>
-        <td class="${x.error ? 'wrap error-cell' : x.key_bits > 0 ? 'positive' : ''}">${x.error ? 'failed: ' + esc(x.error) : x.key_bits + ' bits'}</td>
-        <td>${x.keys_saved || 0}</td><td>${fmtNum(x.processing_s, 1)} s</td></tr>`).join('') : emptyRow(10, 'no block distilled yet');
-  }
-  if (d.params) chips.unshift(['Source', d.params.source + (d.params.speed && d.params.speed !== 1 ? ` x${d.params.speed}` : '')],
-    ['Blocks', `${fmtDur(d.params.block_s)}, ${d.params.method}`], ['Keys to', d.params.neighbor || 'not saved']);
-  document.getElementById('cont-chips').innerHTML = chipsHTML(chips);
-  const logEl = document.getElementById('cont-log');
-  logEl.textContent = (d.log || []).join('\n');
-  logEl.scrollTop = logEl.scrollHeight;
-  try {
-    const live = (await apiFetch('/api/acquire/live')).status;
-    setBadge('cont-live-badge', live && live.state === 'locked' ? `peak locked: skew ${fmtNum(live.skew_ppb, 2)} ppb, HWHM ${fmtNum(live.hwhm_ps, 0)} ps` : `peak: ${live ? live.state : '-'}`,
-      live && live.state === 'locked' ? 'success' : 'muted');
-  } catch (e) { /* no live status */ }
-  drawContinuous();
-}
-window.addEventListener('resize', drawContinuous);
 
 // Evaluation: evaluate.py on ticked pairs, reports kept on this node
 const evalPairs = [];
@@ -1248,7 +1135,7 @@ document.getElementById('eval-run').addEventListener('click', async () => {
   const pairs = evalPairs.filter(q => q.checked).map(q => ({ a: q.a, b: q.b }));
   if (!pairs.length) { errEl.textContent = 'tick at least one pair'; return; }
   try {
-    const j = await postJSON('/api/jobs', { kind: 'evaluate', params: { pairs, live: document.getElementById('eval-live').checked } });
+    const j = await postJSON('/api/jobs', { kind: 'evaluate', params: { pairs } });
     evalJob = j.id;
     refreshEvalJob();
   } catch (e) { errEl.textContent = e.message; }
@@ -1806,11 +1693,12 @@ async function tpLoadChoices() {
     sel.innerHTML = cfg.loaded ? (cfg.sites || []).map(x => `<option value="${esc(x)}">${esc(x)}</option>`).join('') : '<option value="">load a config on the Acquisition page</option>';
     if (keep) sel.value = keep;
     document.getElementById('tp-block').value = st.state.block_s;
+    document.getElementById('tp-auto').checked = st.state.block_auto !== false;
     document.getElementById('tp-segment').value = st.state.segment_s;
     document.getElementById('tp-qber').value = st.state.expected_qber;
     let peers = [];
     try { peers = ((await apiFetch('/api/node')).links || []).map(l => l.neighbor); } catch (e) { /* no KMS */ }
-    document.getElementById('tp-peers').innerHTML = peers.length ? peers.map(p => `<label class="chip" style="display:flex;gap:.35rem;align-items:center"><input type="checkbox" value="${esc(p)}" ${st.state.announce_to.includes(p) ? 'checked' : ''}>${esc(p)}</label>`).join('')
+    document.getElementById('tp-peers').innerHTML = peers.length ? peers.map(p => `<label class="chip chip--check"><input type="checkbox" value="${esc(p)}" ${st.state.announce_to.includes(p) ? 'checked' : ''}>${esc(p)}</label>`).join('')
       : '<span class="hint">this node has no QKD link in the key management system</span>';
   } catch (e) { /* backend not reachable yet */ }
 }
@@ -1820,13 +1708,16 @@ document.getElementById('tp-start').addEventListener('click', async () => {
   err.textContent = '';
   const body = {
     site: document.getElementById('tp-site').value, block_s: Number(document.getElementById('tp-block').value),
+    block_auto: document.getElementById('tp-auto').checked,
     segment_s: Number(document.getElementById('tp-segment').value), expected_qber: Number(document.getElementById('tp-qber').value),
     announce_to: [...document.querySelectorAll('#tp-peers input:checked')].map(x => x.value),
   };
   try { await postJSON('/api/twoparty/start', body); refreshTwoParty(); } catch (e) { err.textContent = e.message; }
 });
 document.getElementById('tp-stop').addEventListener('click', async () => {
-  try { await postJSON('/api/twoparty/stop', {}); refreshTwoParty(); } catch (e) { document.getElementById('tp-error').textContent = e.message; }
+  const err = document.getElementById('tp-error');
+  err.textContent = '';
+  try { await postJSON('/api/twoparty/stop', {}); refreshTwoParty(); } catch (e) { err.textContent = e.message; }
 });
 
 async function refreshTwoParty() {
@@ -1835,16 +1726,24 @@ async function refreshTwoParty() {
   tpLast = d;
   const active = d.state.active;
   setBadge('tp-badge', active ? (d.recording ? 'Recording and distilling' : 'Recorder restarting') : 'Idle', active ? (d.recording ? 'success' : 'warn') : 'muted');
-  document.getElementById('tp-start').disabled = active;
-  document.getElementById('tp-stop').disabled = !active;
+  // a node the network controller runs is started, stopped and set there: here its settings only show
+  const managed = !!d.state.managed;
+  document.getElementById('tp-managed').style.display = managed ? '' : 'none';
+  document.getElementById('tp-start').disabled = active || managed;
+  document.getElementById('tp-stop').disabled = !active || managed;
+  ['tp-site', 'tp-block', 'tp-segment', 'tp-qber', 'tp-auto'].forEach(id => { document.getElementById(id).disabled = managed; });
+  document.querySelectorAll('#tp-peers input').forEach(x => { x.disabled = managed; });
   const blocks = (d.blocks || []).slice().reverse();
   const ok = blocks.filter(b => b.ok);
   const chips = [];
   if (active) {
-    chips.push(['Site', d.state.site], ['Blocks', `${fmtDur(d.state.block_s)} of ${fmtDur(d.state.segment_s)} segments`],
+    chips.push(['Site', d.state.site], ['Blocks', `${d.state.block_auto ? 'automatic, up to ' : ''}${fmtDur(d.state.block_s)}, ${fmtDur(d.state.segment_s)} segments`],
       ['Segments on disk', `${d.segments}` + (d.last_segment ? `, newest ${d.last_segment.slice(9, 11)}:${d.last_segment.slice(11, 13)}:${d.last_segment.slice(13, 15)} UTC` : '')],
       ['Announcing to', d.state.announce_to.join(', ') || 'none (this node answers)'],
       ['Working on', d.running ? `${d.running.role === 'alice' ? 'offering' : 'answering'} a block with ${d.running.peer}` : (d.queued ? `${d.queued} queued` : 'waiting for the next block')]);
+  }
+  for (const [peer, p] of Object.entries(active ? d.state.plans || {} : {})) {
+    chips.push([`Block with ${peer}`, fmtDur(p.block_s) + (p.rate != null ? `, ${fmtNum(p.rate, 1)} bit/s expected at QBER ${fmtNum(100 * p.qber, 2)}%` : ', first block')]);
   }
   for (const [peer, ppb] of Object.entries(d.skew_ppb || {})) chips.push([`Clock skew to ${peer}`, `${fmtNum(ppb, 2)} ppb`]);
   if (ok.length) chips.push(['Key in the last blocks', `${ok.slice(0, 12).reduce((a, b) => a + (b.key_bits || 0), 0)} bits in ${Math.min(12, ok.length)} blocks`]);

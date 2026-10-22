@@ -81,22 +81,17 @@ func TestCascadeFirstBlock(t *testing.T) {
 	}
 }
 
-// TestRunCascadeBeatsLDPCAndWinnow: on the same data and sample the full chain with Cascade certifies a
-// longer key than Winnow and regular LDPC
-func TestRunCascadeBeatsLDPCAndWinnow(t *testing.T) {
+// TestRunCascadeCertifiesVerifiedKey: the full chain with Cascade certifies a verified key, every chunk kept
+func TestRunCascadeCertifiesVerifiedKey(t *testing.T) {
 	t.Parallel() // heavy and independent: runs beside the other heavy tests
 	alice, bob := simulateClicks(300000, 0.05, 21)
 	cs, err := RunCascade(alice, bob, CascadeRunConfig{CoincidenceWindowPS: 500, Seed: 5, ChunkSize: 1024, ExpectedQBER: 0.05})
 	if err != nil {
 		t.Fatal(err)
 	}
-	wn, err := RunWinnow(alice, bob, WinnowRunConfig{CoincidenceWindowPS: 500, Seed: 5, ChunkSize: 1024, ExpectedQBER: 0.05})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("Cascade: %d disclosed, %d-bit key; Winnow: %d disclosed, %d-bit key", cs.LeakedBits, len(cs.FinalKeyBits), wn.LeakedBits, len(wn.FinalKeyBits))
-	if len(cs.FinalKeyBits) == 0 || !cs.FiniteKey.Verified || cs.CRCVerify.ChunksDropped != 0 || len(cs.FinalKeyBits) <= len(wn.FinalKeyBits) {
-		t.Fatal("Cascade should certify a verified key, longer than Winnow's")
+	t.Logf("Cascade: %d disclosed, %d-bit key", cs.LeakedBits, len(cs.FinalKeyBits))
+	if len(cs.FinalKeyBits) == 0 || !cs.FiniteKey.Verified || cs.CRCVerify.ChunksDropped != 0 {
+		t.Fatal("Cascade should certify a verified key with every chunk kept")
 	}
 }
 

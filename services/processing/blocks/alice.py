@@ -83,7 +83,8 @@ class Kept:
 
 
 def run(peer, start, block_s, segment_s, expected_qber):
-    entry = {'role': 'alice', 'peer': peer, 'block': start, 'started': time.time(), 'segments': 0, 'announced_bytes': 0}
+    entry = {'role': 'alice', 'peer': peer, 'block': start, 'block_s': block_s, 'started': time.time(), 'segments': 0,
+             'announced_bytes': 0}
     work = Path(tempfile.mkdtemp(prefix='alice_', dir=settings.TP_WORK))
     session = f'{settings.NODE_ID or "node"}-tp-{int(start)}-{secrets.token_hex(3)}'
     agreed = importtt.params(expected_qber)

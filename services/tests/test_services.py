@@ -4,6 +4,7 @@ the service token guards the inner services, and the agent's scheduling and cont
 '''
 
 import io
+import json
 import os
 import re
 import tempfile
@@ -136,7 +137,7 @@ class TestAgent(unittest.TestCase):
         from services.core import peers
         now = 1_000_000.0
         st = {**self.state.DEFAULTS, 'active': True, 'announce_to': ['B'], 'block_s': 100.0, 'segment_s': 10.0,
-              'next_block': {'B': 999_800.0}}
+              'block_auto': False, 'next_block': {'B': 999_800.0}}
         sent = []
         with mock.patch.object(time, 'time', return_value=now), \
                 mock.patch.object(peers, 'call_json', side_effect=lambda *a, **k: sent.append((a[3]['block'], a[3]['segment_s']))):
@@ -153,7 +154,33 @@ class TestAgent(unittest.TestCase):
         with mock.patch.object(time, 'time', return_value=now), \
                 mock.patch.object(peers, 'call_json', side_effect=lambda *a, **k: None):
             twoparty._queue_due(st)
-        self.assertEqual(st['next_block']['B'], 1_000_000.0)  # blocks older than the kept segments are skipped
+        self.assertEqual(st['next_block']['B'], 1_000_080.0)  # too old for the kept segments: from the newest one
+
+    def test_block_length_planned_from_the_link_record(self):
+        from services.agent import blockplan, twoparty
+        from services.core import peers
+        st = {**self.state.DEFAULTS, 'active': True, 'announce_to': ['B'], 'block_s': 900.0, 'segment_s': 5.0}
+        with mock.patch.object(peers, 'call_json', return_value={'blocks': []}):
+            self.assertEqual(blockplan.length(st, 'B'), (300.0, None))  # nothing to plan from: the first length
+        done = [{'role': 'alice', 'ok': True, 'sifted': 90_000, 'seconds': 300.0, 'block_s': 300.0, 'qber': q,
+                 'ec_leak': int(1.05 * 90_000 * blockplan._h2(q))} for q in (0.02, 0.02)]
+        rec = blockplan.record(done + [{'role': 'alice', 'ok': False, 'block_s': 300.0}, {'role': 'bob', 'ok': False}])
+        self.assertAlmostEqual(rec['sifted_per_s'], 300.0)
+        self.assertAlmostEqual(rec['ec_efficiency'], 1.05, places=3)
+        self.assertAlmostEqual(rec['fail_per_s'], 1 / (900 + blockplan.PRIOR_S))
+        plan = {'block_s': 405, 'rate': 105.9, 'best_s': 900, 'best_rate': 111.4}
+        run = mock.Mock(return_value=mock.Mock(stdout=json.dumps(plan) + '\n'))
+        with mock.patch.object(peers, 'call_json', return_value={'blocks': done}), mock.patch.object(blockplan.subprocess, 'run', run):
+            self.assertEqual(blockplan.length(st, 'B')[0], 405.0)
+        self.assertEqual(json.loads(run.call_args[0][0][2])['max_s'], 900.0)
+        sent = []
+        with mock.patch.object(time, 'time', return_value=1_000_000.0), \
+                mock.patch.object(blockplan, 'length', return_value=(405.0, plan)), \
+                mock.patch.object(peers, 'call_json', side_effect=lambda *a, **k: sent.append(a[3]['block_s'])):
+            st['next_block'] = {'B': 999_500.0}
+            twoparty._queue_due(st)
+        self.assertEqual(sent, [405.0, 405.0])  # the second starts at 999 905, its first segment already written
+        self.assertEqual((st['next_block']['B'], st['plans']['B']['block_s']), (1_000_310.0, 405.0))
 
     def test_controller_settings_apply_and_release(self):
         from services.agent import controller, twoparty
@@ -175,6 +202,18 @@ class TestAgent(unittest.TestCase):
 
 
 class TestTagger(unittest.TestCase):
+    def test_continuous_qkd_holds_the_timetagger_from_start_to_stop(self):
+        from services.acquisition import recorder, tagger
+        recorder._wanted_file().unlink(missing_ok=True)
+        self.assertIsNone(tagger.busy())
+        recorder._wanted_file().parent.mkdir(parents=True, exist_ok=True)
+        recorder._wanted_file().touch()  # what a start leaves, even when the recorder itself is down
+        self.assertEqual(tagger.busy(), 'continuous QKD')
+        self.assertIsNone(tagger.busy('the two-party recorder', 'continuous QKD'))  # the recorder may still start
+        client = create_app('acquisition', start=False).test_client()
+        self.assertEqual(client.post('/v1/recorder/stop', headers={'X-Service-Token': settings.SERVICE_TOKEN}).status_code, 200)
+        self.assertIsNone(tagger.busy())
+
     def test_one_mode_at_a_time(self):
         from services.acquisition import tagger
         with mock.patch.dict(tagger._modes, {'x': lambda: True}):

@@ -40,7 +40,7 @@ After drift removal, the four correct-bit detector classes sit at different and 
 
 ### Measured behaviour
 
-**Each recording on its own** (`cmd/importtt -polar`, defaults; QBER from detector visibility over all sifted pairs):
+**Each recording on its own** (`cmd/importtt`, defaults; QBER from detector visibility over all sifted pairs):
 
 | Recording | Unfiltered window | Unfiltered QBER | Drift found, passes | Fit $\sigma$ | Window (HWHM) | Sifted pairs | Filtered QBER |
 |---|---|---|---|---|---|---|---|

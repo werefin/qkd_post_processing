@@ -120,50 +120,6 @@ def peak(report, diag, min_score, path):
     return fit
 
 
-def live(timeline, st, lock_score, path):
-    '''timeline: [(data seconds, state, best search score)]; st: the tracker's final status'''
-    fig, axes = plt.subplots(1, 3, figsize=(13, 3.8))
-    ax = axes[0]
-    pts = [(e, s) for e, state, s in timeline if s is not None and state == 'searching']
-    if pts:
-        ax.plot([p[0] for p in pts], [max(p[1], 0.1) for p in pts], 'o-', color=MUTED, label='best score while searching')
-    lock = next(((e, s) for e, state, s in timeline if state == 'locked'), None)
-    if lock and lock[1]:
-        ax.scatter([lock[0]], [lock[1]], color=GREEN, s=70, zorder=3, label=f'lock at {lock[0]:.1f} s')
-    ax.axhline(lock_score, color=RED, ls='--', lw=1, label=f'lock threshold {lock_score:g}')
-    ax.set_yscale('log')
-    ax.set_title('Search: joint lag and skew score')
-    ax.set_xlabel('data received (s)')
-    ax.set_ylabel('score')
-    ax.legend(loc='upper left', fontsize=8)
-    if st.get('state') != 'locked':
-        for ax in axes[1:]:
-            ax.text(0.5, 0.5, 'never locked', ha='center', va='center', transform=ax.transAxes, color=RED)
-        save(fig, path, 'Live coincidence-peak tracking (live_peak.py, replayed)')
-        return
-
-    ax = axes[1]
-    h = st['history']
-    ax.errorbar(h['t_s'], h['residual_ps'], yerr=h['err_ps'], fmt='o', color=AMBER, ecolor=AMBER, capsize=3, ms=4)
-    ax.axhline(0, color=INK, lw=1)
-    ax.set_title(f'Tracking: {st["skew_ppb"]:.2f} ± {st["skew_err_ppb"]:.2f} ppb removed')
-    ax.set_xlabel('time (s)')
-    ax.set_ylabel('chunk centroid minus fitted line (ps)')
-
-    ax = axes[2]
-    hx, hy = np.asarray(st['histogram']['x_ns']), np.asarray(st['histogram']['y'], float)
-    ax.fill_between(hx, hy, step='mid', color=GREEN, alpha=0.25)
-    ax.step(hx, hy, where='mid', color=GREEN, lw=0.9)
-    ax.axvspan(-st['hwhm_ps'] / 1e3, st['hwhm_ps'] / 1e3, color=AMBER, alpha=0.2, label=f'±HWHM = ±{st["hwhm_ps"]:.0f} ps')
-    ax.set_xlim(-max(2.5, 6 * st['hwhm_ps'] / 1e3), max(2.5, 6 * st['hwhm_ps'] / 1e3))
-    acc = st.get('accidental_share')
-    ax.set_title(f'Live peak: {st["pair_rate"]:,.0f} pairs/s' + ('' if acc is None else f', {100 * acc:.1f}% accidentals'))
-    ax.set_xlabel('residual (ns)')
-    ax.set_ylabel('pairs per bin')
-    ax.legend(loc='upper right', fontsize=8)
-    save(fig, path, 'Live coincidence-peak tracking (live_peak.py, replayed)')
-
-
 def window(rows, chosen_ps, path):
     '''rows: {'drift tracked': [(window ps, sifted, qber)], 'skew only': [...]}'''
     fig, axes = plt.subplots(1, 2, figsize=(11, 3.8))

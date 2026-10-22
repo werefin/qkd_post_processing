@@ -3,7 +3,7 @@ openapi: 3.1.0
 info:
   title: QKD node acquisition
   version: 1.0.0
-  description: 'Drives the TimeTagger, one mode at a time: recordings, replays, lab continuous QKD, coincidence logs and the two-party recorder'
+  description: 'Drives the TimeTagger, one mode at a time: recordings, replays, coincidence logs and the two-party recorder'
 servers: [{ url: 'http://acquisition:9101' }]
 security: [{ serviceToken: [] }]
 paths:
@@ -115,26 +115,6 @@ paths:
         default: { $ref: 'common.yaml#/components/responses/Error' }
     post:
       summary: 'Loads an acquisition config'
-      requestBody: { content: { application/json: { schema: { type: object } } } }
-      responses:
-        '200': { $ref: 'common.yaml#/components/responses/Json' }
-        default: { $ref: 'common.yaml#/components/responses/Error' }
-  /api/continuous/start:
-    post:
-      summary: 'Starts lab continuous QKD'
-      requestBody: { content: { application/json: { schema: { type: object } } } }
-      responses:
-        '200': { $ref: 'common.yaml#/components/responses/Json' }
-        default: { $ref: 'common.yaml#/components/responses/Error' }
-  /api/continuous/status:
-    get:
-      summary: 'Lab continuous QKD status'
-      responses:
-        '200': { $ref: 'common.yaml#/components/responses/Json' }
-        default: { $ref: 'common.yaml#/components/responses/Error' }
-  /api/continuous/stop:
-    post:
-      summary: 'Stops lab continuous QKD recording, or aborts the processor'
       requestBody: { content: { application/json: { schema: { type: object } } } }
       responses:
         '200': { $ref: 'common.yaml#/components/responses/Json' }

@@ -25,22 +25,14 @@ sys.path.insert(0, str(ROOT / 'acquisition'))
 sys.path.insert(0, str(HERE))
 import coincidence_peak as cp  # noqa: E402
 import figures  # noqa: E402
-import live_peak as lp  # noqa: E402
 
 TS_SUFFIX = '_timestamp_sequence.npy'
 NAME_RE = re.compile(r'^(?P<start>\d{8}_\d{6})_(?P<ip>\d+_\d+_\d+_\d+)_p(?P<port>\d+)' + re.escape(TS_SUFFIX) + '$')
 IP_RE = re.compile(r'(?<![\d.])\d{1,3}[._]\d{1,3}[._]\d{1,3}[._]\d{1,3}(?![\d.])')
 SWEEP_PS = [50, 100, 150, 200, 300, 400, 500, 750, 1000, 1500, 2000]
-# name, importtt flags, the JSON field holding its disclosure (None: total minus CRC), needs the Python EC service;
-# only Cascade by default, the codes are legacy and compared only when --methods asks for them
+# error correction: name, importtt flags, and the JSON field holding its disclosure
 METHODS = {
-    'cascade': ('Cascade, optimized', ['-cascade'], 'cascade_parities', False),
-    'ldpc5g': ('5G NR LDPC', ['-ldpc5g'], 'ldpc5g_leaked_bits', True),
-    'ldpc5g-soft': ('5G NR LDPC, timing-aware', ['-ldpc5g', '-soft-bins', '16'], 'ldpc5g_leaked_bits', True),
-    'polar': ('Polar SCL8', ['-polar'], None, False),
-    'polar-soft': ('Polar SCL8, timing-aware', ['-polar', '-soft-bins', '16'], None, False),
-    'ldpc': ('LDPC regular (3,10)', ['-ldpc'], None, False),
-    'winnow': ('Winnow', ['-winnow'], None, False),
+    'cascade': ('Cascade, optimized', ['-cascade'], 'cascade_parities'),
 }
 
 
@@ -48,7 +40,7 @@ def log(msg):
     print(f'[eval] {msg}', flush=True)
 
 
-# ---------- inputs
+# inputs
 
 def find_pairs(paths):
     '''Every two recordings in one directory sharing a start time form a pair; anything else is reported and skipped'''
@@ -65,7 +57,7 @@ def find_pairs(paths):
     pairs = []
     for (d, start), fs in sorted(groups.items()):
         if len(fs) == 2:
-            pairs.append(sorted(fs))  # A is the first in sorted order, as tt_record_dual.py and the live tracker use
+            pairs.append(sorted(fs))  # A is the first in sorted order, as tt_record_dual.py uses
         else:
             skipped += [(f, f'{len(fs)} recordings start at {start} in this directory, need exactly 2') for f in fs]
     return pairs, skipped
@@ -90,7 +82,7 @@ def peak_kwargs(cfg):
     return cp.kwargs_from_config(cfg)
 
 
-# ---------- tools
+# tools
 
 def find_importtt(given):
     if given:
@@ -106,30 +98,24 @@ def find_importtt(given):
     sys.exit('no importtt binary: install Go, build it (go build ./cmd/importtt) or pass --importtt')
 
 
-def ec_python():
-    '''A Python that can run ec/ldpc5g.py, or None (5G NR LDPC is then skipped)'''
-    for cand in (os.environ.get('QKD_EC_PYTHON'), sys.executable, str(HERE / '.venv' / 'bin' / 'python')):
-        if cand and subprocess.run([cand, '-c', 'import ldpc, py3gpp'], capture_output=True).returncode == 0:
-            return cand
-    return None
-
-
 class Importtt:
-    def __init__(self, binary, ec_py):
+    def __init__(self, binary):
         self.binary, self.env = binary, dict(os.environ)
-        if ec_py:
-            self.env.update(QKD_EC_PYTHON=ec_py, QKD_EC_SCRIPT=str(ROOT / 'ec' / 'ldpc5g.py'))
 
     def run(self, dirs, *flags):
         dirs = dirs if isinstance(dirs, list) else [dirs]
         r = subprocess.run([self.binary, '-dir', ','.join(str(d) for d in dirs), '-json', *flags],
                            capture_output=True, text=True, env=self.env)
         if r.returncode != 0:
-            raise RuntimeError((r.stderr.strip().splitlines() or ['importtt failed'])[-1][:300])
+            try:  # with -json the reason is in the JSON on stdout
+                why = json.loads(r.stdout.strip().splitlines()[-1])['error']
+            except (IndexError, ValueError, KeyError, TypeError):
+                why = (r.stderr.strip().splitlines() or ['importtt failed'])[-1]
+            raise RuntimeError(IP_RE.sub('<ip>', str(why))[:300])
         return json.loads(r.stdout)
 
 
-# ---------- one pair
+# one pair
 
 def stage(pair, inp, kwargs):
     '''A directory importtt reads: links to both recordings and a fresh coincidence report from the current code;
@@ -149,25 +135,7 @@ def stage(pair, inp, kwargs):
     return inp, report, diag, time.time() - t0
 
 
-def replay_live(a, b, kwargs):
-    tracker = lp.LiveTracker(**kwargs)
-    feed, t, ia, ib, timeline = int(0.25 * lp.PS_PER_S), 0, 0, 0, []
-    t0 = time.time()
-    while ia < len(a) or ib < len(b):
-        t += feed
-        ja, jb = int(np.searchsorted(a, a[0] + t)), int(np.searchsorted(b, b[0] + t))
-        tracker.feed([np.asarray(a[ia:ja])], [np.asarray(b[ib:jb])])
-        ia, ib = ja, jb
-        tracker.step()
-        st = tracker.status()
-        best = (st.get('search') or {}).get('best_score')
-        if st['state'] == 'locked' and not any(s == 'locked' for _, s, _ in timeline):
-            best = float(tracker.events[-1].split('score ')[-1]) if tracker.events else None
-        timeline.append((st['elapsed_s'], st['state'], best))
-    return tracker.status(), timeline, time.time() - t0
-
-
-def evaluate_pair(pair, out, staging, it, ec_py, cfg, args):
+def evaluate_pair(pair, out, staging, it, cfg, args):
     names = site_names(cfg)
     name_a, name_b = side_label(pair[0], names, 'A'), side_label(pair[1], names, 'B')
     start = NAME_RE.match(pair[0].name)['start']
@@ -177,7 +145,6 @@ def evaluate_pair(pair, out, staging, it, ec_py, cfg, args):
     res = {'name': pair_name, 'start': start, 'a': {'site': name_a}, 'b': {'site': name_b},
            'link': f'{name_a}-{name_b}', 'notes': []}
     log(f'{pair_name}: loading')
-    a, b = np.load(pair[0], mmap_mode='r'), np.load(pair[1], mmap_mode='r')
     sides = []
     for ts_path, label, side in ((pair[0], f'A, {name_a}', 'a'), (pair[1], f'B, {name_b}', 'b')):
         ts = np.load(ts_path, mmap_mode='r')
@@ -208,8 +175,8 @@ def evaluate_pair(pair, out, staging, it, ec_py, cfg, args):
         res['notes'].append('no significant coincidence peak: the later stages cannot run')
         return res
 
-    # every importtt run of the pair goes out at once; the live replay runs meanwhile in this thread
-    base_method = 'cascade'  # the least disclosure, and no Python service needed
+    # every importtt run of the pair goes out at once
+    base_method = 'cascade'
     sweep = [] if args.no_sweep else ['-window-sweep', ','.join(map(str, SWEEP_PS))]
     pool = ThreadPoolExecutor(args.jobs)
 
@@ -223,20 +190,10 @@ def evaluate_pair(pair, out, staging, it, ec_py, cfg, args):
     base_job = pool.submit(run, *METHODS[base_method][1], *sweep)
     jobs = {}
     for key in args.methods:
-        flags, needs_ec = METHODS[key][1], METHODS[key][3]
-        if needs_ec and not ec_py:
-            continue
+        flags = METHODS[key][1]
         # the base run is this method's finite-key run already
         fin = base_job if key == base_method else pool.submit(run, *flags)
         jobs[key] = (fin, pool.submit(run, *flags, '-asymptotic'))
-
-    if not args.no_live:
-        log(f'{pair_name}: live tracker replay')
-        st, timeline, secs = replay_live(a, b, lp.tracker_kwargs(cfg))
-        lock = next((e for e, s, _ in timeline if s == 'locked'), None)
-        res['live'] = {k: v for k, v in st.items() if k not in ('histogram', 'history', 'search', 'events')}
-        res['live'].update(lock_s=lock, seconds=secs, events=st.get('events', []))
-        figures.live(timeline, st, lp.LOCK_SCORE, work / 'live.png')
 
     base = base_job.result()
     if isinstance(base, Exception):
@@ -261,10 +218,7 @@ def evaluate_pair(pair, out, staging, it, ec_py, cfg, args):
 
     runs = {}
     for key in args.methods:
-        label, flags, leak_key, needs_ec = METHODS[key]
-        if key not in jobs:
-            runs[label] = {'leak': None, 'ok': False, 'key': 0, 'finite': 0, 'error': 'ec/requirements.txt not installed'}
-            continue
+        label, flags, leak_key = METHODS[key]
         fin, asy = jobs[key][0].result(), jobs[key][1].result()
         if isinstance(fin, Exception) or isinstance(asy, Exception):
             runs[label] = {'leak': None, 'ok': False, 'key': 0, 'finite': 0, 'error': str(fin if isinstance(fin, Exception) else asy)[:120]}
@@ -284,7 +238,7 @@ def evaluate_pair(pair, out, staging, it, ec_py, cfg, args):
     return res
 
 
-# ---------- reports
+# reports
 
 def pct(x, digits=1):
     return '-' if x is None else f'{100 * x:.{digits}f}%'
@@ -320,20 +274,6 @@ def write_pair_report(res, work):
         if fit:
             L.append(f'| Gaussian fit, all channels | $\\sigma = {fit["sigma_ps"]:.0f}$ ps, HWHM {fit["hwhm_ps"]:.0f} ps |')
         L += [f'| Search time | {p["seconds"]:.1f} s |', '', '![Offline coincidence-peak search](peak.png)', '']
-    lv = res.get('live')
-    if lv:
-        L += ['### Live coincidence-peak finding', '',
-              'The recording replayed through `acquisition/live_peak.py` as if it were streaming, with the live settings of `config.json`.', '']
-        if lv.get('state') == 'locked':
-            L += ['| Quantity | Live | Offline |', '|---|---|---|',
-                  f'| Lock | after {lv["lock_s"]:.1f} s of data | |',
-                  f'| Clock skew | {lv["skew_ppb"]:.2f} ± {lv["skew_err_ppb"]:.2f} ppb | {p["skew_ppb"]:.2f} ppb |',
-                  f'| HWHM, all channels | {lv["hwhm_ps"]:.0f} ps | {(p.get("fit") or {}).get("hwhm_ps", float("nan")):.0f} ps |',
-                  f'| True pairs per second | {lv["pair_rate"]:,.0f} | |',
-                  f'| Accidentals inside ±HWHM | {pct(lv.get("accidental_share"))} | |', '']
-        else:
-            L += [f'The tracker never locked in {lv.get("elapsed_s", 0):.1f} s of data.', '']
-        L += ['![Live tracking](live.png)', '']
     base = res.get('base')
     if base:
         L += ['### Coincidence filtering and sifting', '',
@@ -353,8 +293,8 @@ def write_pair_report(res, work):
                 L.append(f'| {bold}±{w} ps{bold} | {"-" if n is None else f"{n:,}"} | {pct(q)} |')
             L.append('')
     if res.get('ec'):
-        L += ['### Error correction, every method on the same sample', '',
-              f'Each method sees the same {base["finite_key"]["surviving_bits"]:,} bits at {pct(base["qber"])} sample QBER; the Shannon limit is {res["shannon"]:,.0f} bits. Disclosure is everything error correction sends, before the CRC check.', '',
+        L += ['### Error correction', '',
+              f'Cascade sees the same {base["finite_key"]["surviving_bits"]:,} bits at {pct(base["qber"])} sample QBER; the Shannon limit is {res["shannon"]:,.0f} bits. Disclosure is everything error correction sends, before the CRC check.', '',
               '![Error correction](ec.png)', '',
               '| Method | Disclosed bits | Efficiency $f$ | Chunks kept | Asymptotic key | Finite key |', '|---|---|---|---|---|---|']
         for name, r in res['ec'].items():
@@ -373,7 +313,7 @@ def write_pair_report(res, work):
     (work / 'report.md').write_text('\n'.join(L))
 
 
-def pooled(results, it, ec_py):
+def pooled(results, it):
     '''importtt over all evaluated recordings of each link at once: one privacy-amplification block, a larger sample'''
     by_link = defaultdict(list)
     for r in results:
@@ -400,7 +340,6 @@ def write_summary(results, pools, skipped, out):
     rows = []
     for r in results:
         b = r.get('base') or {}
-        lv = r.get('live') or {}
         rows.append({'name': r['name'], 'qber': b.get('qber'), 'skew_ppb': (r.get('peak') or {}).get('skew_ppb'),
                      'sifted_rate': b.get('sifted_bits', 0) / max(r['a'].get('duration_s', 1), 1e-9) if b else None,
                      'asym_key': next((v['key'] for v in (r.get('ec') or {}).values() if not v.get('error')), None)})
@@ -408,15 +347,14 @@ def write_summary(results, pools, skipped, out):
         figures.comparison(rows, out / 'comparison.png')
     L = ['### Evaluation summary', '',
          f'**Evaluated:** {len(results)} recording pair(s) on {datetime.now():%Y-%m-%d} by `evaluation/evaluate.py`. Each pair has its own report with figures; this page compares them and pools each link\'s recordings into one block.', '',
-         '| Recording | Link | Length | Peak | Skew | Live lock | Window | Sifted bits | Sample QBER | Asymptotic key | Finite key |',
-         '|---|---|---|---|---|---|---|---|---|---|---|']
+         '| Recording | Link | Length | Peak | Skew | Window | Sifted bits | Sample QBER | Asymptotic key | Finite key |',
+         '|---|---|---|---|---|---|---|---|---|---|']
     for r in results:
-        p, b, lv = r.get('peak') or {}, r.get('base') or {}, r.get('live') or {}
+        p, b = r.get('peak') or {}, r.get('base') or {}
         ec = next(((k, v) for k, v in (r.get('ec') or {}).items() if not v.get('error')), (None, {}))[1]
-        lock = '-' if not lv else (f'{lv["lock_s"]:.1f} s' if lv.get('lock_s') is not None else 'never')
         L.append(f'| [{r["name"]}]({r["name"]}/report.md) | {r["link"]} | {r["a"].get("duration_s", 0):.1f} s | '
                  f'{"score " + format(p["corrected"]["local_score"], ".0f") if p.get("detected") else "not found"} | '
-                 f'{"-" if not p else format(p["skew_ppb"], ".2f") + " ppb"} | {lock} | '
+                 f'{"-" if not p else format(p["skew_ppb"], ".2f") + " ppb"} | '
                  f'{"-" if not b else "±" + str(b["window_ps"]) + " ps"} | {b.get("sifted_bits", "-")} | {pct(b.get("qber"))} | '
                  f'{ec.get("key", "-")} | {b.get("final_key_bits", "-")} |')
     if len(rows) > 1:
@@ -441,16 +379,11 @@ def main(argv=None):
     ap.add_argument('--out', type=Path, help='output directory, default <first recording directory>/evaluation/<date>')
     ap.add_argument('--config', type=Path, default=ROOT / 'acquisition' / 'config.json', help='site names and search settings')
     ap.add_argument('--importtt', help='importtt binary; default: built from this checkout with go')
-    ap.add_argument('--methods', default='cascade', help=f'comma-separated error-correction methods, from {",".join(METHODS)}; all but cascade are legacy')
-    ap.add_argument('--no-live', action='store_true', help='skip the live tracker replay')
     ap.add_argument('--no-sweep', action='store_true', help='skip the coincidence-window sweep')
     ap.add_argument('--no-pool', action='store_true', help='skip pooling each link\'s recordings')
     ap.add_argument('--jobs', type=int, default=4, help='importtt runs in parallel, about 0.6 GB each on a 300 MB recording')
     args = ap.parse_args(argv)
-    args.methods = [m for m in args.methods.split(',') if m]
-    for m in args.methods:
-        if m not in METHODS:
-            ap.error(f'unknown method {m}')
+    args.methods = list(METHODS)
 
     cfg = json.loads(args.config.read_text()) if args.config.is_file() else {}
     if not cfg:
@@ -466,10 +399,7 @@ def main(argv=None):
     except PermissionError:  # read-only install, as in the tools image: write next to where it was run
         out = Path.cwd() / 'evaluation_results' / out.name
         out.mkdir(parents=True, exist_ok=True)
-    it = Importtt(find_importtt(args.importtt), ec_python() if any(METHODS[m][3] for m in args.methods) else None)
-    ec_py = it.env.get('QKD_EC_PYTHON')
-    if not ec_py and any(METHODS[m][3] for m in args.methods):
-        log('5G NR LDPC unavailable (pip install -r ec/requirements.txt, or set QKD_EC_PYTHON): it is skipped')
+    it = Importtt(find_importtt(args.importtt))
     log(f'{len(pairs)} pair(s), output in {out}')
 
     results = []
@@ -477,7 +407,7 @@ def main(argv=None):
     try:
         for pair in pairs:
             try:
-                res = evaluate_pair(pair, out, staging, it, ec_py, cfg, args)
+                res = evaluate_pair(pair, out, staging, it, cfg, args)
             except Exception as e:  # one bad recording must not stop the others
                 res = {'name': public_name(pair[0], site_names(cfg)), 'link': '?', 'a': {}, 'b': {},
                        'notes': [f'evaluation failed: {type(e).__name__}: {e}']}
@@ -485,7 +415,7 @@ def main(argv=None):
             results.append(res)
             if 'start' in res:
                 write_pair_report(res, out / res['name'])
-        pools = {} if args.no_pool else pooled(results, it, ec_py)
+        pools = {} if args.no_pool else pooled(results, it)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     for r in results:

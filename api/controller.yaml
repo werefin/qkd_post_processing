@@ -96,7 +96,8 @@ components:
       type: object
       properties:
         segment_s: { type: number, minimum: 1, maximum: 600 }
-        block_s: { type: number, minimum: 30, maximum: 86400, description: a whole number of segments }
+        block_s: { type: number, minimum: 30, maximum: 86400, description: 'a whole number of segments: the longest block with block_auto, else every block' }
+        block_auto: { type: boolean, description: "each link's blocks planned from its last ones, up to block_s" }
         expected_qber: { type: number, exclusiveMinimum: 0, exclusiveMaximum: 0.5 }
         keep_blocks: { type: integer, minimum: 2, maximum: 100 }
     Node:
@@ -122,6 +123,7 @@ components:
         announce_to: { type: array, items: { type: string } }
         segment_s: { type: number }
         block_s: { type: number }
+        block_auto: { type: boolean }
         expected_qber: { type: number }
         keep_blocks: { type: integer }
     NodeStatus:

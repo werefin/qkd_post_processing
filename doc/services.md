@@ -22,7 +22,7 @@ flowchart LR
 
 ### Controller
 
-`cmd/controller`, one instance for the network, run from the `kms` image with `--entrypoint controller` (`deploy/controller.yml`). It holds the network as the operator wants it and nothing else: the nodes (each with the site its TimeTagger has in that node's acquisition config, and whether it takes part), the links (the two nodes, which one announces, whether it runs) and the settings every node shares (segment and block length, expected QBER, blocks kept on disk). That desired state is the only thing on disk (`network.json`, written atomically); what the nodes report lives in memory.
+`cmd/controller`, one instance for the network, run from the `kms` image with `--entrypoint controller` (`deploy/controller.yml`). It holds the network as the operator wants it and nothing else: the nodes (each with the site its TimeTagger has in that node's acquisition config, and whether it takes part), the links (the two nodes, which one announces, whether it runs) and the settings every node shares (segment length, longest block and whether blocks are planned per link, expected QBER, blocks kept on disk). That desired state is the only thing on disk (`network.json`, written atomically); what the nodes report lives in memory.
 
 **Southbound**: every node's agent sends a heartbeat every 10 s (`POST /v1/agents/{id}/heartbeat`) with its status: which services answer, whether the recorder runs, its alerts, the last block of every link and both halves of every pool. The answer is the config that node must apply: whether continuous QKD runs, its site, the neighbors it announces to and the shared settings. A node runs continuous QKD while it is enabled and has at least one active link to an enabled neighbor, and announces on the links where it is the announcer.
 
@@ -45,7 +45,7 @@ flowchart LR
 
 ### Acquisition
 
-`services/acquisition`, port 9101: everything that drives the TimeTagger, which serves one mode at a time (`tagger.py` holds that lock): the acquisition config, uploads and stored recordings, recordings and replays through the live tracker, lab continuous QKD, the coincidence log, and the two-party recorder (`/v1/recorder`), which records this node's TimeTagger without end in UTC-aligned segments, reports the singles of every read and every segment, and drops segments no block will need.
+`services/acquisition`, port 9101: everything that drives the TimeTagger, which serves one mode at a time (`tagger.py` holds that lock): the acquisition config, uploads and stored recordings, recordings and replays through the live tracker, the coincidence log, and the two-party recorder (`/v1/recorder`), which records this node's TimeTagger without end in UTC-aligned segments, reports the singles of every read and every segment, and drops segments no block will need; from the agent's start to its stop the TimeTagger belongs to continuous QKD, so no other mode takes it, even while the recorder restarts.
 
 ### Processing
 

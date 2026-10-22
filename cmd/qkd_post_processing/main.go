@@ -1,5 +1,5 @@
-// Command qkd_post_processing runs the BBM92 post-processing chain end to end
-// over simulated click streams, or embed qkd.Run as a library call instead
+// Command qkd_post_processing runs the BBM92 post-processing chain end to end over simulated click streams:
+// sifting, optimized Cascade, verification and finite-key privacy amplification
 package main
 
 import (
@@ -10,63 +10,32 @@ import (
 	"math/rand"
 	"os"
 	"runtime"
-	"strconv"
-	"strings"
 	"time"
 
 	"qkd_post_processing/kms"
-	"qkd_post_processing/pyec"
 	"qkd_post_processing/qkd"
 )
 
 // jsonReport is -json's machine-readable stand-in for the human-readable
 // report, one object printed to stdout, for driving e.g. a dashboard
 type jsonReport struct {
-	Method            string         `json:"method"` // discard, winnow, ldpc, or polar
-	RawAttempts       int            `json:"raw_attempts"`
-	ErrRate           float64        `json:"err_rate"`
-	MatrixLabel       string         `json:"matrix_label,omitempty"`
-	SearchFitness     float64        `json:"search_fitness,omitempty"`
-	SiftedBits        int            `json:"sifted_bits"`
-	BlocksTotal       int            `json:"blocks_total,omitempty"`
-	BlocksKept        int            `json:"blocks_kept,omitempty"`
-	BlocksDropped     int            `json:"blocks_dropped,omitempty"`
-	BitsLeakedParity  int            `json:"bits_leaked_parity,omitempty"`
-	WinnowCorrections int            `json:"winnow_corrections,omitempty"`
-	WinnowLeakedBits  int            `json:"winnow_leaked_bits,omitempty"`
-	CascadeParities   int            `json:"cascade_parities,omitempty"`
-	LDPCBlocks        int            `json:"ldpc_blocks,omitempty"`
-	LDPCConverged     int            `json:"ldpc_converged,omitempty"`
-	LDPCLeakedBits    int            `json:"ldpc_leaked_bits,omitempty"`
-	PolarBlocks       int            `json:"polar_blocks,omitempty"`
-	PolarCorrected    int            `json:"polar_bits_corrected,omitempty"`
-	PolarLeakedBits   int            `json:"polar_leaked_bits,omitempty"`
-	LDPC5GRows        int            `json:"ldpc5g_rows,omitempty"`
-	LDPC5GFrames      int            `json:"ldpc5g_frames,omitempty"`
-	LDPC5GAttempts    int            `json:"ldpc5g_attempts,omitempty"`
-	LDPC5GFailed      int            `json:"ldpc5g_failed,omitempty"`
-	LDPC5GCorrected   int            `json:"ldpc5g_bits_corrected,omitempty"`
-	LDPC5GLeakedBits  int            `json:"ldpc5g_leaked_bits,omitempty"`
-	TimingFlatBound   float64        `json:"timing_flat_bound,omitempty"`
-	TimingSoftBound   float64        `json:"timing_soft_bound,omitempty"`
-	FiniteKey         *finiteKeyJSON `json:"finite_key,omitempty"` // nil in asymptotic mode and for block discard
-	ChunksTotal       int            `json:"chunks_total"`
-	ChunksKept        int            `json:"chunks_kept"`
-	ChunksDropped     int            `json:"chunks_dropped"`
-	BitsLeakedCRC     int            `json:"bits_leaked_crc"`
-	QBER              float64        `json:"qber"`
-	LeakedBitsTotal   int            `json:"leaked_bits_total"`
-	FinalKeyBits      int            `json:"final_key_bits"`
-	CompressionRate   float64        `json:"compression_rate"`
-	KeysSaved         int            `json:"keys_saved"`
-	ElapsedMS         int64          `json:"elapsed_ms"`
-	Error             string         `json:"error,omitempty"`
-}
-
-// generatorMatrices maps -matrix flag values to the fixed step 2
-// generator matrices
-var generatorMatrices = map[string]qkd.GeneratorMatrix{
-	"bch": qkd.GeneratorMatrixBCHt2,
+	Method          string         `json:"method"` // cascade
+	RawAttempts     int            `json:"raw_attempts"`
+	ErrRate         float64        `json:"err_rate"`
+	SiftedBits      int            `json:"sifted_bits"`
+	CascadeParities int            `json:"cascade_parities,omitempty"`
+	FiniteKey       *finiteKeyJSON `json:"finite_key,omitempty"` // nil in asymptotic mode
+	ChunksTotal     int            `json:"chunks_total"`
+	ChunksKept      int            `json:"chunks_kept"`
+	ChunksDropped   int            `json:"chunks_dropped"`
+	BitsLeakedCRC   int            `json:"bits_leaked_crc"`
+	QBER            float64        `json:"qber"`
+	LeakedBitsTotal int            `json:"leaked_bits_total"`
+	FinalKeyBits    int            `json:"final_key_bits"`
+	CompressionRate float64        `json:"compression_rate"`
+	KeysSaved       int            `json:"keys_saved"`
+	ElapsedMS       int64          `json:"elapsed_ms"`
+	Error           string         `json:"error,omitempty"`
 }
 
 // ANSI color codes for status tags, arnika-style: raw escapes inlined at the
@@ -107,29 +76,6 @@ func fail(jsonOut bool, format string, args ...any) {
 	os.Exit(2)
 }
 
-// parseIntList parses a comma-separated list of positive ints, e.g. "8,16,32"
-func parseIntList(s string) ([]int, error) {
-	parts := strings.Split(s, ",")
-	out := make([]int, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		n, err := strconv.Atoi(p)
-		if err != nil || n <= 0 {
-			return nil, fmt.Errorf("invalid block size %q, expected a comma-separated list of positive integers", p)
-		}
-		out = append(out, n)
-	}
-	return out, nil
-}
-
-// ldpcBlockLabel: 0 means one block covering the whole remaining key
-func ldpcBlockLabel(blockLength int) string {
-	if blockLength <= 0 {
-		return "auto"
-	}
-	return strconv.Itoa(blockLength)
-}
-
 // simulate generates correlated Alice/Bob click streams with configurable
 // error, basis-mismatch, jitter and multi-photon rates --> swap for real logs
 func simulate(n int, errRate, multiPhotonRate float64, jitterPS int64, seed int64) ([]qkd.DetectionEvent, []qkd.DetectionEvent) {
@@ -162,7 +108,7 @@ func simulate(n int, errRate, multiPhotonRate float64, jitterPS int64, seed int6
 	return alice, bob
 }
 
-// saveToKeystore mirrors the three runXPipeline functions' keystore step:
+// saveToKeystore is the pipeline's keystore step:
 // prints the outcome (unless jsonOut) and returns how many keys were saved
 func saveToKeystore(keystoreDir string, finalKeyBytes []byte, jsonOut bool) int {
 	if keystoreDir == "" {
@@ -198,97 +144,20 @@ func main() {
 	mpRate := flag.Float64("multiphoton", 0.01, "probability a given click is flagged multi-photon")
 	windowPS := flag.Int64("window", 500, "coincidence window in picoseconds")
 	jitterPS := flag.Int64("jitter", 300, "simulated detector timing jitter in picoseconds")
-	matrixName := flag.String("matrix", "bch", "step 2 generator matrix: bch")
-	chunkSize := flag.Int("chunk", 2048, "step 3 CRC chunk size (bits); with -winnow or -cascade too, the CRC pass after correction")
+	chunkSize := flag.Int("chunk", 2048, "CRC chunk size (bits) of the verification after Cascade")
 	seed := flag.Int64("seed", 1, "PRNG seed for the simulation")
 	keystoreDir := flag.String("keystore", "", "directory to save the final key into (ETSI 014 key_ID/key JSON); empty = don't save")
-	searchMatrix := flag.Bool("search-matrix", false, "legacy, not used in production: design a step 2 matrix by searching on independently-simulated proxy data, then apply it here, instead of -matrix (see matrixsearch.go)")
-	searchM := flag.Int("search-m", 16, "block size for the searched matrix")
-	searchP := flag.Int("search-p", 4, "parity bits for the searched matrix")
-	searchIterations := flag.Int("search-iterations", 3000, "hill-climbing steps for the search")
-	searchSeed := flag.Int64("search-seed", 99, "PRNG seed for the search itself and its proxy dataset")
-	searchOfflineErr := flag.Float64("search-offline-err", 0.03, "target error rate for the simulated proxy data the search designs against; set this to match -err in real practice, never search directly on the actual dataset being reconciled")
-	searchOfflineN := flag.Int("search-offline-n", 100000, "raw attempts in the simulated proxy dataset used to design the matrix")
-	cascade := flag.Bool("cascade", false, "correct errors with optimized Cascade (cascade.go), the least disclosure, f about 1.03-1.07; the default when no other method is given")
-	discard := flag.Bool("discard", false, "legacy, not used in production: block discard, with -matrix or -search-matrix")
-	winnow := flag.Bool("winnow", false, "legacy, not used in production: correct errors with Winnow instead of discarding blocks (see winnow.go/pipeline_winnow.go)")
-	winnowBlocks := flag.String("winnow-blocks", "", "comma-separated block size per Winnow pass; empty plans them from the sample QBER: a power of two holding about 0.45 errors, doubling each pass (qkd.WinnowSchedule)")
-	winnowSample := flag.Float64("winnow-sample", 0.05, "fraction of sifted bits sacrificed to measure QBER directly before Winnow correction")
-	ldpc := flag.Bool("ldpc", false, "legacy, not used in production: correct errors with LDPC belief propagation instead of discarding blocks (see ldpc.go/pipeline_ldpc.go)")
-	ldpcBlock := flag.Int("ldpc-block", 0, "LDPC codeword length in bits, 0 = one block covering the whole remaining sifted key")
-	ldpcWc := flag.Int("ldpc-wc", 3, "LDPC column weight (variable node degree)")
-	ldpcWr := flag.Int("ldpc-wr", 10, "LDPC row weight (check node degree); tune rate=1-wc/wr comfortably below 1-h2(QBER), not just barely under it -- a regular code's real decoding threshold runs below the Shannon bound, see ldpc_test.go")
-	ldpcIterations := flag.Int("ldpc-iterations", 0, "belief propagation iteration cap per block, 0 = default 50")
-	ldpcSample := flag.Float64("ldpc-sample", 0.05, "fraction of sifted bits sacrificed to measure QBER directly before LDPC correction")
-	ldpc5g := flag.Bool("ldpc5g", false, "legacy, not used in production: correct errors with 5G NR LDPC (py3gpp matrices, ldpc library belief propagation, blind reconciliation), the most efficient method; needs ec/requirements.txt")
-	polar := flag.Bool("polar", false, "legacy, not used in production: correct errors with polar codes (successive cancellation list decoding) instead of discarding blocks (see polar.go/pipeline_polar.go)")
-	polarN := flag.Int("polar-n", 0, "polar codeword length in bits, must be a power of two; 0 = largest power of two covering the whole remaining sifted key")
-	polarMargin := flag.Float64("polar-margin", 0.02, "starting rate margin below the per-block capacity; on a failed block hash the margin rises by 0.02 and only the extra frozen values are revealed (rate-adaptive)")
-	polarList := flag.Int("polar-list", 8, "SCL decoder list size (path count L); 1 = plain successive cancellation, larger L trades decode time for a lower block failure rate")
-	polarSample := flag.Float64("polar-sample", 0.05, "fraction of sifted bits sacrificed to measure QBER directly before polar correction")
-	softBins := flag.Int("soft-bins", 0, "with -ldpc or -polar: timing-aware soft reconciliation over this many public time-offset bins; simulated errors here do not depend on timing, so expect no gain; 0 = flat")
-	asymptotic := flag.Bool("asymptotic", false, "with -winnow/-ldpc/-polar: size the key by the asymptotic n(1-h2(QBER)) instead of the default finite-key bound (doc/security.md)")
+	flag.Bool("cascade", true, "optimized Cascade (cascade.go), the only error correction; accepted for older callers")
+	sampleFraction := flag.Float64("sample", 0.05, "fraction of sifted bits sacrificed for the QBER when -sample-auto is off")
+	asymptotic := flag.Bool("asymptotic", false, "size the key by the asymptotic n(1-h2(QBER)) instead of the default finite-key bound (doc/security.md)")
 	epsSec := flag.Float64("eps-sec", 1e-10, "finite-key secrecy failure probability per block")
-	sampleAuto := flag.Bool("sample-auto", true, "finite-key mode: size the QBER sample to maximize the finite key from the sifted count and -err as the declared QBER prior; overrides -ldpc-sample/-polar-sample/-winnow-sample")
+	sampleAuto := flag.Bool("sample-auto", true, "finite-key mode: plan from -err as the declared QBER prior")
 	epsCor := flag.Float64("eps-cor", 1e-15, "finite-key correctness failure probability per block, sets the universal-hash tag length")
 	jsonOut := flag.Bool("json", false, "print one JSON metrics object to stdout instead of the human-readable report")
 	flag.Parse()
 	keyOpts = keyOptions{asymptotic: *asymptotic, finite: qkd.FiniteKeyConfig{EpsSec: *epsSec, EpsCor: *epsCor}}
 	if *sampleAuto && !*asymptotic {
 		keyOpts.expectedQBER = max(*errRate, 0.01)
-	}
-
-	exclusive := 0
-	for _, on := range []bool{*winnow, *ldpc, *polar, *searchMatrix, *ldpc5g, *cascade, *discard} {
-		if on {
-			exclusive++
-		}
-	}
-	if exclusive > 1 {
-		fail(*jsonOut, "-cascade, -discard, -winnow, -ldpc, -polar, -ldpc5g and -search-matrix are mutually exclusive")
-	}
-	// optimized Cascade unless a legacy method is asked for; the matrix search is a variant of block discard
-	if !(*winnow || *ldpc || *polar || *searchMatrix || *ldpc5g || *discard) {
-		*cascade = true
-	}
-
-	if *softBins < 0 || (*softBins > 0 && !*ldpc && !*polar && !*ldpc5g) {
-		fail(*jsonOut, "-soft-bins must be >= 0 and only applies to -ldpc, -polar or -ldpc5g")
-	}
-
-	method := "discard"
-	switch {
-	case *cascade:
-		method = "cascade"
-	case *winnow:
-		method = "winnow"
-	case *ldpc:
-		method = "ldpc"
-	case *polar:
-		method = "polar"
-	case *ldpc5g:
-		method = "ldpc5g"
-	}
-
-	// matrix resolution only matters for the discard/search-matrix path;
-	// Winnow, LDPC, and polar don't use a step 2 generator matrix at all
-	var g qkd.GeneratorMatrix
-	matrixLabel := *matrixName
-	searchFitness := 0.0
-	if method == "discard" {
-		if *searchMatrix {
-			// Proxy dataset is independent of the run below (own seed, own simulate() call), so
-			// the matrix choice never depends on the actual bits it's later applied to (matrixsearch.go)
-			proxyAlice, proxyBob := simulate(*searchOfflineN, *searchOfflineErr, *mpRate, *jitterPS, *searchSeed)
-			g, searchFitness = qkd.SearchGeneratorMatrix(*searchM, *searchP, proxyAlice, proxyBob, *windowPS, *chunkSize, *searchIterations, *searchSeed)
-			matrixLabel = fmt.Sprintf("search(%d,%d)", *searchM, *searchP)
-		} else {
-			var ok bool
-			g, ok = generatorMatrices[*matrixName]
-			if !ok {
-				fail(*jsonOut, "unknown -matrix %q, expected bch", *matrixName)
-			}
-		}
 	}
 
 	if !*jsonOut {
@@ -298,62 +167,17 @@ func main() {
 		field("Multi-photon rate", "%.4f", *mpRate)
 		field("Coincidence window", "%d ps", *windowPS)
 		field("Detector jitter", "%d ps", *jitterPS)
-		switch method {
-		case "discard":
-			field("Generator matrix (step 2)", "%s (m=%d, p=%d)", matrixLabel, g.BlockSize(), g.ParityBits())
-			if *searchMatrix {
-				field("Search", "designed offline at err=%.3f, n=%d, fitness=%.5f", *searchOfflineErr, *searchOfflineN, searchFitness)
-			}
-		case "cascade":
-			field("Method (step 2/3)", "optimized Cascade (sample=%.2f)", *winnowSample)
-		case "winnow":
-			field("Method (step 2/3)", "Winnow correction (blocks=%s, sample=%.2f)", *winnowBlocks, *winnowSample)
-		case "ldpc":
-			field("Method (step 2/3)", "LDPC correction (block=%s, wc=%d, wr=%d, sample=%.2f)",
-				ldpcBlockLabel(*ldpcBlock), *ldpcWc, *ldpcWr, *ldpcSample)
-		case "polar":
-			field("Method (step 2/3)", "polar correction (n=%s, margin=%.2f, list=%d, sample=%.2f)",
-				ldpcBlockLabel(*polarN), *polarMargin, *polarList, *polarSample)
-		case "ldpc5g":
-			field("Method (step 2/3)", "5G NR LDPC, blind (sample=%.2f)", *polarSample)
-		}
-		field("Chunk size (step 3)", "%d bits", *chunkSize)
+		field("Method", "optimized Cascade")
+		field("Chunk size", "%d bits", *chunkSize)
 		field("PRNG seed", "%d", *seed)
 		field("GOMAXPROCS", "%d", runtime.GOMAXPROCS(0))
 	}
 
 	aliceEv, bobEv := simulate(*n, *errRate, *mpRate, *jitterPS, *seed)
-
-	var report jsonReport
-	switch method {
-	case "cascade":
-		report = runCascadePipeline(aliceEv, bobEv, *windowPS, *winnowSample, *chunkSize, *keystoreDir, *jsonOut)
-	case "winnow":
-		var blockSizes []int
-		var err error
-		if *winnowBlocks != "" {
-			blockSizes, err = parseIntList(*winnowBlocks)
-		}
-		if err != nil {
-			fail(*jsonOut, "-winnow-blocks: %v", err)
-		}
-		report = runWinnowPipeline(aliceEv, bobEv, *windowPS, blockSizes, *winnowSample, *chunkSize, *keystoreDir, *jsonOut)
-	case "ldpc":
-		report = runLDPCPipeline(aliceEv, bobEv, *windowPS, *ldpcBlock, *ldpcWc, *ldpcWr, *ldpcIterations, *ldpcSample, *chunkSize, *softBins, *keystoreDir, *jsonOut)
-	case "polar":
-		report = runPolarPipeline(aliceEv, bobEv, *windowPS, *polarN, *polarMargin, *polarList, *polarSample, *chunkSize, *softBins, *keystoreDir, *jsonOut)
-	case "ldpc5g":
-		report = runLDPC5GPipeline(aliceEv, bobEv, *windowPS, *polarSample, *chunkSize, *softBins, *keystoreDir, *jsonOut)
-	default:
-		report = runDiscardPipeline(aliceEv, bobEv, *windowPS, g, matrixLabel, *chunkSize, *keystoreDir, *jsonOut)
-		report.SearchFitness = searchFitness
-	}
-	report.Method = method
+	report := runCascadePipeline(aliceEv, bobEv, *windowPS, *sampleFraction, *chunkSize, *keystoreDir, *jsonOut)
+	report.Method = "cascade"
 	report.RawAttempts = *n
 	report.ErrRate = *errRate
-	if method == "discard" {
-		report.MatrixLabel = matrixLabel
-	}
 
 	if *jsonOut {
 		emitJSON(report)
@@ -363,142 +187,7 @@ func main() {
 	field("Wall time", "%dms", report.ElapsedMS)
 }
 
-// runDiscardPipeline runs qkd.Run (step 2/3: block discard) and prints the
-// original report shape this command always used
-func runDiscardPipeline(aliceEv, bobEv []qkd.DetectionEvent, windowPS int64, g qkd.GeneratorMatrix, matrixLabel string, chunkSize int, keystoreDir string, jsonOut bool) jsonReport {
-	cfg := qkd.Config{
-		CoincidenceWindowPS: windowPS,
-		GeneratorMatrix:     g,
-		ChunkSize:           chunkSize,
-	}
-	if keystoreDir != "" {
-		cfg.KeyAlignBits = kms.ETSI014KeySizeBits
-	}
-
-	t0 := time.Now()
-	res, err := qkd.Run(aliceEv, bobEv, cfg)
-	elapsed := time.Since(t0)
-	if err != nil {
-		fail(jsonOut, "pipeline error: %v", err)
-	}
-
-	bd := res.BlockDetect
-	cv := res.CRCVerify
-	rate := 0.0
-	if len(cv.SurvivingAlice) > 0 {
-		rate = float64(len(res.FinalKeyBits)) / float64(len(cv.SurvivingAlice))
-	}
-
-	if !jsonOut {
-		section("(1): sifting")
-		field("Sifted bits", "%d", res.SiftedBits)
-
-		blockDiscardFrac := 0.0
-		if res.SiftedBits > 0 {
-			blockDiscardFrac = float64(len(bd.DiscardedAlice)) / float64(res.SiftedBits)
-		}
-		blockTag := tag(colorOK, "OK")
-		if blockDiscardFrac > 0.5 {
-			blockTag = tag(colorWarn, "WARN")
-		}
-		section(fmt.Sprintf("(2): error detection (matrix=%s, block=%d bits)", matrixLabel, g.BlockSize()))
-		field("Blocks total", "%d", bd.BlocksTotal)
-		field("Blocks kept", "%d", bd.BlocksKept)
-		field("Blocks dropped", "%d (%.1f%%) "+blockTag, bd.BlocksDropped, blockDiscardFrac*100)
-		field("Bits surviving", "%d", len(bd.SurvivingAlice))
-		field("Bits leaked (parity)", "%d", bd.LeakedBits)
-
-		field("Key length bound", "asymptotic n(1-h2(QBER)) - leaked; block discard has no random sample to bound the phase error")
-		printCRCAndKey(cv, chunkSize, res.QBER.QBER, res.LeakedBits, res.FinalKeyBits, res.FinalKeyBytes, rate)
-	}
-	keysSaved := saveToKeystore(keystoreDir, res.FinalKeyBytes, jsonOut)
-
-	return jsonReport{
-		SiftedBits:       res.SiftedBits,
-		BlocksTotal:      bd.BlocksTotal,
-		BlocksKept:       bd.BlocksKept,
-		BlocksDropped:    bd.BlocksDropped,
-		BitsLeakedParity: bd.LeakedBits,
-		ChunksTotal:      cv.ChunksTotal,
-		ChunksKept:       cv.ChunksKept,
-		ChunksDropped:    cv.ChunksDropped,
-		BitsLeakedCRC:    cv.LeakedBits,
-		QBER:             res.QBER.QBER,
-		LeakedBitsTotal:  res.LeakedBits,
-		FinalKeyBits:     len(res.FinalKeyBits),
-		CompressionRate:  rate,
-		KeysSaved:        keysSaved,
-		ElapsedMS:        elapsed.Milliseconds(),
-	}
-}
-
-// runWinnowPipeline runs qkd.RunWinnow (step 2/3: Winnow correction) and
-// prints an analogous report, same shape as cmd/importtt's
-func runWinnowPipeline(aliceEv, bobEv []qkd.DetectionEvent, windowPS int64, blockSizes []int, sampleFraction float64, chunkSize int, keystoreDir string, jsonOut bool) jsonReport {
-	cfg := qkd.WinnowRunConfig{
-		CoincidenceWindowPS: windowPS,
-		SampleFraction:      sampleFraction,
-		WinnowBlockSizes:    blockSizes,
-		Seed:                1,
-		ChunkSize:           chunkSize,
-		Asymptotic:          keyOpts.asymptotic,
-		FiniteKey:           keyOpts.finite,
-		ExpectedQBER:        keyOpts.expectedQBER,
-	}
-	if keystoreDir != "" {
-		cfg.KeyAlignBits = kms.ETSI014KeySizeBits
-	}
-
-	t0 := time.Now()
-	res, err := qkd.RunWinnow(aliceEv, bobEv, cfg)
-	elapsed := time.Since(t0)
-	if err != nil {
-		fail(jsonOut, "pipeline error: %v", err)
-	}
-
-	cv := res.CRCVerify
-	rate := 0.0
-	if len(cv.SurvivingAlice) > 0 {
-		rate = float64(len(res.FinalKeyBits)) / float64(len(cv.SurvivingAlice))
-	}
-
-	if !jsonOut {
-		section("(1): sifting")
-		field("Sifted bits", "%d", res.SiftedBits)
-
-		section("(4 before 2/3): QBER from a sacrificed public sample")
-		field("Sample bits", "%d (%.1f%% of sifted)", res.QBER.SampleBits, 100*float64(res.QBER.SampleBits)/float64(max(1, res.SiftedBits)))
-		field("Error bits in sample", "%d", res.QBER.ErrorBits)
-		field("QBER estimate", "%.4f", res.QBER.QBER)
-
-		section(fmt.Sprintf("(2): Winnow correction (blocks=%v)", blockSizes))
-		field("Bits corrected toward Alice", "%d", res.WinnowCorrections)
-		field("Bits leaked (syndromes)", "%d", res.WinnowLeakedBits)
-
-		printFiniteKey(res.FiniteKey)
-		printCRCAndKey(cv, chunkSize, res.QBER.QBER, res.LeakedBits, res.FinalKeyBits, res.FinalKeyBytes, rate)
-	}
-	keysSaved := saveToKeystore(keystoreDir, res.FinalKeyBytes, jsonOut)
-
-	return jsonReport{
-		SiftedBits:        res.SiftedBits,
-		WinnowCorrections: res.WinnowCorrections,
-		WinnowLeakedBits:  res.WinnowLeakedBits,
-		FiniteKey:         toFiniteKeyJSON(res.FiniteKey),
-		ChunksTotal:       cv.ChunksTotal,
-		ChunksKept:        cv.ChunksKept,
-		ChunksDropped:     cv.ChunksDropped,
-		BitsLeakedCRC:     cv.LeakedBits,
-		QBER:              res.QBER.QBER,
-		LeakedBitsTotal:   res.LeakedBits,
-		FinalKeyBits:      len(res.FinalKeyBits),
-		CompressionRate:   rate,
-		KeysSaved:         keysSaved,
-		ElapsedMS:         elapsed.Milliseconds(),
-	}
-}
-
-// runCascadePipeline runs qkd.RunCascade and prints the same report as the other methods
+// runCascadePipeline runs qkd.RunCascade and prints its report stage by stage
 func runCascadePipeline(aliceEv, bobEv []qkd.DetectionEvent, windowPS int64, sampleFraction float64, chunkSize int, keystoreDir string, jsonOut bool) jsonReport {
 	cfg := qkd.CascadeRunConfig{CoincidenceWindowPS: windowPS, SampleFraction: sampleFraction, Seed: 1, ChunkSize: chunkSize,
 		Asymptotic: keyOpts.asymptotic, FiniteKey: keyOpts.finite, ExpectedQBER: keyOpts.expectedQBER}
@@ -538,159 +227,6 @@ func runCascadePipeline(aliceEv, bobEv []qkd.DetectionEvent, windowPS int64, sam
 		ChunksTotal: cv.ChunksTotal, ChunksKept: cv.ChunksKept, ChunksDropped: cv.ChunksDropped, BitsLeakedCRC: cv.LeakedBits,
 		QBER: res.QBER.QBER, LeakedBitsTotal: res.LeakedBits, FinalKeyBits: len(res.FinalKeyBits), CompressionRate: rate,
 		KeysSaved: keysSaved, ElapsedMS: elapsed.Milliseconds(),
-	}
-}
-
-// runLDPCPipeline runs qkd.RunLDPC (step 2/3: LDPC belief propagation) and
-// prints an analogous report, same shape as cmd/importtt's
-func runLDPCPipeline(aliceEv, bobEv []qkd.DetectionEvent, windowPS int64, blockLength, wc, wr, maxIterations int, sampleFraction float64, chunkSize, timingBins int, keystoreDir string, jsonOut bool) jsonReport {
-	cfg := qkd.LDPCRunConfig{
-		CoincidenceWindowPS: windowPS,
-		SampleFraction:      sampleFraction,
-		BlockLength:         blockLength,
-		ColWeight:           wc,
-		RowWeight:           wr,
-		MaxIterations:       maxIterations,
-		Seed:                1,
-		ChunkSize:           chunkSize,
-		TimingBins:          timingBins,
-		Asymptotic:          keyOpts.asymptotic,
-		FiniteKey:           keyOpts.finite,
-		ExpectedQBER:        keyOpts.expectedQBER,
-	}
-	if keystoreDir != "" {
-		cfg.KeyAlignBits = kms.ETSI014KeySizeBits
-	}
-
-	t0 := time.Now()
-	res, err := qkd.RunLDPC(aliceEv, bobEv, cfg)
-	elapsed := time.Since(t0)
-	if err != nil {
-		fail(jsonOut, "pipeline error: %v", err)
-	}
-
-	cv := res.CRCVerify
-	rate := 0.0
-	if len(cv.SurvivingAlice) > 0 {
-		rate = float64(len(res.FinalKeyBits)) / float64(len(cv.SurvivingAlice))
-	}
-
-	if !jsonOut {
-		section("(1): sifting")
-		field("Sifted bits", "%d", res.SiftedBits)
-
-		section("(4 before 2/3): QBER from a sacrificed public sample")
-		field("Sample bits", "%d (%.1f%% of sifted)", res.QBER.SampleBits, 100*float64(res.QBER.SampleBits)/float64(max(1, res.SiftedBits)))
-		field("Error bits in sample", "%d", res.QBER.ErrorBits)
-		field("QBER estimate", "%.4f", res.QBER.QBER)
-
-		convergeTag := tag(colorOK, "OK")
-		if res.LDPCConverged < res.LDPCBlocks {
-			convergeTag = tag(colorWarn, "WARN")
-		}
-		section(fmt.Sprintf("(2): LDPC correction (wc=%d, wr=%d, rate=%.3f)", wc, wr, 1-float64(wc)/float64(wr)))
-		field("Blocks total", "%d", res.LDPCBlocks)
-		field("Blocks converged", "%d / %d "+convergeTag, res.LDPCConverged, res.LDPCBlocks)
-		field("Bits leaked (syndromes)", "%d", res.LDPCLeakedBits)
-		printTimingReport(res.Timing)
-
-		printFiniteKey(res.FiniteKey)
-		printCRCAndKey(cv, chunkSize, res.QBER.QBER, res.LeakedBits, res.FinalKeyBits, res.FinalKeyBytes, rate)
-	}
-	keysSaved := saveToKeystore(keystoreDir, res.FinalKeyBytes, jsonOut)
-
-	return jsonReport{
-		SiftedBits:      res.SiftedBits,
-		LDPCBlocks:      res.LDPCBlocks,
-		LDPCConverged:   res.LDPCConverged,
-		LDPCLeakedBits:  res.LDPCLeakedBits,
-		TimingFlatBound: timingFlat(res.Timing),
-		TimingSoftBound: timingSoft(res.Timing),
-		FiniteKey:       toFiniteKeyJSON(res.FiniteKey),
-		ChunksTotal:     cv.ChunksTotal,
-		ChunksKept:      cv.ChunksKept,
-		ChunksDropped:   cv.ChunksDropped,
-		BitsLeakedCRC:   cv.LeakedBits,
-		QBER:            res.QBER.QBER,
-		LeakedBitsTotal: res.LeakedBits,
-		FinalKeyBits:    len(res.FinalKeyBits),
-		CompressionRate: rate,
-		KeysSaved:       keysSaved,
-		ElapsedMS:       elapsed.Milliseconds(),
-	}
-}
-
-// runPolarPipeline runs qkd.RunPolar (step 2/3: polar SC/SCL decoding) and
-// prints an analogous report, same shape as cmd/importtt's
-func runPolarPipeline(aliceEv, bobEv []qkd.DetectionEvent, windowPS int64, blockLength int, margin float64, listSize int, sampleFraction float64, chunkSize, timingBins int, keystoreDir string, jsonOut bool) jsonReport {
-	cfg := qkd.PolarRunConfig{
-		CoincidenceWindowPS: windowPS,
-		SampleFraction:      sampleFraction,
-		BlockLength:         blockLength,
-		RateMargin:          margin,
-		ListSize:            listSize,
-		Seed:                1,
-		ChunkSize:           chunkSize,
-		TimingBins:          timingBins,
-		Asymptotic:          keyOpts.asymptotic,
-		FiniteKey:           keyOpts.finite,
-		ExpectedQBER:        keyOpts.expectedQBER,
-	}
-	if keystoreDir != "" {
-		cfg.KeyAlignBits = kms.ETSI014KeySizeBits
-	}
-
-	t0 := time.Now()
-	res, err := qkd.RunPolar(aliceEv, bobEv, cfg)
-	elapsed := time.Since(t0)
-	if err != nil {
-		fail(jsonOut, "pipeline error: %v", err)
-	}
-
-	cv := res.CRCVerify
-	rate := 0.0
-	if len(cv.SurvivingAlice) > 0 {
-		rate = float64(len(res.FinalKeyBits)) / float64(len(cv.SurvivingAlice))
-	}
-
-	if !jsonOut {
-		section("(1): sifting")
-		field("Sifted bits", "%d", res.SiftedBits)
-
-		section("(4 before 2/3): QBER from a sacrificed public sample")
-		field("Sample bits", "%d (%.1f%% of sifted)", res.QBER.SampleBits, 100*float64(res.QBER.SampleBits)/float64(max(1, res.SiftedBits)))
-		field("Error bits in sample", "%d", res.QBER.ErrorBits)
-		field("QBER estimate", "%.4f", res.QBER.QBER)
-
-		section(fmt.Sprintf("(2): polar correction (list=%d)", listSize))
-		field("Blocks total", "%d", res.PolarBlocks)
-		field("Bits corrected toward Alice", "%d", res.PolarBitsCorrected)
-		field("Bits leaked (frozen reveals)", "%d", res.PolarLeakedBits)
-		printTimingReport(res.Timing)
-
-		printFiniteKey(res.FiniteKey)
-		printCRCAndKey(cv, chunkSize, res.QBER.QBER, res.LeakedBits, res.FinalKeyBits, res.FinalKeyBytes, rate)
-	}
-	keysSaved := saveToKeystore(keystoreDir, res.FinalKeyBytes, jsonOut)
-
-	return jsonReport{
-		SiftedBits:      res.SiftedBits,
-		PolarBlocks:     res.PolarBlocks,
-		PolarCorrected:  res.PolarBitsCorrected,
-		PolarLeakedBits: res.PolarLeakedBits,
-		TimingFlatBound: timingFlat(res.Timing),
-		TimingSoftBound: timingSoft(res.Timing),
-		FiniteKey:       toFiniteKeyJSON(res.FiniteKey),
-		ChunksTotal:     cv.ChunksTotal,
-		ChunksKept:      cv.ChunksKept,
-		ChunksDropped:   cv.ChunksDropped,
-		BitsLeakedCRC:   cv.LeakedBits,
-		QBER:            res.QBER.QBER,
-		LeakedBitsTotal: res.LeakedBits,
-		FinalKeyBits:    len(res.FinalKeyBits),
-		CompressionRate: rate,
-		KeysSaved:       keysSaved,
-		ElapsedMS:       elapsed.Milliseconds(),
 	}
 }
 
@@ -734,34 +270,6 @@ func printCRCAndKey(cv qkd.CRCVerifyResult, chunkSize int, qber float64, leakedB
 func emitJSON(r jsonReport) {
 	enc := json.NewEncoder(os.Stdout)
 	enc.Encode(r)
-}
-
-// printTimingReport shows the timing model's disclosure bounds when soft reconciliation ran
-func printTimingReport(t *qkd.TimingReport) {
-	if t == nil {
-		return
-	}
-	field("Timing model", "%d bins over +-%d ps (from the QBER sample)", len(t.Model.ErrorRate), t.Model.WindowPS)
-	saving := 0.0
-	if t.FlatBound > 0 {
-		saving = 100 * (t.FlatBound - t.SoftBound) / t.FlatBound
-	}
-	field("Disclosure bound", "flat %.4f, timing-aware %.4f bits/bit (%.1f%% less)", t.FlatBound, t.SoftBound, saving)
-}
-
-// timingFlat and timingSoft read a possibly-nil TimingReport for the -json output
-func timingFlat(t *qkd.TimingReport) float64 {
-	if t == nil {
-		return 0
-	}
-	return t.FlatBound
-}
-
-func timingSoft(t *qkd.TimingReport) float64 {
-	if t == nil {
-		return 0
-	}
-	return t.SoftBound
 }
 
 // keyOptions is step 5's accounting, set once from flags: finite-key unless -asymptotic
@@ -808,52 +316,4 @@ func toFiniteKeyJSON(r *qkd.FiniteKeyReport) *finiteKeyJSON {
 		return nil
 	}
 	return &finiteKeyJSON{PhaseErrorPoint: r.PhiPoint, PhaseErrorBound: r.Phi, TagBits: r.TagBits, Verified: r.Verified, SurvivingBits: r.Bits, ChargedBits: r.LeakedBits}
-}
-
-func runLDPC5GPipeline(aliceEv, bobEv []qkd.DetectionEvent, windowPS int64, sampleFraction float64, chunkSize, timingBins int, keystoreDir string, jsonOut bool) jsonReport {
-	pool, err := pyec.Start(0)
-	if err != nil {
-		fail(jsonOut, "%v", err)
-	}
-	defer pool.Close()
-	cfg := qkd.LDPC5GRunConfig{Backend: pool, CoincidenceWindowPS: windowPS, SampleFraction: sampleFraction, Seed: 1,
-		ChunkSize: chunkSize, TimingBins: timingBins, Asymptotic: keyOpts.asymptotic, FiniteKey: keyOpts.finite, ExpectedQBER: keyOpts.expectedQBER}
-	if keystoreDir != "" {
-		cfg.KeyAlignBits = kms.ETSI014KeySizeBits
-	}
-	t0 := time.Now()
-	res, err := qkd.RunLDPC5G(aliceEv, bobEv, cfg)
-	elapsed := time.Since(t0)
-	if err != nil {
-		fail(jsonOut, "pipeline error: %v", err)
-	}
-	cv := res.CRCVerify
-	rate := 0.0
-	if len(cv.SurvivingAlice) > 0 {
-		rate = float64(len(res.FinalKeyBits)) / float64(len(cv.SurvivingAlice))
-	}
-	if !jsonOut {
-		section("(1): sifting")
-		field("Sifted bits", "%d", res.SiftedBits)
-		section("(4 before 2/3): QBER from a sacrificed public sample")
-		field("Sample bits", "%d", res.QBER.SampleBits)
-		field("QBER estimate", "%.4f", res.QBER.QBER)
-		section("(2): 5G NR LDPC, blind reconciliation")
-		field("Code", "base graph 1, %d rows, %d key bits per frame", res.LDPC.M, res.LDPC.FrameKeyBits)
-		field("Frames", "%d (%d failed), %d attempts", res.LDPC.Frames, res.LDPC.Failed, res.LDPC.Attempts)
-		field("Bits corrected toward Alice", "%d", res.LDPC.BitsCorrected)
-		field("Bits leaked", "%d", res.LDPC.LeakedBits)
-		printTimingReport(res.Timing)
-		printFiniteKey(res.FiniteKey)
-		printCRCAndKey(cv, chunkSize, res.QBER.QBER, res.LeakedBits, res.FinalKeyBits, res.FinalKeyBytes, rate)
-	}
-	keysSaved := saveToKeystore(keystoreDir, res.FinalKeyBytes, jsonOut)
-	return jsonReport{
-		SiftedBits: res.SiftedBits, LDPC5GRows: res.LDPC.M, LDPC5GFrames: res.LDPC.Frames, LDPC5GAttempts: res.LDPC.Attempts,
-		LDPC5GFailed: res.LDPC.Failed, LDPC5GCorrected: res.LDPC.BitsCorrected, LDPC5GLeakedBits: res.LDPC.LeakedBits,
-		TimingFlatBound: timingFlat(res.Timing), TimingSoftBound: timingSoft(res.Timing), FiniteKey: toFiniteKeyJSON(res.FiniteKey),
-		ChunksTotal: cv.ChunksTotal, ChunksKept: cv.ChunksKept, ChunksDropped: cv.ChunksDropped, BitsLeakedCRC: cv.LeakedBits,
-		QBER: res.QBER.QBER, LeakedBitsTotal: res.LeakedBits, FinalKeyBits: len(res.FinalKeyBits), CompressionRate: rate,
-		KeysSaved: keysSaved, ElapsedMS: elapsed.Milliseconds(),
-	}
 }

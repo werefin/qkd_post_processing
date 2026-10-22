@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"qkd_post_processing/pyec"
 	"qkd_post_processing/qkd"
 )
 
@@ -86,7 +85,7 @@ func runRoles(t *testing.T, aliceDirs, bobDirs []string, cfg qkd.TwoPartyConfig,
 func TestTwoPartyRolesOnRealRecording(t *testing.T) {
 	joint := filepath.Join("..", "..", "acquisition", "example", "20260909")
 	aliceDir, bobDir := splitRecording(t, joint)
-	cfg := qkd.TwoPartyConfig{RateMargin: 0.02, ListSize: 8, ChunkSize: 1024, SampleSeed: 11}
+	cfg := qkd.TwoPartyConfig{ChunkSize: 1024, SampleSeed: 11, ExpectedQBER: 0.05}
 	a, b := runRoles(t, []string{aliceDir}, []string{bobDir}, cfg, "", "")
 
 	rec, err := loadRecording(joint, 2000, 0, true, qkd.DriftConfig{}, qkd.WindowConfig{}, nil)
@@ -103,30 +102,12 @@ func TestTwoPartyRolesOnRealRecording(t *testing.T) {
 	t.Logf("%d sifted, QBER %.3f, window +-%d ps, key %d bits (10 s is too short for a finite key)", a.SiftedBits, a.QBER, b.FilterWindowPS, a.FinalKeyBits)
 }
 
-// TestTwoPartyRolesLDPC5GOnExample: the default method on the example recording, each site
-// with only its own files: same pairs, same QBER, same disclosure on both sides, every error corrected
-func TestTwoPartyRolesLDPC5GOnExample(t *testing.T) {
-	pool, err := pyec.Start(2)
-	if err != nil {
-		t.Skipf("5G NR LDPC service unavailable: %v", err)
-	}
-	defer pool.Close()
-	aliceDir, bobDir := splitRecording(t, filepath.Join("..", "..", "acquisition", "example", "20260909"))
-	cfg := qkd.TwoPartyConfig{ChunkSize: 1024, SampleSeed: 11, Method: "ldpc5g", LDPC: pool}
-	a, b := runRoles(t, []string{aliceDir}, []string{bobDir}, cfg, "", "")
-	if a.SiftedBits != b.SiftedBits || a.QBER != b.QBER || a.LeakedBitsTotal != b.LeakedBitsTotal || a.LDPC5GFailed != 0 || b.ChunksKept != b.ChunksTotal {
-		t.Fatalf("alice %+v; bob %+v", a, b)
-	}
-	t.Logf("%d sifted, QBER %.3f, %d frames, %d attempts, %d bits disclosed for error correction, all chunks kept",
-		a.SiftedBits, a.QBER, a.LDPC5GFrames, a.LDPC5GAttempts, a.LDPC5GLeakedBits)
-}
-
 // TestTwoPartyRolesCascadeOnExample: optimized Cascade across the two roles on the example recording,
 // each site with only its own files: same pairs, the same error counts and disclosure on both sides, every
 // chunk verified, and Alice's own count of her parities equal to Bob's
 func TestTwoPartyRolesCascadeOnExample(t *testing.T) {
 	aliceDir, bobDir := splitRecording(t, filepath.Join("..", "..", "acquisition", "example", "20260909"))
-	cfg := qkd.TwoPartyConfig{ChunkSize: 1024, SampleSeed: 11, Method: "cascade", ExpectedQBER: 0.05}
+	cfg := qkd.TwoPartyConfig{ChunkSize: 1024, SampleSeed: 11, ExpectedQBER: 0.05}
 	a, b := runRoles(t, []string{aliceDir}, []string{bobDir}, cfg, "", "")
 	if a.SiftedBits != b.SiftedBits || a.QBER != b.QBER || a.LeakedBitsTotal != b.LeakedBitsTotal || a.ECLeakedBits != b.CascadeParities || b.ChunksKept != b.ChunksTotal {
 		t.Fatalf("alice %+v; bob %+v", a, b)
@@ -139,7 +120,7 @@ func TestTwoPartyRolesCascadeOnExample(t *testing.T) {
 // outnumber the others by far at this QBER
 func TestBobCountsPairsPerPolarization(t *testing.T) {
 	aliceDir, bobDir := splitRecording(t, filepath.Join("..", "..", "acquisition", "example", "20260909"))
-	cfg := qkd.TwoPartyConfig{ChunkSize: 1024, SampleSeed: 11, Method: "cascade", ExpectedQBER: 0.05}
+	cfg := qkd.TwoPartyConfig{ChunkSize: 1024, SampleSeed: 11, ExpectedQBER: 0.05}
 	a, b := runRoles(t, []string{aliceDir}, []string{bobDir}, cfg, "", "")
 	total, agree := 0, 0
 	for k, v := range b.PairCounts {

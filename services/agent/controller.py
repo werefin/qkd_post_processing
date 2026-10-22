@@ -17,7 +17,7 @@ from . import alerts, state, twoparty
 
 bp = Blueprint('agent_controller', __name__)
 
-MANAGED_KEYS = ('active', 'site', 'announce_to', 'segment_s', 'block_s', 'expected_qber', 'keep_blocks')
+MANAGED_KEYS = ('active', 'site', 'announce_to', 'segment_s', 'block_s', 'block_auto', 'expected_qber', 'keep_blocks')
 link = {'connected': False, 'last_ok': None, 'error': None, 'revision': None, 'apply_error': None}
 _ctx = {}
 
@@ -80,7 +80,7 @@ def apply(desired):
         if old['managed'] and all(old.get(k) == new.get(k) for k in MANAGED_KEYS):
             return
         if new['active'] and not old['active']:
-            new.update(started=time.time(), next_block={})
+            new.update(started=time.time(), next_block={}, plans={})
         status, answer = twoparty.follow(new, old)
         link['apply_error'] = answer.get('error') if status >= 400 else None
         state.save(new)

@@ -118,6 +118,7 @@ def run(peer, session):
                 if head['index'] == 0:
                     agreed = flags.agreed(head.get('params'))
                     entry['block'] = float(head['block'])
+                    entry['block_s'] = float(head.get('block_s') or 0)
                 if blob:
                     a, a_flags = stream.decode(blob)
                     kept.digest.update(blob)

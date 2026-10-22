@@ -4,40 +4,6 @@ package qkd
 
 import "math"
 
-// PhaseErrorEstimate is one PA block's privacy-amplification input
-type PhaseErrorEstimate struct {
-	Mu           float64 // statistical fluctuation term
-	Phi          float64 // phase error bound to feed FiniteKeySecureKeyLength
-	Conservative bool
-}
-
-// phaseErrorMu: mu = sqrt((ns+k)/(ns*k) * (k+1)/k * ln(1/epsPE)), the
-// Tomamichel et al. fluctuation term, phase error estimated at confidence epsPE
-func phaseErrorMu(ns, k int, epsPE float64) float64 {
-	if ns <= 0 || k <= 0 || epsPE <= 0 || epsPE >= 1 {
-		return 1 // no usable bound; caller should treat the block as insecure
-	}
-	nsF, kF := float64(ns), float64(k)
-	return math.Sqrt((nsF + kF) / (nsF * kF) * (kF + 1) / kF * math.Log(1/epsPE))
-}
-
-// EstimatePhaseError computes phi from q, the measured error rate in the
-// sacrificed conjugate-basis sample (not the kept bits)
-func EstimatePhaseError(q float64, ns, k int, epsPE float64, nSifted, nSurvivingEC int, conservative bool) PhaseErrorEstimate {
-	mu := phaseErrorMu(ns, k, epsPE)
-	phi := q + mu
-	if conservative {
-		if nSurvivingEC <= 0 {
-			phi = 0.5 // no surviving bits: no key, and not a divide-by-zero
-		} else {
-			phi *= float64(nSifted) / float64(nSurvivingEC)
-		}
-	}
-	// 0.5, not 1: h2(1)=0 would make 1-h2(phi)=1 and certify the whole block as secret
-	phi = min(phi, 0.5)
-	return PhaseErrorEstimate{Mu: mu, Phi: phi, Conservative: conservative}
-}
-
 // FiniteKeySecureKeyLength: l = n*(1-h2(phi)) - leakedBits - log2(2/epsCor) - 2*log2(1/(2*epsPA)); leakedBits is
 // error correction's disclosure only, since log2(2/epsCor) already covers the ceil(log2(1/epsCor))-bit tag
 func FiniteKeySecureKeyLength(n int, phi float64, leakedBits int, epsCor, epsPA float64) int {
@@ -108,8 +74,9 @@ func logChoose(n, k int) float64 {
 	return a - b - c
 }
 
-// hypergeomCDF is P[X <= e] for X ~ Hypergeometric(population, successes, draws), summed
-// in log space so large populations neither overflow nor underflow
+// hypergeomCDF is P[X <= e] for X in Hypergeometric(population, successes, draws), summed in log space from e down;
+// the terms rise to the mode and then fall, so once falling 50 nats under the largest, the rest is counted as that
+// many copies of the last term: never less than the exact sum, larger by a relative 1e-20 per million terms
 func hypergeomCDF(e, population, successes, draws int) float64 {
 	lo := max(0, draws-(population-successes))
 	hi := min(e, successes, draws)
@@ -117,12 +84,17 @@ func hypergeomCDF(e, population, successes, draws int) float64 {
 		return 0
 	}
 	base := logChoose(population, draws)
-	terms := make([]float64, 0, hi-lo+1)
-	peak := math.Inf(-1)
-	for x := lo; x <= hi; x++ {
+	terms := make([]float64, 0, 256)
+	peak, prev := math.Inf(-1), math.Inf(-1)
+	for x := hi; x >= lo; x-- {
 		t := logChoose(successes, x) + logChoose(population-successes, draws-x) - base
 		terms = append(terms, t)
 		peak = math.Max(peak, t)
+		if t < prev && t < peak-50 && x > lo {
+			terms = append(terms, t+math.Log(float64(x-lo)))
+			break
+		}
+		prev = t
 	}
 	var s float64
 	for _, t := range terms {

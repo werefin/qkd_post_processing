@@ -1,4 +1,4 @@
-.PHONY: hooks build test bench tune run vet fmt lint pytest check services clean
+.PHONY: hooks build test bench run vet fmt lint pytest check services clean
 
 # what CI runs, on this machine: format, vet, build, race tests, lint and the Python tests
 check: fmt vet build test lint pytest
@@ -16,8 +16,6 @@ test: hooks
 bench:
 	go test -run '^$$' -bench . -benchmem ./...
 
-tune:
-	./scripts/tune-blocksize.sh
 
 run:
 	go run ./cmd/qkd_post_processing -n 300000 -err 0.005 -chunk 3000
@@ -42,5 +40,5 @@ services:
 	python3 -m services all
 
 clean:
-	rm -f qkd_post_processing importtt tuneblock qkdpki
+	rm -f qkd_post_processing importtt qkdpki controller kms
 	go clean

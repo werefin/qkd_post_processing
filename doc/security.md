@@ -33,7 +33,7 @@ A recording, a set of pooled recordings (`-dir a,b,c`, none selected by its erro
 
 **Sifting**: coincidences are matched from public timing, basis and multi-photon flag only; drift is removed and the window set from the peak's half width (`doc/coincidence_filtering.md`); pairs in different bases are dropped. Timestamps are announced one way only, Alice to Bob, so a pair's offset $\Delta t$ is never public. Output: $n_\mathrm{sift}$ bit pairs.
 
-**Estimation set**, fixed before any bit is seen: either a **sacrificed sample** (LDPC, polar, Winnow, Cascade with `-cascade-sample`), a share chosen from $n_\mathrm{sift}$ and a declared QBER only, picked by a public seed, revealed and discarded; or **errors counted by correction** (Cascade's default), where nothing is revealed and every remaining bit counts.
+**Estimation set**, fixed before any bit is seen: either a **sacrificed sample** (Cascade with `-cascade-sample`), a share chosen from $n_\mathrm{sift}$ and a declared QBER only, picked by a public seed, revealed and discarded; or **errors counted by correction** (Cascade's default), where nothing is revealed and every remaining bit counts.
 
 **Error correction**: Bob's bits are corrected toward Alice's and every disclosed bit is counted in $\mathrm{leak}_\mathrm{EC}$. The strings are cut into chunks with a CRC-16 each; a mismatched chunk is dropped and each kept chunk's 16 bits join $\mathrm{leak}_\mathrm{EC}$. Output: $n_\mathrm{surv}$ bits.
 
@@ -53,7 +53,7 @@ $$\ell = \Bigl\lfloor n_\mathrm{surv}\bigl(1 - h_2(\varphi)\bigr) - \mathrm{leak
 
 else $\ell = 0$. The third term is the verification tag's cost, so the tag is not charged again in $\mathrm{leak}_\mathrm{EC}$; the last is the leftover hash lemma's (below). The cap $\varphi < \tfrac12$ matters, since $1 - h_2$ rises again past $\tfrac12$. Alice's surviving bits are hashed to $\ell$ bits by a Toeplitz matrix from a fresh public seed, and $\ell$ is rounded down to whole 256-bit records for the key management system.
 
-**Asymptotic mode** (`-asymptotic`, and always for block discard): $n_\mathrm{surv}(1 - h_2(\mathrm{QBER})) - \mathrm{leak}_\mathrm{EC}$, for comparison only, with no finite-size guarantee.
+**Asymptotic mode** (`-asymptotic`): $n_\mathrm{surv}(1 - h_2(\mathrm{QBER})) - \mathrm{leak}_\mathrm{EC}$, for comparison only, with no finite-size guarantee.
 
 ### Why the key length is secure
 
@@ -75,28 +75,52 @@ Cascade's default sacrifices nothing: after correction and verification Bob anno
 - **Each term is the standard protocol**: conditioning on more lowers min-entropy, so $H_\mathrm{min}^{\bar\varepsilon}(K_Z \mid K_X E) \ge H_\mathrm{min}^{\bar\varepsilon}(K_Z \mid K_X Y_X E)$, the Z key with every X round given to Eve: Tomamichel and Leverrier's protocol with the X rounds as its test set, giving $n_Z(1 - h_2(\varphi_Z))$; symmetrically for X. No bit is both key and test.
 - **Joining**: $h_2$ is concave, so the two terms are at least $n(1 - h_2(\varphi))$ with the weighted $\varphi$ above; disclosure, tag and the leftover hash then follow as in the finite-key theorem.
 - **The counts are the true errors** whenever Bob's corrected string equals Alice's; otherwise the tag passed unequal strings, probability at most $\varepsilon_\mathrm{cor}$, which is added to the secrecy. A dropped chunk's bits all count as errors.
-- **The counts disclose nothing new** with Cascade, whose corrected positions follow from the public parities already charged; with LDPC they would cost $\lceil\log_2(n_b+1)\rceil$ bits per basis, so the mode is used with Cascade only.
+- **The counts disclose nothing new**: Cascade's corrected positions follow from the public parities already charged.
 
 **What it buys**: 1.2 to 2.3 times the key of a sacrificed sample, and a key where a sample leaves none (`TestCorrectionBeatsSampleAcrossSizes`).
 
 ### Block size
 
-Each block pays about 116 bits for the tag and the leftover hash, plus the estimate's fluctuation, so short blocks give little. Predicted key for an illustrative link of 300 sifted pairs per second at 6% QBER: a sacrificed sample with $f = 1.2$ against Cascade at $f = 1.05$ with errors counted by correction.
+Each block pays about 118 bits for the tag and the leftover hash, 76 more for the chain rule when errors are counted by correction, plus the estimate's fluctuation, so short blocks give little. Predicted key for an illustrative link of 300 sifted pairs per second at 6% QBER: a sacrificed sample with $f = 1.2$ against Cascade at $f = 1.05$ with errors counted by correction.
 
 | Acquisition | Sifted pairs | Sample | $\varphi$ | Key, sample | $\varphi$ | Key, by correction |
 |---|---|---|---|---|---|---|
-| 10 s | 3,000 | --> | 0.500 | 0 bits | 0.131 | 172 bits (17.2 bit/s) |
-| 1 min | 18,000 | 28% | 0.103 | 1,539 bits (25.6 bit/s) | 0.086 | 4,100 bits (68.3 bit/s) |
-| 5 min | 90,000 | 15% | 0.083 | 14,759 bits (49.2 bit/s) | 0.071 | 25,692 bits (85.6 bit/s) |
-| 10 min | 180,000 | 12% | 0.077 | 33,741 bits (56.2 bit/s) | 0.068 | 53,721 bits (89.5 bit/s) |
-| 30 min | 540,000 | 8% | 0.072 | 116,311 bits (64.6 bit/s) | 0.064 | 168,184 bits (93.4 bit/s) |
-| 60 min | 1,080,000 | 6% | 0.069 | 246,753 bits (68.5 bit/s) | 0.063 | 341,899 bits (95.0 bit/s) |
+| 10 s | 3,000 | --> | 0.500 | 0 bits | 0.173 | 0 bits |
+| 1 min | 18,000 | 36% | 0.120 | 761 bits (12.7 bit/s) | 0.099 | 3,213 bits (53.5 bit/s) |
+| 5 min | 90,000 | 20% | 0.090 | 12,111 bits (40.4 bit/s) | 0.076 | 23,812 bits (79.4 bit/s) |
+| 10 min | 180,000 | 16% | 0.083 | 29,406 bits (49.0 bit/s) | 0.071 | 51,100 bits (85.2 bit/s) |
+| 15 min | 270,000 | 14% | 0.079 | 47,950 bits (53.3 bit/s) | 0.069 | 78,931 bits (87.7 bit/s) |
+| 30 min | 540,000 | 11% | 0.075 | 107,006 bits (59.4 bit/s) | 0.066 | 163,719 bits (91.0 bit/s) |
+| 60 min | 1,080,000 | 8% | 0.072 | 231,877 bits (64.4 bit/s) | 0.065 | 335,623 bits (93.2 bit/s) |
 
-Continuous QKD distils 5-minute blocks by default: about 90% of the hour-long rate with errors counted by correction, about 70% with a sacrificed sample.
+5-minute blocks reach about 85% of the hour-long rate with errors counted by correction, about 63% with a sacrificed sample.
+
+The QBER decides how much the block length matters: key rate by correction on the same link, with Cascade's measured $f$, and its share of the hour-long rate.
+
+| QBER | 1 min | 5 min | 10 min | 15 min | 30 min | 60 min |
+|---|---|---|---|---|---|---|
+| 2% | 172 bit/s, 82% | 197 bit/s, 94% | 202 bit/s, 97% | 204 bit/s, 98% | 207 bit/s, 99% | 209 bit/s |
+| 3% | 137 bit/s, 78% | 163 bit/s, 93% | 168 bit/s, 96% | 170 bit/s, 97% | 173 bit/s, 99% | 176 bit/s |
+| 5% | 77 bit/s, 66% | 103 bit/s, 88% | 109 bit/s, 93% | 112 bit/s, 95% | 115 bit/s, 98% | 117 bit/s |
+| 8% | 6 bit/s, 13% | 31 bit/s, 69% | 37 bit/s, 82% | 40 bit/s, 88% | 43 bit/s, 95% | 45 bit/s |
+
+The fluctuation of $\varphi$ is nearly all of the loss, and within one block it is already as small as this proof allows: the hypergeometric bound is exact for the random basis split, the best split of $\varepsilon_\mathrm{sec}$ between estimation, chain rule and hash gains under 0.3% over thirds and quarters, and even $\varepsilon_\mathrm{sec} = 10^{-6}$ gains only 5%.
+
+Block length is therefore the lever: the pools turn batches into a steady rate, so a longer block costs only the wait for the first key and the size of each batch, while it raises the rate for good, from 5 to 15 minutes about +5% at 3% QBER and +27% at 8%.
+
+### Automatic block length
+
+Continuous QKD plans each block's length per link (`block_auto`, on by default), up to the longest allowed (`block_s`, 15 minutes by default).
+
+- **Prediction**: from the link's last ten finished blocks, its sifted pairs per second, QBER and Cascade's measured $f$; each length $L$ gets the key $K(L)$ of the bound above on the counts these imply (`PredictCorrectionKey`, which `TestPredictCorrectionKeyMatchesDistillation` checks against distillation).
+- **Failures**: a failed block gives no key, so with $\lambda$ failed blocks per second over the last fifty (as if an hour without failure came first) the expected rate is $e^{-\lambda L} K(L) / L$; a link that keeps failing gets shorter blocks.
+- **Choice**: the shortest $L$, a whole number of segments, within 5% of the best expected rate: nearly all the key, far sooner (`PlanBlock`). On the illustrative link with a 30-minute limit: 5 minutes at 2% QBER, 6.5 at 3%, 10 at 5%, 18.5 at 8%, and 5 at 8% when a block in four fails.
+- **Security**: the length is fixed from earlier blocks' public results before the block's own data exists, so each block is a fixed-length block of the theorem and keeps its $\varepsilon$; only how much key it gives depends on the choice.
+- **First block**: 5 minutes, before the link has a record.
 
 ### Error correction methods
 
-Real post-processing uses **optimized Cascade** only: $\mathrm{leak}_\mathrm{EC}$ is every parity Alice discloses, each once; $f \approx 1.03$-$1.08$ over 1-11% QBER. The legacy methods still in the library count their own disclosure exactly (`doc/ec_comparison.md`): **5G NR LDPC** (`-ldpc5g`), one-way, for two nodes: syndrome rows, a 32-bit tag per frame and Bob's verdicts, less punctured values still hidden. **Polar** (`-polar`): the final frozen set plus 33 bits per attempt. **LDPC** and **Winnow**: their syndromes and parities.
+Error correction is **optimized Cascade**: $\mathrm{leak}_\mathrm{EC}$ is every parity Alice discloses, each once; $f \approx 1.03$-$1.08$ over 1-11% QBER.
 
 ### Two-party post-processing
 
@@ -142,9 +166,10 @@ Every record is AES-256-GCM under a key derived from the node's master key by HK
 | Sifting | `MatchCoincidences`, `FilterCoincidences`, `Sift` |
 | Sacrificed sample | `OptimalSampleFraction`, `siftSample` |
 | Errors counted by correction | `correctionSample`, `CascadeRunConfig.SacrificeSample`, `chainRuleBits`, `chain_rule_bits` in `importtt -json` |
-| Error correction, $\mathrm{leak}_\mathrm{EC}$ | `RunCascade`, `RunLDPC5G`, `RunPolar`, `RunLDPC`, `RunWinnow`, `CRCVerify` |
+| Error correction, $\mathrm{leak}_\mathrm{EC}$ | `RunCascade`, `CascadeBob`, `CRCVerify` |
 | Verification | `distillFiniteKey`, `UniversalHashTagBits`, `VerifyUniversalHash` |
 | $\bar q$, $\varphi$ | `HypergeomUpperRate`, `crossBasisPhaseError`, `estimationTail` |
 | $\ell$ | `FiniteKeySecureKeyLength` |
 | Two-party | `RunAlice`, `RunBob` (`qkd/twoparty.go`) |
+| Block length | `PlanBlock`, `PredictCorrectionKey` (`qkd/blockplan.go`), `services/agent/blockplan.py` |
 | Pools, relay, delivery, storage | `OriginatorOf`, `relay/`, `cmd/kms`, `kms/encryption.go` |

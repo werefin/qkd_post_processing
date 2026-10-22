@@ -29,6 +29,16 @@ def running():
     return procs.running(state['proc'])
 
 
+def _wanted_file():
+    return settings.TP_DIR / 'recorder_wanted'
+
+
+def wanted():
+    '''Continuous QKD holds the TimeTagger from the agent's start to its stop, through restarts of the recorder
+    or of this service, so nothing else takes it in between'''
+    return _wanted_file().exists()
+
+
 def _on_line(line):
     if line.startswith('RATES '):
         r = procs.prefixed_json(line, 'RATES ') or {}
@@ -158,9 +168,11 @@ def api_start():
         return jsonify({'error': str(e)}), 400
     with tagger.lock:
         state['keep_s'] = keep_s or state['keep_s']
+        _wanted_file().parent.mkdir(parents=True, exist_ok=True)
+        _wanted_file().touch()
         if running():
             return jsonify({'started': False, 'recording': True, 'params': state['params']})
-        if (mode := tagger.busy('the two-party recorder')):
+        if (mode := tagger.busy('the two-party recorder', 'continuous QKD')):
             return jsonify(tagger.refusal(mode)), 409
         _start(params)
     return jsonify({'started': True, 'recording': True, 'params': params})
@@ -169,6 +181,7 @@ def api_start():
 @bp.route('/v1/recorder/stop', methods=['POST'])
 def api_stop():
     with tagger.lock:
+        _wanted_file().unlink(missing_ok=True)
         stop()
     return jsonify({'stopped': True})
 
@@ -178,6 +191,7 @@ def start_threads():
 
 
 tagger.register('the two-party recorder', running)
+tagger.register('continuous QKD', wanted)
 metrics.gauge('recorder_running', lambda: int(running()))
 metrics.gauge('recorder_segments', lambda: len(_segments()))
 metrics.gauge('recorder_singles_per_s', lambda: {f'ch{c + 1}': v for c, v in enumerate(state['fast'][-1]['singles'])} if state['fast'] else {})

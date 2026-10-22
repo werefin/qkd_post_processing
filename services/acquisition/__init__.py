@@ -3,9 +3,9 @@ Acquisition service: everything that drives this node's TimeTagger, one mode at 
 '''
 
 from ..core import metrics, settings, web
-from . import acquire, clog, config, continuous, recorder, recordings, tagger
+from . import acquire, clog, config, recorder, recordings, tagger
 
-BLUEPRINTS = [config.bp, recordings.bp, acquire.bp, continuous.bp, clog.bp, recorder.bp]
+BLUEPRINTS = [config.bp, recordings.bp, acquire.bp, clog.bp, recorder.bp]
 
 
 def start():

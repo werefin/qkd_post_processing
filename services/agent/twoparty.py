@@ -10,7 +10,7 @@ import time
 from flask import Blueprint, jsonify, request
 
 from ..core import kms, metrics, peers
-from . import alerts, state
+from . import alerts, blockplan, state
 
 bp = Blueprint('agent_twoparty', __name__)
 
@@ -62,9 +62,10 @@ def _start(old, body):
         expected_qber = float(body.get('expected_qber', old['expected_qber']))
     except (TypeError, ValueError) as e:
         return jsonify({'error': str(e)}), 400
-    # a fresh start begins at the newest block; resuming after a restart keeps the schedule where it was
+    # a fresh start begins at the newest segment; resuming after a restart keeps the schedule where it was
     new = {**old, 'active': True, 'site': body.get('site') or old['site'], 'segment_s': segment_s, 'block_s': block_s,
            'announce_to': announce, 'expected_qber': expected_qber, 'started': time.time(), 'next_block': {},
+           'block_auto': bool(body.get('block_auto', old['block_auto'])), 'plans': {},
            'replay': body.get('replay', old.get('replay')) or None}  # a start without settings keeps the saved ones
     status, answer = follow(new, old)
     if status >= 400:
@@ -88,22 +89,26 @@ def api_stop():
 
 def _queue_due(st):
     '''Queues every block whose first segment both sites have written toward each neighbor this node announces
-    to, so its segments stream while it runs; a block is only marked done once the processing service took it'''
-    block_s, segment_s, now = float(st['block_s']), float(st['segment_s']), time.time()
-    last_done = (now - GRACE_S - segment_s) // block_s * block_s  # the newest block with its first segment written
-    oldest = now - st['keep_blocks'] * block_s
+    to, so its segments stream while it runs; each block's length is set as it is queued, from the blocks before
+    it, and a block is only marked done once the processing service took it'''
+    segment_s, now = float(st['segment_s']), time.time()
+    newest = (now - GRACE_S - segment_s) // segment_s * segment_s  # the newest segment both sites have written
+    oldest = now - st['keep_blocks'] * float(st['block_s'])
     changed = False
     for peer in st['announce_to']:
         nxt = st['next_block'].get(peer)
         if nxt is None or nxt < oldest:
-            nxt = last_done  # a new link, or blocks too old to still be on disk: start from the newest
-        while nxt <= last_done:
+            nxt = newest  # a new link, or blocks too old to still be on disk: start from the newest segment
+        while nxt <= newest:
+            seconds, plan = blockplan.length(st, peer)
             try:
-                peers.call_json('processing', 'POST', '/v1/blocks', {'peer': peer, 'block': nxt, 'block_s': block_s,
+                peers.call_json('processing', 'POST', '/v1/blocks', {'peer': peer, 'block': nxt, 'block_s': seconds,
                                                                     'segment_s': segment_s, 'expected_qber': st['expected_qber']})
             except peers.PeerError:
                 break
-            nxt += block_s
+            nxt += seconds
+            st.setdefault('plans', {})[peer] = {**(plan or {}), 'block_s': seconds, 'start': nxt - seconds}
+            changed = True
         if st['next_block'].get(peer) != nxt:
             st['next_block'][peer], changed = nxt, True
     return changed

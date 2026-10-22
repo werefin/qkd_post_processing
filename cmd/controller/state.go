@@ -16,7 +16,8 @@ import (
 // Settings every node of the network shares for continuous two-party QKD
 type Settings struct {
 	SegmentS     float64 `json:"segment_s"`
-	BlockS       float64 `json:"block_s"`
+	BlockS       float64 `json:"block_s"`    // the longest block when BlockAuto, else every block's length
+	BlockAuto    bool    `json:"block_auto"` // each link's blocks planned from its last ones (services/agent/blockplan.py)
 	ExpectedQBER float64 `json:"expected_qber"`
 	KeepBlocks   int     `json:"keep_blocks"`
 }
@@ -52,6 +53,7 @@ type NodeConfig struct {
 	AnnounceTo   []string `json:"announce_to"`
 	SegmentS     float64  `json:"segment_s,omitempty"`
 	BlockS       float64  `json:"block_s,omitempty"`
+	BlockAuto    bool     `json:"block_auto"`
 	ExpectedQBER float64  `json:"expected_qber,omitempty"`
 	KeepBlocks   int      `json:"keep_blocks,omitempty"`
 }
@@ -63,7 +65,7 @@ type Observed struct {
 }
 
 var (
-	defaultSettings = Settings{SegmentS: 5, BlockS: 300, ExpectedQBER: 0.05, KeepBlocks: 2}
+	defaultSettings = Settings{SegmentS: 5, BlockS: 900, BlockAuto: true, ExpectedQBER: 0.05, KeepBlocks: 2}
 	validID         = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 )
 
@@ -180,7 +182,7 @@ func (d *Desired) configFor(id string) NodeConfig {
 		return NodeConfig{AnnounceTo: []string{}}
 	}
 	c := NodeConfig{Managed: true, Site: n.Site, AnnounceTo: []string{}, SegmentS: d.Settings.SegmentS, BlockS: d.Settings.BlockS,
-		ExpectedQBER: d.Settings.ExpectedQBER, KeepBlocks: d.Settings.KeepBlocks}
+		BlockAuto: d.Settings.BlockAuto, ExpectedQBER: d.Settings.ExpectedQBER, KeepBlocks: d.Settings.KeepBlocks}
 	if !n.Enabled {
 		return c
 	}

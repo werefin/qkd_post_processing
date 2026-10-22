@@ -26,8 +26,6 @@ def evaluate(job):
             '--out', str(out), '--importtt', settings.IMPORTTT_BIN, '--jobs', str(int(p.get('jobs', 2)))]
     if settings.UPLOADED_CONFIG_PATH.is_file():
         args += ['--config', str(settings.UPLOADED_CONFIG_PATH)]
-    if not p.get('live', True):
-        args.append('--no-live')
     job['log'].append('$ evaluate.py ' + ' '.join(Path(a).name for a in args[2:]))
     proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=str(settings.REPO_ROOT))
     for line in proc.stdout:

@@ -72,16 +72,6 @@ type twoPartyJSON struct {
 	FilterWindowPS     int64          `json:"filter_window_ps,omitempty"`
 	FilterSigmaPS      float64        `json:"filter_sigma_ps,omitempty"`
 	FilterAccidentals  float64        `json:"filter_predicted_accidental_fraction,omitempty"`
-	PolarBlocks        int            `json:"polar_blocks"`
-	PolarAttempts      int            `json:"polar_attempts"`
-	PolarBitsCorrected int            `json:"polar_bits_corrected"`
-	PolarLeakedBits    int            `json:"polar_leaked_bits"`
-	LDPC5GRows         int            `json:"ldpc5g_rows,omitempty"`
-	LDPC5GFrames       int            `json:"ldpc5g_frames,omitempty"`
-	LDPC5GFailed       int            `json:"ldpc5g_failed,omitempty"`
-	LDPC5GAttempts     int            `json:"ldpc5g_attempts,omitempty"`
-	LDPC5GCorrected    int            `json:"ldpc5g_bits_corrected,omitempty"`
-	LDPC5GLeakedBits   int            `json:"ldpc5g_leaked_bits,omitempty"`
 	CascadeParities    int            `json:"cascade_parities,omitempty"`
 	CascadeRounds      int            `json:"cascade_rounds,omitempty"`
 	CascadeCorrected   int            `json:"cascade_corrections,omitempty"`
@@ -133,11 +123,7 @@ func runTwoParty(o twoPartyOptions) {
 	}
 	field("Sifted bits", "%d", out.SiftedBits)
 	field("QBER", "%.4f", out.QBER)
-	if out.Method == "ldpc5g" {
-		field("5G NR LDPC", "%d frames, %d attempts, %d failed, %d bits disclosed", out.LDPC5GFrames, out.LDPC5GAttempts, out.LDPC5GFailed, out.LDPC5GLeakedBits)
-	} else {
-		field("Polar", "%d blocks, %d attempts, %d bits disclosed", out.PolarBlocks, out.PolarAttempts, out.PolarLeakedBits)
-	}
+	field("Cascade", "%d parities in %d round trips, %d corrections", out.CascadeParities, out.CascadeRounds, out.CascadeCorrected)
 	field("CRC chunks kept", "%d / %d", out.ChunksKept, out.ChunksTotal)
 	field("Disclosed in total", "%d bits", out.LeakedBitsTotal)
 	field("Final key", "%d bits, %d records saved", out.FinalKeyBits, out.KeysSaved)
@@ -327,7 +313,7 @@ func ownRecording(dir string) (path, base string, err error) {
 }
 
 func runAliceRole(o twoPartyOptions) (twoPartyJSON, error) {
-	out := twoPartyJSON{Role: "alice", Peer: o.peer, Session: o.session, Method: o.cfg.Method, Recordings: len(o.dirs)}
+	out := twoPartyJSON{Role: "alice", Peer: o.peer, Session: o.session, Method: "cascade", Recordings: len(o.dirs)}
 	if o.exportDir != "" {
 		return exportPublic(o, out)
 	}
@@ -434,7 +420,7 @@ func loadBobRecording(dir string, o twoPartyOptions) (bobRecording, error) {
 }
 
 func runBobRole(o twoPartyOptions) (twoPartyJSON, error) {
-	out := twoPartyJSON{Role: "bob", Peer: o.peer, Session: o.session, Method: o.cfg.Method, Recordings: len(o.dirs)}
+	out := twoPartyJSON{Role: "bob", Peer: o.peer, Session: o.session, Method: "cascade", Recordings: len(o.dirs)}
 	var recs []loadedRecording
 	var announced []qkd.DetectionEvent
 	for _, d := range o.dirs {
@@ -511,10 +497,7 @@ func runBobRole(o twoPartyOptions) (twoPartyJSON, error) {
 }
 
 func finishRoleOutput(out twoPartyJSON, o twoPartyOptions, res qkd.TwoPartyResult) (twoPartyJSON, error) {
-	out.SiftedBits, out.QBER, out.Method = res.SiftedBits, res.QBER.QBER, res.Method
-	out.LDPC5GRows, out.LDPC5GFrames, out.LDPC5GFailed = res.LDPC.M, res.LDPC.Frames, res.LDPC.Failed
-	out.LDPC5GAttempts, out.LDPC5GCorrected, out.LDPC5GLeakedBits = res.LDPC.Attempts, res.LDPC.BitsCorrected, res.LDPC.LeakedBits
-	out.PolarBlocks, out.PolarAttempts, out.PolarBitsCorrected, out.PolarLeakedBits = res.PolarBlocks, res.PolarAttempts, res.PolarBitsCorrected, res.PolarLeakedBits
+	out.SiftedBits, out.QBER = res.SiftedBits, res.QBER.QBER
 	// Alice's ECLeakedBits is her own count of the parities she disclosed; Bob's run statistics are his
 	out.CascadeParities, out.CascadeRounds, out.CascadeCorrected = res.Cascade.Parities, res.Cascade.Rounds, res.Cascade.Corrections
 	out.ECLeakedBits = res.ECLeakedBits

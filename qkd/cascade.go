@@ -3,6 +3,7 @@ package qkd
 import (
 	"fmt"
 	"math"
+	"math/rand"
 	"sort"
 )
 
@@ -375,4 +376,15 @@ func CascadeBob(bob []byte, qber float64, cfg CascadeConfig, alice CascadeOracle
 	}
 	r.stats.Passes = len(r.passes)
 	return r.bob, r.stats, nil
+}
+
+// GeneratePermutation is a public shuffle of n positions from seed, the same at both ends
+func GeneratePermutation(n int, seed int64) []int {
+	perm := make([]int, n)
+	for i := range perm {
+		perm[i] = i
+	}
+	r := rand.New(rand.NewSource(seed))
+	r.Shuffle(n, func(i, j int) { perm[i], perm[j] = perm[j], perm[i] })
+	return perm
 }

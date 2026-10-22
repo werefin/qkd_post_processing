@@ -9,8 +9,9 @@ import threading
 
 from ..core import settings
 
-DEFAULTS = {'active': False, 'site': None, 'segment_s': 5.0, 'block_s': 300.0, 'announce_to': [],
-            'expected_qber': 0.05, 'keep_blocks': 2, 'next_block': {}, 'replay': None, 'started': None,
+# block_auto: each block planned from the link's last ones, up to block_s; off, every block is block_s long
+DEFAULTS = {'active': False, 'site': None, 'segment_s': 5.0, 'block_s': 900.0, 'block_auto': True, 'announce_to': [],
+            'expected_qber': 0.05, 'keep_blocks': 2, 'next_block': {}, 'plans': {}, 'replay': None, 'started': None,
             'managed': False}
 
 lock = threading.Lock()  # held around every load, change and save, by the routes, the scheduler and the controller

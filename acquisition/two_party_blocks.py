@@ -13,7 +13,7 @@ import numpy as np
 
 import coincidence_peak as cp
 
-PRUNE_PS = 50_000      # Bob's clicks kept around a predicted partner, as in continuous_qkd.py
+PRUNE_PS = 50_000      # Bob's clicks kept around a predicted partner
 HEAD_S = 30.0          # seconds searched in full when no clock model holds yet
 TS, CH, META = '_timestamp_sequence.npy', '_channel_sequence.npy', '_meta.json'
 
@@ -55,7 +55,7 @@ def _hinted(a, b, model, kwargs):
                                   **dict(kwargs, refine_radius_ps=PRUNE_PS // 2))
     if not report['detected'] or report['coarse_search']['n_fft'] != 0:
         return None
-    # back on B's own clock: the total skew is predicted plus residual, as continuous_qkd.py does it
+    # back on B's own clock: the total skew is predicted plus residual
     sk = report['clock_skew']
     add = s_p * (sk['reference_elapsed_ps'] + sk['lag_at_reference_ps'])
     sk['lag_at_reference_ps'] += add

@@ -1,6 +1,5 @@
 /qkd_post_processing
 /importtt
-/tuneblock
 /qkdpki
 /references/
 *.test
@@ -34,7 +33,6 @@ venv/
 *.npz
 events.cache
 blocks.jsonl
-continuous_state.json
 *_coincidence.json
 *_coincidences.csv
 *_coincidences_histograms.jsonl

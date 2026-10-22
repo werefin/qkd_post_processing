@@ -17,7 +17,7 @@ ROUTES = {
     '/api/node': 'agent', '/api/kms': 'agent', '/api/twoparty': 'agent', '/api/monitor': 'agent',
     '/api/alerts': 'agent', '/api/controller': 'agent',
     '/api/config': 'acquisition', '/api/upload': 'acquisition', '/api/recordings': 'acquisition',
-    '/api/acquire': 'acquisition', '/api/continuous': 'acquisition', '/api/clog': 'acquisition',
+    '/api/acquire': 'acquisition', '/api/clog': 'acquisition',
     '/api/status': 'processing', '/api/run': 'processing', '/api/align': 'processing', '/api/jobs': 'processing',
     '/api/evaluations': 'processing', '/api/chsh': 'processing',
 }

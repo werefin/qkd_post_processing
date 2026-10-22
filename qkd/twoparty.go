@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"runtime"
 	"sync"
 )
 
@@ -25,14 +24,10 @@ type Conn interface {
 // TwoPartyConfig holds the public protocol parameters; both sides must use the same values
 type TwoPartyConfig struct {
 	WindowPS     int64   // Bob's coincidence window, from his coincidence filter
-	RateMargin   float64 // polar starting rate margin below each block's capacity
-	ListSize     int     // SCL list size, 0 = plain successive cancellation
-	BlockLength  int     // polar block length, a power of two; 0 = the largest covering the key
 	ChunkSize    int     // CRC chunk size in bits
 	KeyAlignBits int     // round the key down to a multiple of this, 0 = don't
 	ExpectedQBER float64 // >0: size the sample by OptimalSampleFraction from this prior
 	SampleShare  float64 // used when ExpectedQBER is 0
-	TimingBins   int     // >0: Bob decodes with per-bit LLRs from his own timing; codes stay flat
 	SampleSeed   int64   // Bob's sample permutation seed, 0 = fresh random (fixed only for tests)
 	// AnnouncementDigest is Bob's PublicDigest of Alice's announcement as received, for when
 	// pooling has since shifted her timestamps; empty = the digest of the events RunBob is given
@@ -44,33 +39,17 @@ type TwoPartyConfig struct {
 	AnnouncementEvents int
 	Asymptotic         bool
 	FiniteKey          FiniteKeyConfig
-	// Method is the error correction, "polar" (the default), "ldpc5g" or "cascade"; LDPC does its matrix work
-	Method string
-	LDPC   LDPC5GBackend
-	// CascadeSample: Cascade sacrifices a sample like the codes; by default nothing is sacrificed and Bob
-	// announces the errors correction found per basis, which bound the other basis's phase errors
+	// CascadeSample: Cascade sacrifices a QBER sample; by default nothing is sacrificed and Bob announces the
+	// errors correction found per basis, which bound the other basis's phase errors
 	CascadeSample bool
-}
-
-func (c TwoPartyConfig) method() string {
-	if c.Method == "" {
-		return "polar"
-	}
-	return c.Method
 }
 
 // TwoPartyResult is one side's outcome; both sides get the same numbers and the same key
 type TwoPartyResult struct {
-	SiftedBits         int
-	QBER               QBERResult
-	PolarBlocks        int
-	PolarAttempts      int
-	PolarBitsCorrected int // Bob only: bits his decoder flipped
-	PolarLeakedBits    int
-	Method             string
-	LDPC               LDPC5GResult
-	Cascade            CascadeStats // Bob's side of the run; Alice's ECLeakedBits is her own count of what she disclosed
-	ECLeakedBits       int          // what error correction disclosed, whichever method ran
+	SiftedBits   int
+	QBER         QBERResult
+	Cascade      CascadeStats // Bob's side of the run; Alice's ECLeakedBits is her own count of what she disclosed
+	ECLeakedBits int          // the parities Cascade disclosed
 	// per basis (HV, DA): key bits, and the bits and errors the estimate rests on, the same on both sides
 	BasisBits    [2]int
 	BasisChecked [2]int
@@ -85,18 +64,13 @@ type TwoPartyResult struct {
 	KeyIDs        []string // one per 256-bit block of the key, chosen by Alice
 }
 
-const twoPartyVersion = 1
+const twoPartyVersion = 2 // 2: optimized Cascade only
 
 // tpParams is the part of the configuration both sides check is identical
 type tpParams struct {
-	Method        string
 	CascadeSample bool
-	RateMargin    float64
-	ListSize      int
-	BlockLength   int
 	ChunkSize     int
 	KeyAlignBits  int
-	TimingBins    int
 	Asymptotic    bool
 	EpsSec        float64
 	EpsCor        float64
@@ -104,7 +78,7 @@ type tpParams struct {
 
 func (c TwoPartyConfig) params() tpParams {
 	fk := c.FiniteKey.withDefaults()
-	return tpParams{c.method(), c.CascadeSample, c.RateMargin, c.ListSize, c.BlockLength, c.ChunkSize, c.KeyAlignBits, c.TimingBins, c.Asymptotic, fk.EpsSec, fk.EpsCor}
+	return tpParams{c.CascadeSample, c.ChunkSize, c.KeyAlignBits, c.Asymptotic, fk.EpsSec, fk.EpsCor}
 }
 
 type tpHello struct {
@@ -121,18 +95,6 @@ type tpSift struct {
 }
 
 type tpBits struct{ Bits []byte }
-
-type tpPolarBlock struct {
-	Index  int
-	K      int
-	Frozen []byte
-	Seed   []byte
-	Tag    []byte
-}
-
-type tpPolarRound struct{ Blocks []tpPolarBlock }
-
-type tpFailed struct{ Failed []int }
 
 type tpCRC struct{ CRC []uint16 }
 
@@ -178,7 +140,7 @@ func (c TwoPartyConfig) cascadePlanQBER(sampled QBERResult) float64 {
 	return 0.05
 }
 
-func (c TwoPartyConfig) byCorrection() bool { return c.method() == "cascade" && !c.CascadeSample }
+func (c TwoPartyConfig) byCorrection() bool { return !c.CascadeSample }
 
 type tpVerify struct {
 	Seed []byte
@@ -274,75 +236,28 @@ func RunAliceClicks(conn Conn, clicks AliceClicks, digest []byte, cfg TwoPartyCo
 	}
 	res.QBER = sampleQBER(sampleTB)
 	remBits := pickBits(bits, rem)
-	res.Method = cfg.method()
-	if res.Method == "ldpc5g" {
-		if res.LDPC, err = aliceLDPC5G(conn, cfg, remBits, res.QBER.QBER, sift.SampleSeed); err != nil {
+	// Alice only answers Cascade's requests; what she discloses is counted here, on her side
+	oracle := NewCascadeAlice(remBits, sift.SampleSeed)
+	for {
+		var req tpCascade
+		if err = conn.Recv("cascade", &req); err != nil {
 			return res, err
 		}
-		res.ECLeakedBits = res.LDPC.LeakedBits
-		return finishTwoParty(conn, true, res, cfg, remBits, nil, sampleTB, remTB)
-	}
-	if res.Method == "cascade" {
-		// Alice only answers; what she discloses is counted here, on her side
-		oracle := NewCascadeAlice(remBits, sift.SampleSeed)
-		for {
-			var req tpCascade
-			if err = conn.Recv("cascade", &req); err != nil {
-				return res, err
+		if req.Done {
+			if req.Parities != oracle.Disclosed {
+				return res, fmt.Errorf("two-party: Bob counted %d Cascade parities, Alice disclosed %d", req.Parities, oracle.Disclosed)
 			}
-			if req.Done {
-				if req.Parities != oracle.Disclosed {
-					return res, fmt.Errorf("two-party: Bob counted %d Cascade parities, Alice disclosed %d", req.Parities, oracle.Disclosed)
-				}
-				break
-			}
-			par, perr := oracle.Parities(req.Pass, req.Ranges)
-			if perr != nil {
-				return res, perr
-			}
-			if err = conn.Send("cascade_parities", tpBits{par}); err != nil {
-				return res, err
-			}
+			break
 		}
-		res.ECLeakedBits = oracle.Disclosed
-		return finishTwoParty(conn, true, res, cfg, remBits, nil, sampleTB, remTB)
-	}
-
-	blockLen := polarBlockLength(cfg.BlockLength, len(remBits))
-	if blockLen < 2 {
-		return res, errors.New("two-party: nothing left to reconcile after the QBER sample")
-	}
-	plan := newPolarPlan(remBits, res.QBER.QBER, blockLen, cfg.RateMargin)
-	attempt := make([]int, plan.blocks)
-	pending := make([]int, plan.blocks)
-	for i := range pending {
-		pending[i] = i
-	}
-	for len(pending) > 0 {
-		round := tpPolarRound{}
-		for _, bi := range pending {
-			blk, berr := plan.aliceBlock(bi, attempt[bi])
-			if berr != nil {
-				return res, berr
-			}
-			round.Blocks = append(round.Blocks, blk)
-			res.PolarAttempts++
+		par, perr := oracle.Parities(req.Pass, req.Ranges)
+		if perr != nil {
+			return res, perr
 		}
-		if err = conn.Send("polar", round); err != nil {
+		if err = conn.Send("cascade_parities", tpBits{par}); err != nil {
 			return res, err
 		}
-		var failed tpFailed
-		if err = conn.Recv("polar_failed", &failed); err != nil {
-			return res, err
-		}
-		next, ferr := plan.retry(pending, failed.Failed, attempt)
-		if ferr != nil {
-			return res, ferr
-		}
-		pending = next
 	}
-	res.PolarBlocks, res.PolarLeakedBits = plan.blocks, plan.leaked(attempt)
-	res.ECLeakedBits = res.PolarLeakedBits
+	res.ECLeakedBits = oracle.Disclosed
 	return finishTwoParty(conn, true, res, cfg, remBits, nil, sampleTB, remTB)
 }
 
@@ -369,14 +284,12 @@ func RunBob(conn Conn, alice []PublicEvent, bobEvents []DetectionEvent, cfg TwoP
 	sift := tpSift{AliceIdx: make([]int32, len(pairs))}
 	bits := make([]byte, len(pairs))
 	bases := make([]Basis, len(pairs))
-	dts := make([]int64, len(pairs))
 	for i, p := range pairs {
 		sift.AliceIdx[i] = int32(p.AliceIdx)
 		if cfg.AnnouncementIndex != nil {
 			sift.AliceIdx[i] = cfg.AnnouncementIndex[p.AliceIdx]
 		}
 		bits[i], bases[i] = bobEvents[p.BobIdx].Bit, alice[p.AliceIdx].Basis
-		dts[i] = bobEvents[p.BobIdx].TimestampPS - alice[p.AliceIdx].TimestampPS
 	}
 	share := cfg.SampleShare
 	if cfg.ExpectedQBER > 0 {
@@ -416,85 +329,15 @@ func RunBob(conn Conn, alice []PublicEvent, bobEvents []DetectionEvent, cfg TwoP
 	res.QBER = sampleQBER(sampleTB)
 	remBits := pickBits(bits, rem)
 
-	// soft decoding uses Bob's own timing only; Alice's codes are built from the flat QBER
-	q := make([]float64, len(remBits))
-	for i := range q {
-		q[i] = res.QBER.QBER
+	corrected, cstats, err := CascadeBob(remBits, cfg.cascadePlanQBER(res.QBER), CascadeConfig{Seed: sift.SampleSeed}, remoteCascade{conn})
+	if err != nil {
+		return res, err
 	}
-	if cfg.TimingBins > 0 && len(sample) > 0 {
-		sampleTB.Dt = pickInt64(dts, sample)
-		if m, merr := EstimateTimingErrorModel(sampleTB.Alice, sampleTB.Bob, sampleTB.Dt, cfg.WindowPS, cfg.TimingBins); merr == nil {
-			q = m.Rates(pickInt64(dts, rem))
-		}
+	res.Cascade = cstats
+	if err = conn.Send("cascade", tpCascade{Done: true, Parities: res.Cascade.Parities}); err != nil {
+		return res, err
 	}
-
-	res.Method = cfg.method()
-	if res.Method == "ldpc5g" {
-		var corrected []byte
-		if corrected, res.LDPC, err = bobLDPC5G(conn, cfg, remBits, q, res.QBER.QBER, sift.SampleSeed); err != nil {
-			return res, err
-		}
-		res.ECLeakedBits = res.LDPC.LeakedBits
-		return finishTwoParty(conn, false, res, cfg, corrected, remBits, sampleTB, remTB)
-	}
-	if res.Method == "cascade" {
-		var corrected []byte
-		corrected, res.Cascade, err = CascadeBob(remBits, cfg.cascadePlanQBER(res.QBER), CascadeConfig{Seed: sift.SampleSeed}, remoteCascade{conn})
-		if err != nil {
-			return res, err
-		}
-		if err = conn.Send("cascade", tpCascade{Done: true, Parities: res.Cascade.Parities}); err != nil {
-			return res, err
-		}
-		res.ECLeakedBits = res.Cascade.Parities
-		return finishTwoParty(conn, false, res, cfg, corrected, remBits, sampleTB, remTB)
-	}
-
-	blockLen := polarBlockLength(cfg.BlockLength, len(remBits))
-	if blockLen < 2 {
-		return res, errors.New("two-party: nothing left to reconcile after the QBER sample")
-	}
-	plan := newPolarPlan(remBits, res.QBER.QBER, blockLen, cfg.RateMargin)
-	corrected := make([]byte, len(remBits))
-	attempt := make([]int, plan.blocks)
-	pending := make([]int, plan.blocks)
-	for i := range pending {
-		pending[i] = i
-	}
-	for len(pending) > 0 {
-		var round tpPolarRound
-		if err = conn.Recv("polar", &round); err != nil {
-			return res, err
-		}
-		if len(round.Blocks) != len(pending) {
-			return res, fmt.Errorf("two-party: polar round has %d blocks, expected %d", len(round.Blocks), len(pending))
-		}
-		var failed []int
-		for i, blk := range round.Blocks {
-			bi := pending[i]
-			ok, derr := plan.bobBlock(blk, bi, attempt[bi], q, cfg.ListSize, corrected)
-			if derr != nil {
-				return res, derr
-			}
-			res.PolarAttempts++
-			if !ok {
-				failed = append(failed, bi)
-			}
-		}
-		if err = conn.Send("polar_failed", tpFailed{failed}); err != nil {
-			return res, err
-		}
-		if pending, err = plan.retry(pending, failed, attempt); err != nil {
-			return res, err
-		}
-	}
-	for i := range remBits {
-		if corrected[i] != remBits[i] {
-			res.PolarBitsCorrected++
-		}
-	}
-	res.PolarBlocks, res.PolarLeakedBits = plan.blocks, plan.leaked(attempt)
-	res.ECLeakedBits = res.PolarLeakedBits
+	res.ECLeakedBits = res.Cascade.Parities
 	return finishTwoParty(conn, false, res, cfg, corrected, remBits, sampleTB, remTB)
 }
 
@@ -751,14 +594,6 @@ func pickBits(bits []byte, idx []int) []byte {
 	return out
 }
 
-func pickInt64(v []int64, idx []int) []int64 {
-	out := make([]int64, len(idx))
-	for i, j := range idx {
-		out[i] = v[j]
-	}
-	return out
-}
-
 // sampleSets builds the sample (both sides' revealed bits, with bases) and the bases of the
 // kept bits, which is all crossBasisPhaseError reads
 func sampleSets(aliceSample, bobSample []byte, bases []Basis, sample, rem []int) (timedBits, timedBits, error) {
@@ -788,139 +623,6 @@ func sampleQBER(s timedBits) QBERResult {
 		q = float64(errs) / float64(len(s.Alice))
 	}
 	return QBERResult{ErrorBits: errs, SampleBits: len(s.Alice), QBER: q}
-}
-
-// PolarMaxDefaultBlock caps the default block length: measured, the construction degrades beyond
-// 2^16 and at 2^20 SCL decoding fails whole blocks (doc/ec_comparison.md)
-const PolarMaxDefaultBlock = 1 << 16
-
-func polarBlockLength(cfgLen, n int) int {
-	if cfgLen > 0 {
-		return cfgLen
-	}
-	return min(largestPowerOfTwoAtMost(n), PolarMaxDefaultBlock)
-}
-
-// polarPlan is PolarReconcileSoft's block bookkeeping with a flat rate, shared by both sides so
-// they agree on every block's code without exchanging anything but the frozen values
-type polarPlan struct {
-	n, blocks int
-	own       []byte
-	qber      float64
-	margin    float64
-	uMeans    [][]float64
-	capacity  []float64
-	blen      []int
-}
-
-func newPolarPlan(own []byte, qber float64, n int, margin float64) *polarPlan {
-	p := &polarPlan{n: n, own: own, qber: qber, margin: margin}
-	p.blocks = (len(own) + n - 1) / n
-	means := make([]float64, n)
-	for bi := range p.blocks {
-		blen := min(n, len(own)-bi*n)
-		capacity := 0.0
-		for i := range n {
-			q := qber
-			if i >= blen {
-				q = qMinTiming // padding is known 0 on both sides
-			}
-			means[i] = gaInitialMean(q)
-			capacity += 1 - binaryEntropy(q)
-		}
-		p.uMeans = append(p.uMeans, gaMeansFrom(means))
-		p.capacity = append(p.capacity, capacity)
-		p.blen = append(p.blen, blen)
-	}
-	return p
-}
-
-func (p *polarPlan) k(bi, attempt int) int {
-	m := p.margin + float64(attempt)*polarAdaptiveStep
-	return max(1, min(p.n-1, int(p.capacity[bi]-m*float64(p.blen[bi]))))
-}
-
-func (p *polarPlan) block(bi int) []byte {
-	b := make([]byte, p.n)
-	copy(b, p.own[bi*p.n:bi*p.n+p.blen[bi]])
-	return b
-}
-
-// aliceBlock is Alice's disclosure for one attempt: the frozen values and a fresh block hash
-func (p *polarPlan) aliceBlock(bi, attempt int) (tpPolarBlock, error) {
-	k := p.k(bi, attempt)
-	code := codeFromMeans(p.uMeans[bi], k)
-	u, err := PolarTransform(p.block(bi))
-	if err != nil {
-		return tpPolarBlock{}, err
-	}
-	frozen := make([]byte, len(code.FrozenIdx))
-	for i, idx := range code.FrozenIdx {
-		frozen[i] = u[idx]
-	}
-	seed, err := UniversalHashSeed(polarAdaptiveTagBits, p.blen[bi])
-	if err != nil {
-		return tpPolarBlock{}, err
-	}
-	tag := ComputeUniversalHashTag(p.own[bi*p.n:bi*p.n+p.blen[bi]], seed, polarAdaptiveTagBits)
-	return tpPolarBlock{Index: bi, K: k, Frozen: frozen, Seed: seed, Tag: tag}, nil
-}
-
-// bobBlock decodes one attempt into corrected and reports whether its hash matched
-func (p *polarPlan) bobBlock(blk tpPolarBlock, bi, attempt int, q []float64, listSize int, corrected []byte) (bool, error) {
-	k := p.k(bi, attempt)
-	if blk.Index != bi || blk.K != k {
-		return false, fmt.Errorf("two-party: polar block %d attempt %d: Alice used k=%d, expected %d", bi, attempt, blk.K, k)
-	}
-	code := codeFromMeans(p.uMeans[bi], k)
-	if len(blk.Frozen) != len(code.FrozenIdx) {
-		return false, fmt.Errorf("two-party: polar block %d: %d frozen values, expected %d", bi, len(blk.Frozen), len(code.FrozenIdx))
-	}
-	qb := make([]float64, p.n)
-	for i := range p.n {
-		qb[i] = qMinTiming
-		if i < p.blen[bi] {
-			qb[i] = q[bi*p.n+i]
-		}
-	}
-	u, err := PolarDecodeLLR(code, SoftLLRs(p.block(bi), qb), blk.Frozen, PolarDecodeConfig{ListSize: listSize})
-	if err != nil {
-		return false, err
-	}
-	x, _ := PolarTransform(u)
-	copy(corrected[bi*p.n:], x[:p.blen[bi]])
-	return len(blk.Seed) > 0 && VerifyUniversalHash(x[:p.blen[bi]], blk.Tag, blk.Seed, polarAdaptiveTagBits), nil
-}
-
-// retry advances the failed blocks to their next attempt; a block stops at k=1 or the last
-// attempt and is then left to the CRC stage, exactly as PolarReconcileSoft does
-func (p *polarPlan) retry(pending, failed []int, attempt []int) ([]int, error) {
-	inPending := map[int]bool{}
-	for _, bi := range pending {
-		inPending[bi] = true
-	}
-	var next []int
-	for _, bi := range failed {
-		if !inPending[bi] {
-			return nil, fmt.Errorf("two-party: block %d reported failed but was not sent", bi)
-		}
-		if p.k(bi, attempt[bi]) == 1 || attempt[bi] == polarAdaptiveMaxSteps {
-			continue
-		}
-		attempt[bi]++
-		next = append(next, bi)
-	}
-	return next, nil
-}
-
-// leaked is the disclosure: the final frozen count of every block plus, per attempt, the tag and
-// Bob's verdict on it
-func (p *polarPlan) leaked(attempt []int) int {
-	total := 0
-	for bi := range p.blocks {
-		total += p.n - p.k(bi, attempt[bi]) + (polarAdaptiveTagBits+1)*(attempt[bi]+1) // tag and verdict
-	}
-	return total
 }
 
 // PipeConns connects two in-process sides, for tests and for running both parties in one place
@@ -969,194 +671,4 @@ func DecodeMessage(gotKind string, data []byte, wantKind string, v any) error {
 		return fmt.Errorf("two-party: expected a %q message, got %q", wantKind, gotKind)
 	}
 	return json.Unmarshal(data, v)
-}
-
-type tpLDPCFrame struct {
-	Syndrome, TagSeed, Tag []byte
-}
-
-type tpLDPCStart struct {
-	Digest []byte
-	Frames []tpLDPCFrame
-}
-
-type tpLDPCRound struct {
-	Failed []int // frames to reveal more for
-	Final  []int // frames that failed with everything revealed
-}
-
-type tpLDPCReveal struct {
-	Values [][]byte // per frame of the last Failed list, in its order
-}
-
-// aliceLDPC5G sends each frame's syndrome and tag, then the next slice of punctured values for every
-// frame Bob reports failed, until none is left
-func aliceLDPC5G(conn Conn, cfg TwoPartyConfig, rem []byte, qber float64, seed int64) (LDPC5GResult, error) {
-	var res LDPC5GResult
-	if cfg.LDPC == nil {
-		return res, errors.New("two-party: ldpc5g needs a backend")
-	}
-	p, err := PlanLDPC5G(cfg.LDPC, qber, seed, len(rem))
-	if err != nil {
-		return res, err
-	}
-	kl := len(p.Key)
-	n := (len(rem) + kl - 1) / kl
-	frames := make([]*ldpc5gAlice, n)
-	errs := make([]error, n)
-	var wg sync.WaitGroup
-	for f := range n {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			frames[f], errs[f] = p.aliceFrame(cfg.LDPC, rem[f*kl:min((f+1)*kl, len(rem))])
-		}()
-	}
-	wg.Wait()
-	start := tpLDPCStart{Digest: p.Digest()}
-	for f := range n {
-		if errs[f] != nil {
-			return res, errs[f]
-		}
-		start.Frames = append(start.Frames, tpLDPCFrame{frames[f].syndrome, frames[f].tagSeed, frames[f].tag})
-	}
-	if err := conn.Send("ldpc5g", start); err != nil {
-		return res, err
-	}
-	attempts := make([]int, n)
-	round := make([]int, n)
-	for i := range round {
-		round[i] = i
-	}
-	for len(round) > 0 {
-		for _, f := range round {
-			attempts[f]++
-		}
-		var r tpLDPCRound
-		if err := conn.Recv("ldpc5g_failed", &r); err != nil {
-			return res, err
-		}
-		res.Failed += len(r.Final)
-		in := map[int]bool{}
-		for _, f := range round {
-			in[f] = true
-		}
-		var reveal tpLDPCReveal
-		for _, f := range r.Failed {
-			if !in[f] || frames[f].revealed == len(p.Punctured) {
-				return res, fmt.Errorf("two-party: frame %d cannot be revealed further", f)
-			}
-			reveal.Values = append(reveal.Values, p.reveal(frames[f]))
-		}
-		if len(r.Failed) == 0 {
-			break
-		}
-		if err := conn.Send("ldpc5g_reveal", reveal); err != nil {
-			return res, err
-		}
-		round = r.Failed
-	}
-	res.M, res.Z, res.FrameKeyBits, res.Credit, res.Frames = p.M, p.Z, kl, p.Credit, n
-	for f := range n {
-		res.Attempts += attempts[f]
-		res.Revealed += frames[f].revealed
-		res.LeakedBits += p.Leak(frames[f].revealed, attempts[f])
-	}
-	return res, nil
-}
-
-// bobLDPC5G decodes every pending frame in parallel, reports which failed, and applies Alice's
-// reveals; a frame is accepted only when its syndrome holds and its tag matches
-func bobLDPC5G(conn Conn, cfg TwoPartyConfig, rem []byte, q []float64, qber float64, seed int64) ([]byte, LDPC5GResult, error) {
-	var res LDPC5GResult
-	if cfg.LDPC == nil {
-		return nil, res, errors.New("two-party: ldpc5g needs a backend")
-	}
-	p, err := PlanLDPC5G(cfg.LDPC, qber, seed, len(rem))
-	if err != nil {
-		return nil, res, err
-	}
-	var start tpLDPCStart
-	if err := conn.Recv("ldpc5g", &start); err != nil {
-		return nil, res, err
-	}
-	kl := len(p.Key)
-	n := (len(rem) + kl - 1) / kl
-	if !bytes.Equal(start.Digest, p.Digest()) || len(start.Frames) != n {
-		return nil, res, errors.New("two-party: Alice's LDPC frame layout differs from Bob's")
-	}
-	frames := make([]*ldpc5gBob, n)
-	for f := range n {
-		lo, hi := f*kl, min((f+1)*kl, len(rem))
-		fr := start.Frames[f]
-		if frames[f], err = p.bobFrame(rem[lo:hi], q[lo:hi], fr.Syndrome, fr.TagSeed, fr.Tag); err != nil {
-			return nil, res, err
-		}
-	}
-	round := make([]int, n)
-	for i := range round {
-		round[i] = i
-	}
-	for len(round) > 0 {
-		errs := make([]error, len(round))
-		var wg sync.WaitGroup
-		sem := make(chan struct{}, runtime.NumCPU())
-		for i, f := range round {
-			wg.Add(1)
-			sem <- struct{}{}
-			go func() {
-				defer wg.Done()
-				errs[i] = p.attempt(cfg.LDPC, frames[f])
-				<-sem
-			}()
-		}
-		wg.Wait()
-		var r tpLDPCRound
-		for i, f := range round {
-			if errs[i] != nil {
-				return nil, res, errs[i]
-			}
-			switch fr := frames[f]; {
-			case fr.ok:
-			case fr.revealed == len(p.Punctured):
-				r.Final = append(r.Final, f)
-			default:
-				r.Failed = append(r.Failed, f)
-			}
-		}
-		if err := conn.Send("ldpc5g_failed", r); err != nil {
-			return nil, res, err
-		}
-		res.Failed += len(r.Final)
-		if len(r.Failed) == 0 {
-			break
-		}
-		var reveal tpLDPCReveal
-		if err := conn.Recv("ldpc5g_reveal", &reveal); err != nil {
-			return nil, res, err
-		}
-		if len(reveal.Values) != len(r.Failed) {
-			return nil, res, errors.New("two-party: reveal does not match the failed frames")
-		}
-		for i, f := range r.Failed {
-			if err := p.apply(frames[f], reveal.Values[i]); err != nil {
-				return nil, res, err
-			}
-		}
-		round = r.Failed
-	}
-	corrected := make([]byte, 0, len(rem))
-	res.M, res.Z, res.FrameKeyBits, res.Credit, res.Frames = p.M, p.Z, kl, p.Credit, n
-	for f, fr := range frames {
-		corrected = append(corrected, fr.out...)
-		res.Attempts += fr.attempts
-		res.Revealed += fr.revealed
-		res.LeakedBits += p.Leak(fr.revealed, fr.attempts)
-		for i, b := range fr.out {
-			if b != rem[f*kl+i] {
-				res.BitsCorrected++
-			}
-		}
-	}
-	return corrected, res, nil
 }

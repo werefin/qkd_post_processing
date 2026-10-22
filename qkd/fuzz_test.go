@@ -45,38 +45,6 @@ func FuzzToeplitzHashMatchesNaive(f *testing.F) {
 	})
 }
 
-// FuzzComputeBlockParityMatchesReference checks the optimized (parity-table, parallel)
-// block parity computation against the unoptimized mask-based reference
-func FuzzComputeBlockParityMatchesReference(f *testing.F) {
-	f.Add([]byte{1, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 1, 0})
-	f.Add([]byte{})
-	f.Fuzz(func(t *testing.T, dataRaw []byte) {
-		if len(dataRaw) > 20_000 {
-			return
-		}
-		data := toBits(dataRaw)
-		for _, g := range []GeneratorMatrix{testMatrixA, testMatrixC} {
-			got := ComputeBlockParity(data, g)
-			masks := buildParityMasks(g)
-			words := make([]uint64, masks.words)
-			scratch := make([]byte, g.ParityBits())
-			blockSize := g.BlockSize()
-			numBlocks := (len(data) + blockSize - 1) / blockSize
-			if len(got) != numBlocks {
-				t.Fatalf("m=%d: expected %d blocks, got %d", blockSize, numBlocks, len(got))
-			}
-			for bi := range numBlocks {
-				bs := bi * blockSize
-				be := min(bs+blockSize, len(data))
-				want := masks.parityInto(data[bs:be], words, scratch)
-				if !bytes.Equal(want, got[bi]) {
-					t.Fatalf("m=%d, block %d: reference=%v, got=%v", blockSize, bi, want, got[bi])
-				}
-			}
-		}
-	})
-}
-
 // FuzzCRC16Deterministic checks the CRC-16 checksum is a pure function with no shared
 // state leaking between calls -- a real risk given the table-driven implementation
 func FuzzCRC16Deterministic(f *testing.F) {

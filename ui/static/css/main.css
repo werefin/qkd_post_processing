@@ -102,14 +102,14 @@ input, select { font-family: inherit; }
 
 .main { margin-left: var(--sidebar-w); min-height: 100vh; position: relative; }
 
-.section { display: none; padding: 2rem 2.2rem 3rem; max-width: 1400px; animation: fadeSection .25s ease; }
+.section { display: none; padding: 2rem 2.2rem 3rem; animation: fadeSection .25s ease; }
 .section.active { display: block; }
 @keyframes fadeSection { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 
 .section-header { margin-bottom: 1.6rem; }
 .section-header--wide { max-width: 100%; }
 .section-title { font-size: 1.6rem; font-weight: 800; letter-spacing: -.01em; line-height: 1.2; margin-bottom: .4rem; }
-.section-sub { font-size: .88rem; color: var(--text2); line-height: 1.6; max-width: 90ch; }
+.section-sub { font-size: .88rem; color: var(--text2); line-height: 1.6; }
 
 .nav-card { display: block; cursor: pointer; border-left: 4px solid transparent; transition: border-color var(--transition), transform var(--transition), background var(--transition); }
 .nav-card:hover { border-color: var(--border2); transform: translateY(-2px); }
@@ -202,6 +202,9 @@ input, select { font-family: inherit; }
 /* Chips (current-run summary) */
 .chips { display: flex; flex-wrap: wrap; gap: .6rem; padding: 1.1rem 1.25rem; border-bottom: 1px solid var(--border); }
 .chip { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: .35rem .6rem; display: flex; flex-direction: column; gap: .15rem; min-width: 84px; }
+/* a chip that is a choice: its box and name side by side */
+.chip--check { flex-direction: row; align-items: center; gap: .45rem; cursor: pointer; font-size: .85rem; font-weight: 700; }
+.chip--check input { margin: 0; }
 .chip-k { font-size: .58rem; text-transform: uppercase; letter-spacing: .06em; color: var(--text3); }
 .chip-v { font-size: .85rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: var(--text); }
 .chip--warn .chip-v { color: var(--warn); }
@@ -259,7 +262,7 @@ input, select { font-family: inherit; }
 }
 .log-panel:empty::before { content: 'no output yet'; color: var(--text3); }
 
-.hint { font-size: .76rem; color: var(--text3); line-height: 1.6; padding: .85rem 1.25rem 1.25rem; max-width: 100ch; }
+.hint { font-size: .76rem; color: var(--text3); line-height: 1.6; padding: .85rem 1.25rem 1.25rem; }
 
 /* Data table (CHSH per-pair breakdown) */
 .data-table-wrap { overflow-x: auto; }
@@ -272,6 +275,12 @@ input, select { font-family: inherit; }
 .data-table td.wrap { white-space: normal; text-align: left; min-width: 14rem; color: var(--text2); }
 .data-table td.error-cell { color: var(--danger); }
 .data-table tbody td.positive { color: var(--success); }
+/* a table of names to tick: everything from the left, the tick box column only as wide as the box */
+.data-table--names th, .data-table--names td { text-align: left; }
+.data-table--names th:first-child, .data-table--names td:first-child { width: 1%; padding-right: .25rem; }
+/* inside a card's body a hint lines up with the fields, and a card ending in chips needs no rule under them */
+.card-body .hint { padding-left: 0; padding-right: 0; }
+.card > .chips:last-child { border-bottom: 0; }
 .error-msg { color: var(--danger); font-size: .78rem; padding: .5rem 1.1rem 0; }
 
 @media (max-width: 900px) {

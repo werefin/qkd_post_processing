@@ -6,7 +6,7 @@ updates:
     schedule: { interval: monthly }
     groups: { go: { patterns: ["*"] } }
   - package-ecosystem: pip
-    directories: [/services, /ec]
+    directories: [/services, /evaluation]
     schedule: { interval: monthly }
     groups: { python: { patterns: ["*"] } }
   - package-ecosystem: docker

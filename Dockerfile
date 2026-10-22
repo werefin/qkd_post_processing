@@ -14,7 +14,6 @@ RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY qkd/ qkd/
 COPY kms/ kms/
 COPY relay/ relay/
-COPY pyec/ pyec/
 COPY cmd/ cmd/
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \

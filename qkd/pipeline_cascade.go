@@ -3,7 +3,7 @@ package qkd
 // CascadeRunConfig configures RunCascade; zero Cascade values take the measured defaults
 type CascadeRunConfig struct {
 	CoincidenceWindowPS int64
-	SampleFraction      float64         // fraction of sifted bits sacrificed to measure QBER directly
+	SampleFraction      float64         // with SacrificeSample: fraction of sifted bits sacrificed for the QBER
 	Cascade             CascadeConfig   // passes, block sizes; Seed is taken from Seed below
 	Seed                int64           // derives the sample and every pass's shuffle; must be agreed publicly
 	ChunkSize           int             // CRC chunk size (bits), applied after Cascade
@@ -11,12 +11,12 @@ type CascadeRunConfig struct {
 	Asymptotic          bool            // asymptotic n(1-h2(QBER)) instead of the default finite-key bound
 	FiniteKey           FiniteKeyConfig // finite-key security target, zero values default to 1e-10 / 1e-15
 	ExpectedQBER        float64         // the QBER Cascade plans with, from public timing; 0 takes 0.05
-	// SacrificeSample spends a random share of the sifted bits on the QBER, as the other methods do; by default
+	// SacrificeSample spends a random share of the sifted bits on the QBER; by default
 	// nothing is spent and each basis's errors, counted exactly after correction, bound the other's phase errors
 	SacrificeSample bool
 }
 
-// CascadeRunResult mirrors WinnowRunResult with Cascade's statistics
+// CascadeRunResult is one block: the sifted count, the QBER, Cascade's statistics, verification and the key
 type CascadeRunResult struct {
 	SiftedBits int
 	QBER       QBERResult

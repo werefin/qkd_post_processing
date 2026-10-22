@@ -57,16 +57,6 @@ func BenchmarkToeplitzImpl_100kx50k(b *testing.B) {
 	}
 }
 
-func BenchmarkBlockErrorDetect_1M(b *testing.B) {
-	r := rand.New(rand.NewSource(2))
-	n := 1_000_000
-	alice := randomBits(r, n)
-	bob := append([]byte(nil), alice...)
-	for b.Loop() {
-		BlockErrorDetect(alice, bob, testMatrixC)
-	}
-}
-
 func BenchmarkCRCVerify_1M(b *testing.B) {
 	r := rand.New(rand.NewSource(2))
 	n := 1_000_000
@@ -85,69 +75,3 @@ func BenchmarkBitsToBytesInto_2048(b *testing.B) {
 		dst = bitsToBytesInto(bits, dst)
 	}
 }
-
-func BenchmarkWinnowReconcile_1M(b *testing.B) {
-	r := rand.New(rand.NewSource(2))
-	n := 1_000_000
-	alice := randomBits(r, n)
-	bob := append([]byte(nil), alice...)
-	for i := range bob {
-		if r.Float64() < 0.03 {
-			bob[i] ^= 1
-		}
-	}
-	cfg := WinnowConfig{
-		BlockSizes:   []int{8, 8, 16, 16, 32},
-		Permutations: make([][]int, 5),
-	}
-	for i := range cfg.Permutations {
-		cfg.Permutations[i] = GeneratePermutation(n, int64(1000+i))
-	}
-	for b.Loop() {
-		WinnowReconcile(alice, bob, cfg)
-	}
-}
-
-func BenchmarkLDPCReconcile_1M(b *testing.B) {
-	r := rand.New(rand.NewSource(2))
-	n := 1_000_000
-	alice := randomBits(r, n)
-	bob := append([]byte(nil), alice...)
-	for i := range bob {
-		if r.Float64() < 0.03 {
-			bob[i] ^= 1
-		}
-	}
-	h, err := BuildRegularLDPC(n, 3, 10, 7) // rate 0.7; regular codes' real threshold runs below Shannon capacity, wr=12 (0.75) doesn't converge here even though 0.75<0.806
-	if err != nil {
-		b.Fatal(err)
-	}
-	for b.Loop() {
-		LDPCReconcile(h, alice, bob, 0.03, LDPCDecodeConfig{})
-	}
-}
-
-// benchmarkPolarReconcile matches BenchmarkLDPCReconcile_1M: ~1M bits, QBER 3%, rate 0.7
-func benchmarkPolarReconcile(b *testing.B, listSize int) {
-	r := rand.New(rand.NewSource(2))
-	n := 1 << 20
-	alice := randomBits(r, n)
-	bob := append([]byte(nil), alice...)
-	for i := range bob {
-		if r.Float64() < 0.03 {
-			bob[i] ^= 1
-		}
-	}
-	code, err := BuildPolarCode(1<<16, 7*(1<<16)/10, 0.03)
-	if err != nil {
-		b.Fatal(err)
-	}
-	for b.Loop() {
-		if _, _, _, _, err := PolarReconcile(code, alice, bob, 0.03, PolarDecodeConfig{ListSize: listSize}); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkPolarReconcileSC_1M(b *testing.B)   { benchmarkPolarReconcile(b, 1) }
-func BenchmarkPolarReconcileSCL8_1M(b *testing.B) { benchmarkPolarReconcile(b, 8) }

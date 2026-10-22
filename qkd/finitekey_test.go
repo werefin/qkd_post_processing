@@ -6,44 +6,11 @@ import (
 	"testing"
 )
 
-// TestPhaseErrorMuShrinksWithSampleSize: more conjugate-basis statistics
-// must tighten the confidence bound, not widen it
-func TestPhaseErrorMuShrinksWithSampleSize(t *testing.T) {
-	small := phaseErrorMu(1000, 1000, 1e-10)
-	large := phaseErrorMu(1_000_000, 1_000_000, 1e-10)
-	if large >= small {
-		t.Fatalf("expected mu to shrink as sample size grows: n=1e3 -> %v, n=1e6 -> %v", small, large)
-	}
-}
-
-// TestPhaseErrorMuShrinksWithLooserConfidence: accepting a larger epsPE
-// (less confidence) must tighten mu, matching ln(1/epsPE) shrinking
-func TestPhaseErrorMuShrinksWithLooserConfidence(t *testing.T) {
-	tight := phaseErrorMu(100_000, 100_000, 1e-15)
-	loose := phaseErrorMu(100_000, 100_000, 1e-3)
-	if loose >= tight {
-		t.Fatalf("expected a looser epsPE to give a smaller mu: epsPE=1e-15 -> %v, epsPE=1e-3 -> %v", tight, loose)
-	}
-}
-
-// TestEstimatePhaseErrorConservativeExceedsOptimistic: the post-selection
-// correction (Nsifted/NsurvivingEC > 1) must only ever raise phi
-func TestEstimatePhaseErrorConservativeExceedsOptimistic(t *testing.T) {
-	q := 0.02
-	ns, k := 100_000, 100_000
-	epsPE := 1e-10
-	nSifted, nSurvivingEC := 100_000, 86_600 // ~0.866 survival, matching the review's link AB
-
-	opt := EstimatePhaseError(q, ns, k, epsPE, nSifted, nSurvivingEC, false)
-	cons := EstimatePhaseError(q, ns, k, epsPE, nSifted, nSurvivingEC, true)
-	if cons.Phi <= opt.Phi {
-		t.Fatalf("expected conservative phi (%v) > optimistic phi (%v)", cons.Phi, opt.Phi)
-	}
-	wantRatio := float64(nSifted) / float64(nSurvivingEC)
-	gotRatio := cons.Phi / opt.Phi
-	if math.Abs(gotRatio-wantRatio) > 1e-9 {
-		t.Fatalf("conservative/optimistic ratio = %v, want %v", gotRatio, wantRatio)
-	}
+// phaseErrorMu: mu = sqrt((ns+k)/(ns*k) * (k+1)/k * ln(1/epsPE)), the Serfling-style fluctuation term of
+// Tomamichel et al.; a reference the exact hypergeometric bound must beat, not used to size keys
+func phaseErrorMu(ns, k int, epsPE float64) float64 {
+	nsF, kF := float64(ns), float64(k)
+	return math.Sqrt((nsF + kF) / (nsF * kF) * (kF + 1) / kF * math.Log(1/epsPE))
 }
 
 // TestFiniteKeySecureKeyLengthMonotonicInN: more input bits at the same
@@ -124,9 +91,10 @@ func TestFiniteKeyRoughlyMatchesReviewLinkAB(t *testing.T) {
 	nSurvivingEC := int(float64(nSifted) * necOverNsif)
 	epsPE := (1e-10) / 3
 
-	pe := EstimatePhaseError(qber, nSifted/2, nSifted/2, epsPE, nSifted, nSurvivingEC, true)
+	// the review's conservative bound: the sample rate plus the fluctuation term, scaled by sifted over surviving
+	phi := (qber + phaseErrorMu(nSifted/2, nSifted/2, epsPE)) * float64(nSifted) / float64(nSurvivingEC)
 	leaked := int(float64(nSurvivingEC) * (3.0/7 + 16.0/256) / necOverNsif) // EC+EV cost relative to Nsif, review's convention
-	l := FiniteKeySecureKeyLength(nSurvivingEC, pe.Phi, leaked, 1e-15, epsPE)
+	l := FiniteKeySecureKeyLength(nSurvivingEC, phi, leaked, 1e-15, epsPE)
 
 	// per basis rate, both bases combined, per second
 	gotRatePerSec := float64(l) * 2 / 60
@@ -148,10 +116,6 @@ func TestFiniteKeyNoKeyAtOrAboveHalf(t *testing.T) {
 			t.Fatalf("phi=%.1f gave %d key bits, want 0", phi, l)
 		}
 	}
-	pe := EstimatePhaseError(0.02, 1000, 100, 1e-10/3, 1000, 0, true)
-	if pe.Phi != 0.5 {
-		t.Fatalf("no surviving bits should give phi=0.5, got %v", pe.Phi)
-	}
 }
 
 // TestDistillFiniteKeyAbortsOnMismatch: if the two surviving strings differ, the universal-hash
@@ -169,18 +133,18 @@ func TestDistillFiniteKeyAbortsOnMismatch(t *testing.T) {
 	}
 }
 
-// TestRunLDPCFiniteKeyAtScale: at a realistic block size the finite-key bound must yield a key,
+// TestRunCascadeFiniteKeyAtScale: at a realistic block size the finite-key bound must yield a key,
 // smaller than the asymptotic figure, with the phase-error bound above its point estimate
-func TestRunLDPCFiniteKeyAtScale(t *testing.T) {
+func TestRunCascadeFiniteKeyAtScale(t *testing.T) {
 	t.Parallel() // heavy and independent: runs beside the other heavy tests
 	alice, bob := simulateClicks(1_200_000, 0.02, 21)
-	cfg := LDPCRunConfig{CoincidenceWindowPS: 500, SampleFraction: 0.1, BlockLength: 20000, ColWeight: 3, RowWeight: 8, Seed: 22, ChunkSize: 128}
-	finite, err := RunLDPC(alice, bob, cfg)
+	cfg := CascadeRunConfig{CoincidenceWindowPS: 500, Seed: 22, ChunkSize: 128, ExpectedQBER: 0.02, SacrificeSample: true}
+	finite, err := RunCascade(alice, bob, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg.Asymptotic = true
-	asym, err := RunLDPC(alice, bob, cfg)
+	asym, err := RunCascade(alice, bob, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,6 +289,26 @@ func TestChainRuleBits(t *testing.T) {
 		want := math.Log2(4 / (eps * eps))
 		if got := float64(chainRuleBits(eps)); got < want || got > want+1.01 {
 			t.Fatalf("eps %g: %v bits, want about %.1f", eps, got, want)
+		}
+	}
+}
+
+// TestHypergeomCDFStopsEarlySafely: summing only the terms that matter never gives less than the full sum, the
+// bound's safe side, and differs from it by nothing a double can show
+func TestHypergeomCDFStopsEarlySafely(t *testing.T) {
+	full := func(e, population, successes, draws int) float64 {
+		base := logChoose(population, draws)
+		var s float64
+		for x := max(0, draws-(population-successes)); x <= min(e, successes, draws); x++ {
+			s += math.Exp(logChoose(successes, x) + logChoose(population-successes, draws-x) - base)
+		}
+		return s
+	}
+	for _, c := range [][4]int{{1_000, 90_000, 6_000, 45_000}, {2_900, 90_000, 6_000, 45_000}, {3_100, 90_000, 6_000, 45_000},
+		{40_000, 1_000_000, 90_000, 500_000}, {5, 2_000, 40, 1_000}, {3_000, 200_000, 3_500, 100_000}} {
+		got, want := hypergeomCDF(c[0], c[1], c[2], c[3]), full(c[0], c[1], c[2], c[3])
+		if got < want*(1-1e-12) || got > want*(1+1e-12)+1e-300 {
+			t.Fatalf("P[X<=%d] of %v: %v, full sum %v", c[0], c, got, want)
 		}
 	}
 }
