@@ -1,0 +1,26 @@
+# Network's central controller, on one administration host: holds nodes, links and settings, and every node's
+# agent pulls its config from it over mutual TLS --> run through ./setup.sh controller up
+
+services:
+  controller:
+    image: ${KMS_IMAGE:-qkd_post_processing/kms}:${IMAGE_TAG:-local}
+    build: { context: .., target: kms }
+    entrypoint: ["/usr/local/bin/controller"]
+    command:
+      - -state=/data/network.json
+      - -listen=:8080
+      - -tls-cert=/etc/qkd/controller/controller.pem
+      - -tls-key=/etc/qkd/controller/controller.key
+      - -tls-ca=/etc/qkd/controller/ca.pem
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    user: "${APP_UID:?}:${APP_GID:?}"
+    volumes:
+      - ./controller/pki:/etc/qkd/controller:ro
+      - ./controller/data:/data
+    ports: ["${CONTROLLER_PORT:-8080}:8080"]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }

@@ -76,14 +76,18 @@ Solid arrows carry key material; dotted arrows carry public information that onl
 | `cmd/qkdpki/` | the network CA, node credential bundles, application certificates, the shared network description |
 | `cmd/importtt/` | the chain on a real dual-TimeTagger recording |
 | `cmd/qkd_post_processing/` | the chain on simulated click streams |
+| `cmd/controller/` | the network controller: nodes, links and settings for every node's agent ([`doc/services.md`](doc/services.md)) |
 | `cmd/tuneblock/` | compares block-discard generator matrices |
 | `acquisition/` | Python: TimeTagger recording, clock alignment, CHSH diagnostic ([`acquisition/README.md`](acquisition/README.md)) |
 | `evaluation/` | evaluates any recordings through the whole chain, one report with figures per pair and a pooled summary per link ([`evaluation/README.md`](evaluation/README.md)) |
 | `ec/`, `pyec/` | 5G NR LDPC, the one-way error correction for two-party extraction: matrices from `py3gpp`, belief propagation from `ldpc`, run as a Python service the Go pipeline drives (`doc/ec_comparison.md`) |
-| `ui/` | the node dashboard (Flask) |
-| `deploy/` | one node's containers, `setup.sh`, `trust-ca.sh` ([`doc/deployment.md`](doc/deployment.md)) |
+| `services/` | the node's services from one image: agent, acquisition, processing, web ([`doc/services.md`](doc/services.md)) |
+| `ui/` | the dashboard page: template, script, styles, logo |
+| `api/` | OpenAPI files of the controller and the node services |
+| `deploy/` | one node's containers, the controller's, the lab PC's, `setup.sh`, `trust-ca.sh` ([`doc/deployment.md`](doc/deployment.md)) |
+| `.github/` | CI, weekly drift checks, image releases to GitHub Container Registry, Dependabot |
 | `doc/` | procedures, security analysis, key management, deployment, code reference |
-| `scripts/` | `test.sh`, `tune-blocksize.sh`, `cross_check_toeplitz.py`, `ec_compare.py` |
+| `scripts/` | `release.sh`, `tune-blocksize.sh`, `cross_check_toeplitz.py`, `ec_compare.py` |
 | `references/` | vendor documents, local only: ignored by git and Docker and refused by the pre-commit hook |
 
 ### Quick start
@@ -105,11 +109,12 @@ cd deploy
 ./setup.sh node B b.example.org,192.0.2.2
 ./setup.sh link A B                             # a QKD link between A and B
 ./setup.sh bundle A                             # nodes/A.tar.gz, to copy to node A
+./setup.sh controller init ctl.example.org && ./setup.sh controller up   # the network controller
 # on node A, inside a clone of this repository:
-./setup.sh install A.tar.gz && ./setup.sh up A
+./setup.sh install A.tar.gz && ./setup.sh use-controller A https://ctl.example.org:8080 && ./setup.sh up A
 ```
 
-Each node runs three hardened containers: `kms` (the key management system, a 13 MB distroless image, the only holder of the node's key and master key), `app` (the dashboard and the post-processing) and `ui` (HTTPS with a certificate from the network CA, behind a login). Trust the CA once with `./trust-ca.sh`, then every node's dashboard opens without warnings. A lab PC that only needs the dashboard, Windows included, runs `docker compose -f deploy/lab.yml up -d --build` and opens `http://localhost:9823` (Lab PC in [`doc/deployment.md`](doc/deployment.md)). Images build for amd64 and arm64 from the same `Dockerfile`. [`doc/deployment.md`](doc/deployment.md) is the full guide.
+Everything runs in Docker. One controller holds the network (nodes, links, settings) and every node's agent takes its settings from it. Each node runs hardened containers: `kms` (the key management system, a distroless image, the only holder of the node's key and master key), four services from one `app` image on their own ports (`agent` 9100, `acquisition` 9101, `processing` 9102, `web` 9823) and `ui` (HTTPS with a certificate from the network CA, behind a login); [`doc/services.md`](doc/services.md) describes them and their APIs. Trust the CA once with `./trust-ca.sh`, then every node's dashboard opens without warnings. A lab PC that only needs the dashboard, Windows included, runs `docker compose -f deploy/lab.yml up -d --build` and opens `http://localhost:9823` (Lab PC in [`doc/deployment.md`](doc/deployment.md)). Images build for amd64 and arm64 from the same `Dockerfile`. [`doc/deployment.md`](doc/deployment.md) is the full guide.
 
 ### What a node does from its dashboard
 
@@ -134,7 +139,7 @@ cd ..
 go run ./cmd/importtt -dir acquisition/<recording dir> -cascade
 ```
 
-`importtt` filters coincidences (drift removal, window from the half width at half maximum of a Gaussian fit to the peak, [`doc/coincidence_filtering.md`](doc/coincidence_filtering.md)), corrects errors (`-cascade`, optimized Cascade, the least disclosure, f 1.03 to 1.08, counting the QBER from the errors it corrects so no sample is sacrificed; `-ldpc5g`, 5G NR LDPC, the best one-way method, for two-party; `-polar`, `-ldpc`, `-winnow`, or block discard; `-soft-bins 16` adds timing-aware decoding, [`doc/timing_aware_reconciliation.md`](doc/timing_aware_reconciliation.md)), verifies with CRC-16 and a universal hash, and sizes the key by the finite-key bound at $\varepsilon_\mathrm{sec} = 10^{-10}$, $\varepsilon_\mathrm{cor} = 10^{-15}$ ([`doc/finite_key_procedure.md`](doc/finite_key_procedure.md)). `-dir a,b,c` pools recordings into one block, `-keystore dir` writes the key as ETSI 014 records, `-json` prints one report, and `-window-sweep 50,100,...` adds sifted bits and QBER for each window from the same load.
+`importtt` filters coincidences (drift removal, window from the half width at half maximum of a Gaussian fit to the peak, [`doc/coincidence_filtering.md`](doc/coincidence_filtering.md)), corrects errors (`-cascade`, optimized Cascade, the least disclosure, f 1.03 to 1.08, counting the QBER from the errors it corrects so no sample is sacrificed; `-ldpc5g`, 5G NR LDPC, the best one-way method, for two-party; `-polar`, `-ldpc`, `-winnow`, or block discard; `-soft-bins 16` adds timing-aware decoding, [`doc/timing_aware_reconciliation.md`](doc/timing_aware_reconciliation.md)), verifies with CRC-16 and a universal hash, and sizes the key by the finite-key bound at $\varepsilon_\mathrm{sec} = 10^{-10}$, $\varepsilon_\mathrm{cor} = 10^{-15}$ ([`doc/security.md`](doc/security.md)). `-dir a,b,c` pools recordings into one block, `-keystore dir` writes the key as ETSI 014 records, `-json` prints one report, and `-window-sweep 50,100,...` adds sifted bits and QBER for each window from the same load.
 
 A single recording of a few seconds is too short for a finite key; continuous mode distils blocks of minutes (Continuous QKD below), and `evaluation/evaluate.py` follows any recording through every stage with figures, kept locally, never committed. Fine timestamps must be announced in one direction only (Alice to Bob), see Per-detector delays and the timing side channel in [`doc/coincidence_filtering.md`](doc/coincidence_filtering.md).
 
@@ -145,11 +150,11 @@ In production each node runs continuous two-party QKD from its dashboard: Produc
 ```bash
 cd acquisition
 python3 tt_record_dual.py --stop-mode continuous --segment-s 10 --output-dir run/            # until Ctrl+C
-python3 continuous_qkd.py run/ --block-s 300 --keystore ../ui/import/<neighbor>             # beside it
+python3 continuous_qkd.py run/ --block-s 300 --keystore <import dir>/<neighbor>             # beside it
 python3 tt_record_dual.py --stop-mode continuous --replay A.npy B.npy --output-dir run/      # without TimeTaggers
 ```
 
-The recorder writes one recording pair per segment, each complete before it appears. The processor follows them: every segment is aligned from a clock model, the first from the recorder's live tracker and every later one from the segment before, which also keeps only the clicks within 50 ns of a possible partner (a fraction of a percent of a busy detector's), so a 10 s segment of a 3 MHz detector is aligned and sifted in about 0.3 s; the full search runs only when there is no model or it fails. Each segment's aligned events stay as about 1 MB (`importtt -events-cache`) and its raw arrays are deleted; every `--block-s` seconds of data the block goes through optimized Cascade, verification and finite-key privacy amplification into the KMS import directory while the next fills. Blocks of 5 minutes reach about 70% of the key rate of hour-long ones ([`doc/finite_key_procedure.md`](doc/finite_key_procedure.md)); a stopped processor resumes from `continuous_state.json`. Details in [`acquisition/README.md`](acquisition/README.md).
+The recorder writes one recording pair per segment, each complete before it appears. The processor follows them: every segment is aligned from a clock model, the first from the recorder's live tracker and every later one from the segment before, which also keeps only the clicks within 50 ns of a possible partner (a fraction of a percent of a busy detector's), so a 10 s segment of a 3 MHz detector is aligned and sifted in about 0.3 s; the full search runs only when there is no model or it fails. Each segment's aligned events stay as about 1 MB (`importtt -events-cache`) and its raw arrays are deleted; every `--block-s` seconds of data the block goes through optimized Cascade, verification and finite-key privacy amplification into the KMS import directory while the next fills. Blocks of 5 minutes reach about 70% of the key rate of hour-long ones ([`doc/security.md`](doc/security.md)); a stopped processor resumes from `continuous_state.json`. Details in [`acquisition/README.md`](acquisition/README.md).
 
 ### Applications
 
@@ -187,22 +192,25 @@ Every stage also has a one-sided form (for example `ComputeChunkCRC` and `Reconc
 
 | Document | Contents |
 |---|---|
-| [`doc/finite_key_procedure.md`](doc/finite_key_procedure.md) | the finite-key procedure, stage by stage, with parameters and measured results |
 | [`doc/coincidence_filtering.md`](doc/coincidence_filtering.md) | drift removal, HWHM window, detector delays, timing side channel |
 | [`doc/timing_aware_reconciliation.md`](doc/timing_aware_reconciliation.md) | per-bit reliabilities from public timing |
 | [`doc/key_management.md`](doc/key_management.md) | the key management system: entities, protocols, lifecycle, limits |
-| [`doc/security_proof.md`](doc/security_proof.md) | security of privacy amplification, pool use, relay, key delivery and storage |
-| [`doc/deployment.md`](doc/deployment.md) | running the network: CA, nodes, links, applications, updates |
+| [`doc/security.md`](doc/security.md) | security and the finite-key procedure: key length stage by stage, estimation by correction, pools, relay, delivery, storage |
+| [`doc/services.md`](doc/services.md) | the controller and the node services: what each does, how they talk, CI and releases |
+| [`doc/deployment.md`](doc/deployment.md) | running the network in Docker: CA, controller, nodes, links, applications, updates |
 | [`doc/architecture.md`](doc/architecture.md) | code reference: every package, type and command |
 | [`doc/ec_comparison.md`](doc/ec_comparison.md) | polar, regular LDPC and 5G NR LDPC measured side by side |
 
 ### Make and test
 
 ```bash
-make build      # go build ./...
-make test       # go test ./... -v
-make test-all   # build, vet, fmt, race tests, cross-architecture build (scripts/test.sh)
+make check      # what CI runs: fmt, vet, build, race tests, golangci-lint, ruff, Python tests
+make test       # Go race tests
+make pytest     # the services' and acquisition's Python tests
+make services   # every node service in one process on http://127.0.0.1:9823, for development
 make bench      # benchmarks only
-make check      # fmt, vet, build, test, demo run
 docker build --target tools -t qkd-tools .      # every command, for offline analysis
+scripts/release.sh minor                        # tag a release; you publish it with the release workflow
 ```
+
+GitHub Actions run the same checks on every push and a weekly drift check; images are published only when you start the release workflow for a tag ([`doc/services.md`](doc/services.md)).

@@ -1,0 +1,155 @@
+# QKD network controller: every route of cmd/controller, port 8080, mutual TLS with the network CA
+openapi: 3.1.0
+info:
+  title: QKD network controller
+  version: 1.0.0
+  description: 'Holds the network as the operator wants it and hands each node its config in answer to its heartbeat. Callers are told apart by their certificate: OU operator changes the network, OU admin with CN = node ID is that node''s agent'
+servers: [{ url: 'https://controller:8080' }]
+security: [{ mutualTLS: [] }]
+paths:
+  /healthz:
+    get:
+      security: []
+      responses: { '200': { description: alive, content: { text/plain: { schema: { type: string, const: ok } } } } }
+  /readyz:
+    get:
+      security: []
+      responses:
+        '200': { description: the state directory is writable, content: { application/json: { schema: { type: object } } } }
+        '503': { description: not ready, content: { application/json: { schema: { type: object } } } }
+  /v1/agents/{id}/heartbeat:
+    post:
+      summary: 'A node''s status in, its config out; only the node''s own admin certificate'
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/NodeStatus' } } } }
+      responses:
+        '200':
+          description: config to apply
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  config: { $ref: '#/components/schemas/NodeConfig' }
+                  revision: { type: integer }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/network:
+    get:
+      summary: 'Whole network: desired nodes, links and settings, each node''s config and last status'
+      responses:
+        '200': { description: network, content: { application/json: { schema: { $ref: '#/components/schemas/Network' } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/events:
+    get:
+      summary: 'Network view as server-sent events named network, on every change and at least every 15 s'
+      responses:
+        '200': { description: event stream, content: { text/event-stream: { schema: { type: string } } } }
+  /v1/stats:
+    get:
+      summary: 'Flat numbers for monitoring: nodes up, per node recording and alerts, per link QBER and key bits'
+      responses:
+        '200': { description: stats, content: { application/json: { schema: { type: object, additionalProperties: { type: number } } } } }
+  /v1/settings:
+    put:
+      summary: 'Settings every node shares; fields left out keep their value; operator only'
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/Settings' } } } }
+      responses:
+        '200': { description: network after the change, content: { application/json: { schema: { $ref: '#/components/schemas/Network' } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/nodes/{id}:
+    put:
+      summary: 'Adds or changes a node; enabled defaults to true; operator only'
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, pattern: '^[A-Za-z0-9_-]{1,64}$' } }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/Node' } } } }
+      responses:
+        '200': { description: network after the change, content: { application/json: { schema: { $ref: '#/components/schemas/Network' } } } }
+        default: { $ref: '#/components/responses/Error' }
+    delete:
+      summary: 'Removes a node no link uses; operator only'
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: network after the change, content: { application/json: { schema: { $ref: '#/components/schemas/Network' } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/links/{name}:
+    put:
+      summary: 'Adds or changes a link; announcer defaults to a, active to true; operator only'
+      parameters: [{ name: name, in: path, required: true, schema: { type: string, pattern: '^[A-Za-z0-9_-]{1,64}$' } }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/Link' } } } }
+      responses:
+        '200': { description: network after the change, content: { application/json: { schema: { $ref: '#/components/schemas/Network' } } } }
+        default: { $ref: '#/components/responses/Error' }
+    delete:
+      summary: 'Removes a link; operator only'
+      parameters: [{ name: name, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: network after the change, content: { application/json: { schema: { $ref: '#/components/schemas/Network' } } } }
+        default: { $ref: '#/components/responses/Error' }
+components:
+  securitySchemes:
+    mutualTLS: { type: mutualTLS }
+  responses:
+    Error:
+      description: refused
+      content: { application/json: { schema: { type: object, properties: { error: { type: string } }, required: [error] } } }
+  schemas:
+    Settings:
+      type: object
+      properties:
+        segment_s: { type: number, minimum: 1, maximum: 600 }
+        block_s: { type: number, minimum: 30, maximum: 86400, description: a whole number of segments }
+        expected_qber: { type: number, exclusiveMinimum: 0, exclusiveMaximum: 0.5 }
+        keep_blocks: { type: integer, minimum: 2, maximum: 100 }
+    Node:
+      type: object
+      required: [site]
+      properties:
+        site: { type: string, description: the node's site in its own acquisition config }
+        enabled: { type: boolean }
+    Link:
+      type: object
+      required: [a, b]
+      properties:
+        a: { type: string }
+        b: { type: string }
+        announcer: { type: string, description: 'a or b: the node that announces its public timing' }
+        active: { type: boolean }
+    NodeConfig:
+      type: object
+      properties:
+        managed: { type: boolean, description: false for a node the operator never added }
+        active: { type: boolean }
+        site: { type: string }
+        announce_to: { type: array, items: { type: string } }
+        segment_s: { type: number }
+        block_s: { type: number }
+        expected_qber: { type: number }
+        keep_blocks: { type: integer }
+    NodeStatus:
+      type: object
+      description: 'What the agent reports: services, recorder, settings, alerts, last block per link and pools'
+      properties:
+        recording: { type: boolean }
+        active: { type: boolean }
+        services: { type: object, additionalProperties: { type: boolean } }
+        alerts: { type: array, items: { type: object } }
+        blocks: { type: object, additionalProperties: { type: object } }
+        pools: { type: object, additionalProperties: { type: object } }
+    Network:
+      type: object
+      properties:
+        revision: { type: integer }
+        settings: { $ref: '#/components/schemas/Settings' }
+        links: { type: object, additionalProperties: { $ref: '#/components/schemas/Link' } }
+        nodes:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              site: { type: string }
+              enabled: { type: boolean }
+              known: { type: boolean }
+              up: { type: boolean }
+              last_seen: { type: string, format: date-time }
+              config: { $ref: '#/components/schemas/NodeConfig' }
+              status: { $ref: '#/components/schemas/NodeStatus' }
+        time: { type: string, format: date-time }

@@ -226,7 +226,7 @@ func main() {
 	polarList := flag.Int("polar-list", 8, "SCL decoder list size (path count L); 1 = plain successive cancellation, larger L trades decode time for a lower block failure rate")
 	polarSample := flag.Float64("polar-sample", 0.05, "fraction of sifted bits sacrificed to measure QBER directly before polar correction")
 	softBins := flag.Int("soft-bins", 0, "with -ldpc or -polar: timing-aware soft reconciliation over this many public time-offset bins; simulated errors here do not depend on timing, so expect no gain; 0 = flat")
-	asymptotic := flag.Bool("asymptotic", false, "with -winnow/-ldpc/-polar: size the key by the asymptotic n(1-h2(QBER)) instead of the default finite-key bound (doc/security_proof.md section 2)")
+	asymptotic := flag.Bool("asymptotic", false, "with -winnow/-ldpc/-polar: size the key by the asymptotic n(1-h2(QBER)) instead of the default finite-key bound (doc/security.md)")
 	epsSec := flag.Float64("eps-sec", 1e-10, "finite-key secrecy failure probability per block")
 	sampleAuto := flag.Bool("sample-auto", true, "finite-key mode: size the QBER sample to maximize the finite key from the sifted count and -err as the declared QBER prior; overrides -ldpc-sample/-polar-sample/-winnow-sample")
 	epsCor := flag.Float64("eps-cor", 1e-15, "finite-key correctness failure probability per block, sets the universal-hash tag length")

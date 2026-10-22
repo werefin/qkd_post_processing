@@ -1,0 +1,23 @@
+# Monthly dependency updates, one pull request per ecosystem, so CI checks each group as a whole
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule: { interval: monthly }
+    groups: { go: { patterns: ["*"] } }
+  - package-ecosystem: pip
+    directories: [/services, /ec]
+    schedule: { interval: monthly }
+    groups: { python: { patterns: ["*"] } }
+  - package-ecosystem: docker
+    directory: /
+    schedule: { interval: monthly }
+    groups: { docker: { patterns: ["*"] } }
+  - package-ecosystem: docker-compose
+    directory: /deploy
+    schedule: { interval: monthly }
+    groups: { compose: { patterns: ["*"] } }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: monthly }
+    groups: { actions: { patterns: ["*"] } }

@@ -5,7 +5,6 @@ pooling each link; usage: evaluate.py <recording dir or parent dir> [...] [--out
 
 import argparse
 import json
-import math
 import os
 import re
 import shutil
@@ -295,7 +294,7 @@ def write_pair_report(res, work):
     L = [f'### Evaluation of {res["name"]}', '',
          f'**Recording:** {res["start"][:4]}-{res["start"][4:6]}-{res["start"][6:8]} {res["start"][9:11]}:{res["start"][11:13]}:{res["start"][13:]}, '
          f'link {res["link"]}, evaluated on {datetime.now():%Y-%m-%d} by `evaluation/evaluate.py` with the code as it stands and the settings of `acquisition/config.json`. '
-         'Error correction, verification and privacy amplification at $\\varepsilon_\\mathrm{sec} = 10^{-10}$, $\\varepsilon_\\mathrm{cor} = 10^{-15}$ as in `doc/finite_key_procedure.md`.', '']
+         'Error correction, verification and privacy amplification at $\\varepsilon_\\mathrm{sec} = 10^{-10}$, $\\varepsilon_\\mathrm{cor} = 10^{-15}$ as in `doc/security.md`.', '']
     if res['notes']:
         L += ['**Notes:** ' + '; '.join(res['notes']) + '.', '']
     L += ['### Data', '', '| Side | Site | Clicks | Length | Rate | Channels 1/2/3/4 |', '|---|---|---|---|---|---|']

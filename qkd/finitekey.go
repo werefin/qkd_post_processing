@@ -1,5 +1,5 @@
 // Non-asymptotic replacement for SecureKeyLength: see
-// doc/finite_key_procedure.md and the formula's own doc comment below
+// doc/security.md and the formula's own doc comment below
 package qkd
 
 import "math"
@@ -74,7 +74,7 @@ type FiniteKeyConfig struct {
 	EpsSec float64 // secrecy failure probability, default 1e-10
 	EpsCor float64 // correctness failure probability, default 1e-15
 	// byCorrection: every bit is key and errors are counted by correction, so each basis's key is bounded
-	// with the other basis's rounds as its test and the two joined by the chain rule (doc/security_proof.md)
+	// with the other basis's rounds as its test and the two joined by the chain rule (doc/security.md)
 	byCorrection bool
 }
 

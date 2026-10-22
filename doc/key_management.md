@@ -1,6 +1,6 @@
 ### Key management system
 
-**Status**: specification of the key management system implemented in `cmd/kms`, `kms/` and `relay/`. It defines the entities, the network description, the protocols between nodes and between nodes and applications, the lifecycle of a key, and the limits of what the system provides. `doc/security_proof.md` proves its security properties; `doc/deployment.md` explains how to run it.
+**Status**: specification of the key management system implemented in `cmd/kms`, `kms/` and `relay/`. It defines the entities, the network description, the protocols between nodes and between nodes and applications, the lifecycle of a key, and the limits of what the system provides. `doc/security.md` proves its security properties; `doc/deployment.md` explains how to run it.
 
 ### Entities
 
@@ -10,7 +10,7 @@
 | QKD link | a pair of nodes that run QKD between them; each end holds the link's pool | the two node IDs |
 | Pool | the keys a link has produced, stored identically at both ends under the same key_IDs | the link |
 | Application (SAE) | a program that consumes keys, attached to exactly one node, its home | its SAE ID, the common name of its certificate with role `sae` |
-| Dashboard | the node's web interface, holding two certificates: role `admin` for management and role `sae` for the key exchange test | the node ID (admin) and `dashboard-<node ID>` (SAE) |
+| Node services | the node's agent and processing services (`services.md`), holding two certificates: role `admin` for management and the post-processing mailbox, and role `sae` for the dashboard's key exchange test; the agent also shows the admin certificate to the network controller, which never sees a key | the node ID (admin) and `dashboard-<node ID>` (SAE) |
 | Network CA | the private certificate authority that signs every certificate above; its key stays offline | `deploy/ca/ca.pem` |
 
 A certificate's organizational unit is its role and its common name its ID. The KMS authorizes every request from the certificate alone, never from anything inside the request: an application certificate can never act as a node, a node certificate never as an application, and a dashboard's admin certificate can read its own node's status and audit trail but cannot act as the node toward others.
@@ -39,7 +39,7 @@ Both ends of a link must store the same keys under the same key_IDs, so post-pro
 
 - Alice's node announces, for every click, its timestamp, basis and multi-photon flag, never its bit; the announcement goes one way only.
 - Bob's node finds its own recording of the same start time, aligns it to the announcement (offset and clock skew), removes the drift, sets the window from the HWHM of the peak, matches the coincidences and sends back only which of Alice's clicks are paired.
-- Error correction is optimized Cascade by default: Bob asks Alice for the parities he needs, a whole pass's blocks in one request and then one request per halving step of all the searches under way, about a hundred round trips per block; Alice counts every parity she discloses herself. Nothing is sacrificed: after correction Bob announces, per basis, how many bits he corrected, which bound the other basis's phase errors (`doc/security_proof.md`, Theorem (errors counted by correction)). With 5G NR LDPC or polar codes instead, both reveal a random sample to estimate the error rate, Alice sends syndromes and frame tags (or frozen values and short hashes per block), Bob decodes his bits onto hers and reports which frames failed, and Alice reveals more only for those, rate-adaptively. Both then exchange CRCs, Alice sends the verification tag, Bob confirms.
+- Error correction is optimized Cascade by default: Bob asks Alice for the parities he needs, a whole pass's blocks in one request and then one request per halving step of all the searches under way, about a hundred round trips per block; Alice counts every parity she discloses herself. Nothing is sacrificed: after correction Bob announces, per basis, how many bits he corrected, which bound the other basis's phase errors (Errors counted by correction in `doc/security.md`). With 5G NR LDPC or polar codes instead, both reveal a random sample to estimate the error rate, Alice sends syndromes and frame tags (or frozen values and short hashes per block), Bob decodes his bits onto hers and reports which frames failed, and Alice reveals more only for those, rate-adaptively. Both then exchange CRCs, Alice sends the verification tag, Bob confirms.
 - Both hash their verified bits with the same Toeplitz seed to the certified length, and Alice names one key_ID per 256-bit record. Each node writes the records into the import folder of the link, and its KMS takes them into the pool.
 
 Continuous two-party QKD runs this for every block without anyone starting it: each node records its own TimeTagger in segments that start on the same UTC seconds as its neighbor's, the node that announces offers each block's timing in parts, and the other answers with its own segments of the same time (Production: continuous two-party QKD in `doc/deployment.md`).
@@ -48,7 +48,7 @@ The messages travel between the two dashboards through the nodes' KMEs (`/kme/v1
 
 ### Pools and how they are split
 
-A link's pool must be identical at its two ends. Both ends drawing from the same pool at the same time would let two keys, or two one-time pads, coincide, so the pool is split: node $u$ may originate with a key_ID only if `OriginatorOf(u, v)` accepts it, that is when the parity of its first hex digit is even and $u$ sorts before $v$, or odd and $u$ sorts after $v$. The two ends' rules are exact complements and every key_ID is random, so each end owns about half of the pool. An end uses a key of the other half only when the owner names it in an authenticated request, and refuses any request naming a key of its own half before consuming anything. Every key is therefore used at most once in the whole network, for one purpose (Single use of pool keys across both ends of a link in `doc/security_proof.md`).
+A link's pool must be identical at its two ends. Both ends drawing from the same pool at the same time would let two keys, or two one-time pads, coincide, so the pool is split: node $u$ may originate with a key_ID only if `OriginatorOf(u, v)` accepts it, that is when the parity of its first hex digit is even and $u$ sorts before $v$, or odd and $u$ sorts after $v$. The two ends' rules are exact complements and every key_ID is random, so each end owns about half of the pool. An end uses a key of the other half only when the owner names it in an authenticated request, and refuses any request naming a key of its own half before consuming anything. Every key is therefore used at most once in the whole network, for one purpose (Pools: no key used twice in `doc/security.md`).
 
 ### Key delivery: ETSI GS QKD 014
 
@@ -107,7 +107,7 @@ Every answer from a peer is checked to come from the node it was sent to. Bodies
 
 ### What the system does not provide
 
-- **Information-theoretic authentication of post-processing messages.** They are authenticated by TLS between the nodes, which is computational and has to hold only while the protocol runs (Two-party post-processing in `doc/security_proof.md`).
+- **Information-theoretic authentication of post-processing messages.** They are authenticated by TLS between the nodes, which is computational and has to hold only while the protocol runs (Two-party post-processing in `doc/security.md`).
 - **Two-party extraction with regular LDPC, Winnow or block discard.** The two-party protocol uses optimized Cascade, 5G NR LDPC or polar codes; the other methods still run both parties in one process.
 - **Protection against a compromised node.** Every node is trusted with the keys it holds or relays.
 - **Information-theoretic authentication of reservations and of application identities.** Both rest on the certificates and TLS, which are computational.

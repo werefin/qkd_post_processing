@@ -1,0 +1,30 @@
+# Shared parts of every service's API: health, readiness, metrics and the error answer
+openapi: 3.1.0
+info: { title: 'QKD node services: common parts', version: 1.0.0 }
+paths: {}
+components:
+  schemas:
+    Error:
+      type: object
+      properties: { error: { type: string } }
+      required: [error]
+    Ready:
+      type: object
+      properties:
+        ready: { type: boolean }
+        service: { type: string }
+        missing: { type: object, additionalProperties: { type: string } }
+    Metrics:
+      type: object
+      description: 'flat numbers of the service''s state, for monitoring'
+      properties:
+        service: { type: string }
+        metrics: { type: object, additionalProperties: { type: [number, "null"] } }
+  responses:
+    Error: { description: 'refused or failed', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Health: { description: alive, content: { text/plain: { schema: { type: string, const: ok } } } }
+    Ready: { description: 'ready, or 503 with what is missing', content: { application/json: { schema: { $ref: '#/components/schemas/Ready' } } } }
+    Metrics: { description: 'this service''s numbers', content: { application/json: { schema: { $ref: '#/components/schemas/Metrics' } } } }
+    Json: { description: JSON answer, content: { application/json: { schema: { type: object } } } }
+  securitySchemes:
+    serviceToken: { type: apiKey, in: header, name: X-Service-Token, description: 'the node''s SERVICE_TOKEN; health, readiness and metrics are open' }

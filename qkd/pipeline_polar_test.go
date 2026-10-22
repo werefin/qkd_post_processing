@@ -11,7 +11,7 @@ func TestRunPolarEndToEnd(t *testing.T) {
 		CoincidenceWindowPS: 500,
 		SampleFraction:      0.05,
 		BlockLength:         4096,
-		RateMargin:          0.15, // comfortably below 1-h2(0.02)=0.859, see doc/finite_key_procedure.md 2.3
+		RateMargin:          0.15, // comfortably below 1-h2(0.02)=0.859, see doc/security.md
 		ListSize:            16,
 		Seed:                1,
 		ChunkSize:           2048,

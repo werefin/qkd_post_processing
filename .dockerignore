@@ -14,6 +14,12 @@ scripts
 /ui/keys
 /ui/recordings
 /ui/config
+/ui/import
+/ui/continuous
+/ui/evaluations
+/ui/coincidence_logs
+.github
+api
 /acquisition/config.json
 /acquisition/example
 /importtt

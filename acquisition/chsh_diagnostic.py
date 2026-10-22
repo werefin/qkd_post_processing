@@ -152,7 +152,7 @@ def build_blocks(
 ) -> tuple[dict[str, Any], list[str], list[list[int]]]:
     ts_path_a, ts_path_b, report = _find_recording(directory)
     # mmap_mode='r' + np.asarray() avoids copying; only touched pages load into RAM
-    # (same approach as ui/app.py's _load_timestamps)
+    # (same approach as services/core/recordings.load_timestamps)
     ts_a = np.asarray(np.load(ts_path_a, allow_pickle=False, mmap_mode='r'))
     ch_a = np.asarray(np.load(_channel_path(ts_path_a), allow_pickle=False, mmap_mode='r'))
     ts_b = np.asarray(np.load(ts_path_b, allow_pickle=False, mmap_mode='r'))

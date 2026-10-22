@@ -1,0 +1,190 @@
+# QKD node acquisition: every route of the acquisition service, port 9101; services/tests checks that they match
+openapi: 3.1.0
+info:
+  title: QKD node acquisition
+  version: 1.0.0
+  description: 'Drives the TimeTagger, one mode at a time: recordings, replays, lab continuous QKD, coincidence logs and the two-party recorder'
+servers: [{ url: 'http://acquisition:9101' }]
+security: [{ serviceToken: [] }]
+paths:
+  /healthz:
+    get:
+      security: []
+      responses: { '200': { $ref: 'common.yaml#/components/responses/Health' } }
+  /readyz:
+    get:
+      security: []
+      responses: { '200': { $ref: 'common.yaml#/components/responses/Ready' } }
+  /metrics:
+    get:
+      security: []
+      responses: { '200': { $ref: 'common.yaml#/components/responses/Metrics' } }
+  /api/acquire/live:
+    get:
+      summary: 'Live coincidence tracker status'
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/acquire/replay:
+    post:
+      summary: 'Replays two stored recordings through the live tracker'
+      requestBody: { content: { application/json: { schema: { type: object } } } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/acquire/start:
+    post:
+      summary: 'Records a link for duration_s seconds'
+      requestBody: { content: { application/json: { schema: { type: object } } } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/acquire/status:
+    get:
+      summary: 'Recording or replay status and log'
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/acquire/stop:
+    post:
+      summary: 'Stops the recording or replay'
+      requestBody: { content: { application/json: { schema: { type: object } } } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/clog/files:
+    get:
+      summary: 'Coincidence logs on this node'
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/clog/files/{name}:
+    get:
+      summary: 'Downloads one coincidence log'
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+    delete:
+      summary: 'Deletes one coincidence log'
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/clog/files/{name}/data:
+    get:
+      summary: 'One log''s metadata, columns and rows'
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/clog/options:
+    get:
+      summary: 'Coincidence log defaults, config section and site channels'
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/clog/start:
+    post:
+      summary: 'Starts a coincidence log, live or offline'
+      requestBody: { content: { application/json: { schema: { type: object } } } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/clog/status:
+    get:
+      summary: 'Coincidence log status and live points since a count'
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/clog/stop:
+    post:
+      summary: 'Stops the coincidence log'
+      requestBody: { content: { application/json: { schema: { type: object } } } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/config:
+    get:
+      summary: 'Summary of the loaded acquisition config'
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+    post:
+      summary: 'Loads an acquisition config'
+      requestBody: { content: { application/json: { schema: { type: object } } } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/continuous/start:
+    post:
+      summary: 'Starts lab continuous QKD'
+      requestBody: { content: { application/json: { schema: { type: object } } } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/continuous/status:
+    get:
+      summary: 'Lab continuous QKD status'
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/continuous/stop:
+    post:
+      summary: 'Stops lab continuous QKD recording, or aborts the processor'
+      requestBody: { content: { application/json: { schema: { type: object } } } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/recordings:
+    get:
+      summary: 'Stored recordings and ready pairs'
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+    delete:
+      summary: 'Deletes every stored recording'
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/recordings/{base}:
+    delete:
+      summary: 'Deletes one recording'
+      parameters:
+        - { name: base, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/upload:
+    post:
+      summary: 'Uploads recording files, multipart'
+      requestBody: { content: { application/json: { schema: { type: object } } } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /v1/recorder:
+    get:
+      summary: 'Two-party recorder state, singles and log; brief=1 leaves out the series'
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /v1/recorder/start:
+    post:
+      summary: 'Starts the two-party recorder: site, segment_s, replay, keep_s'
+      requestBody: { content: { application/json: { schema: { type: object } } } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /v1/recorder/stop:
+    post:
+      summary: 'Stops the two-party recorder after its last segment'
+      requestBody: { content: { application/json: { schema: { type: object } } } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+components:
+  securitySchemes:
+    serviceToken: { $ref: 'common.yaml#/components/securitySchemes/serviceToken' }
