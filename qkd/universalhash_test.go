@@ -49,8 +49,10 @@ func TestVerifyUniversalHashAcceptsEqualStrings(t *testing.T) {
 // caught the overwhelming majority of the time across independent random seeds
 func TestVerifyUniversalHashRejectsDifferingStringsWithHighProbability(t *testing.T) {
 	r := rand.New(rand.NewSource(2))
-	const tagBits = 16 // small on purpose: makes the rare-collision case reachable in a feasible number of trials
-	const trials = 20000
+	// 8 tag bits put about 200 collisions in reach, so the check is a real statistical test; the seeds come from
+	// crypto/rand, and with a 2^-16 tag a run would fail by chance about once in 25
+	const tagBits = 8
+	const trials = 51200
 	n := 200
 
 	falseAccepts := 0
@@ -75,10 +77,9 @@ func TestVerifyUniversalHashRejectsDifferingStringsWithHighProbability(t *testin
 
 	rate := float64(falseAccepts) / float64(trials)
 	target := 1.0 / float64(int(1)<<tagBits)
-	// allow a wide statistical margin (this is a Monte Carlo check of a
-	// 2^-16 event over 20000 trials, not a tight confidence interval)
-	if rate > target*5 {
-		t.Fatalf("false-accept rate %v far exceeds the 2^-%d bound (%v) -- collision resistance may be broken", rate, tagBits, target)
+	// 200 expected, standard deviation about 14: 300 is seven of them away, never reached by chance
+	if falseAccepts > 300 {
+		t.Fatalf("false-accept rate %v far exceeds the 2^-%d bound (%v) --> collision resistance may be broken", rate, tagBits, target)
 	}
 	t.Logf("false-accept rate over %d trials: %v (bound: %v)", trials, rate, target)
 }

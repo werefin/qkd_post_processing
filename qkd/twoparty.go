@@ -37,6 +37,11 @@ type TwoPartyConfig struct {
 	// AnnouncementDigest is Bob's PublicDigest of Alice's announcement as received, for when
 	// pooling has since shifted her timestamps; empty = the digest of the events RunBob is given
 	AnnouncementDigest []byte
+	// AnnouncementIndex: Bob holds only the announced clicks that can pair with his, and this is each one's
+	// index in the whole announcement of AnnouncementEvents clicks; his pair list names those indices, so
+	// Alice sees exactly what she would from the whole announcement
+	AnnouncementIndex  []int32
+	AnnouncementEvents int
 	Asymptotic         bool
 	FiniteKey          FiniteKeyConfig
 	// Method is the error correction, "polar" (the default), "ldpc5g" or "cascade"; LDPC does its matrix work
@@ -204,12 +209,31 @@ func PublicDigest(events []PublicEvent) []byte {
 	return h.Sum(nil)
 }
 
+// AliceClicks is what Alice's side reads of her own clicks, by index in her announcement
+type AliceClicks interface {
+	Len() int
+	Click(i int) (bit byte, basis Basis, multiPhoton bool)
+}
+
+type eventClicks []DetectionEvent
+
+func (e eventClicks) Len() int { return len(e) }
+func (e eventClicks) Click(i int) (byte, Basis, bool) {
+	return e[i].Bit, e[i].Basis, e[i].MultiPhoton
+}
+
 // RunAlice runs Alice's side over her own events (bits included); she has already announced
 // StripBit(events) to Bob, and from here on only public messages leave this function
 func RunAlice(conn Conn, events []DetectionEvent, cfg TwoPartyConfig) (res TwoPartyResult, err error) {
+	return RunAliceClicks(conn, eventClicks(events), digestOr(cfg.AnnouncementDigest, StripBit(events)), cfg)
+}
+
+// RunAliceClicks is RunAlice over any view of her clicks, with the digest of what she announced; a block
+// streamed in segments keeps only her bits and flags, never the clicks themselves
+func RunAliceClicks(conn Conn, clicks AliceClicks, digest []byte, cfg TwoPartyConfig) (res TwoPartyResult, err error) {
 	defer abortOnError(conn, &err)
-	pub := StripBit(events)
-	if err = conn.Send("hello", tpHello{twoPartyVersion, len(pub), PublicDigest(pub), cfg.params()}); err != nil {
+	n := clicks.Len()
+	if err = conn.Send("hello", tpHello{twoPartyVersion, n, digest, cfg.params()}); err != nil {
 		return res, err
 	}
 	var sift tpSift
@@ -218,16 +242,17 @@ func RunAlice(conn Conn, events []DetectionEvent, cfg TwoPartyConfig) (res TwoPa
 	}
 	bits := make([]byte, len(sift.AliceIdx))
 	bases := make([]Basis, len(sift.AliceIdx))
-	paired := make([]bool, len(events))
+	paired := make([]uint64, (n+63)/64) // one bit per click: a pair list may name each at most once
 	for i, idx := range sift.AliceIdx {
-		if idx < 0 || int(idx) >= len(events) {
-			return res, fmt.Errorf("two-party: pair %d names event %d of %d", i, idx, len(events))
+		if idx < 0 || int(idx) >= n {
+			return res, fmt.Errorf("two-party: pair %d names event %d of %d", i, idx, n)
 		}
-		if paired[idx] || events[idx].MultiPhoton {
+		bit, basis, mp := clicks.Click(int(idx))
+		if paired[idx/64]&(1<<(idx%64)) != 0 || mp {
 			return res, fmt.Errorf("two-party: event %d is paired twice or is a multi-photon click", idx)
 		}
-		paired[idx] = true
-		bits[i], bases[i] = events[idx].Bit, events[idx].Basis
+		paired[idx/64] |= 1 << (idx % 64)
+		bits[i], bases[i] = bit, basis
 	}
 	sample, rem, err := splitSample(len(bits), sift.SampleSeed, sift.SampleN)
 	if err != nil {
@@ -334,8 +359,10 @@ func RunBob(conn Conn, alice []PublicEvent, bobEvents []DetectionEvent, cfg TwoP
 		return res, fmt.Errorf("two-party: peer speaks version %d, this side %d", hello.Version, twoPartyVersion)
 	case hello.Params != cfg.params():
 		return res, fmt.Errorf("two-party: parameters differ: Alice %+v, Bob %+v", hello.Params, cfg.params())
-	case hello.Events != len(alice) || !bytes.Equal(hello.Digest, digestOr(cfg.AnnouncementDigest, alice)):
+	case hello.Events != announcedEvents(cfg, alice) || !bytes.Equal(hello.Digest, digestOr(cfg.AnnouncementDigest, alice)):
 		return res, errors.New("two-party: Alice's announced events differ from the ones Bob received")
+	case cfg.AnnouncementIndex != nil && (len(cfg.AnnouncementIndex) != len(alice) || len(cfg.AnnouncementDigest) == 0):
+		return res, errors.New("two-party: a reduced announcement needs every click's index and the whole one's digest")
 	}
 
 	pairs := MatchCoincidences(alice, StripBit(bobEvents), cfg.WindowPS)
@@ -345,6 +372,9 @@ func RunBob(conn Conn, alice []PublicEvent, bobEvents []DetectionEvent, cfg TwoP
 	dts := make([]int64, len(pairs))
 	for i, p := range pairs {
 		sift.AliceIdx[i] = int32(p.AliceIdx)
+		if cfg.AnnouncementIndex != nil {
+			sift.AliceIdx[i] = cfg.AnnouncementIndex[p.AliceIdx]
+		}
 		bits[i], bases[i] = bobEvents[p.BobIdx].Bit, alice[p.AliceIdx].Basis
 		dts[i] = bobEvents[p.BobIdx].TimestampPS - alice[p.AliceIdx].TimestampPS
 	}
@@ -670,6 +700,14 @@ func abortOnError(conn Conn, err *error) {
 
 // ErrPeerAborted is returned when the peer stopped the protocol
 var ErrPeerAborted = errors.New("two-party: the peer aborted")
+
+// announcedEvents is how many clicks Alice announced: all Bob holds, or the whole of a reduced announcement
+func announcedEvents(cfg TwoPartyConfig, alice []PublicEvent) int {
+	if cfg.AnnouncementIndex != nil {
+		return cfg.AnnouncementEvents
+	}
+	return len(alice)
+}
 
 func digestOr(d []byte, events []PublicEvent) []byte {
 	if len(d) > 0 {

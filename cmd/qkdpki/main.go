@@ -26,6 +26,7 @@ const usage = `usage:
   qkdpki ca   -out DIR [-name NAME] [-years N]
   qkdpki node -ca DIR -id NODE_ID -hosts h1,h2,... -out DIR [-years N]
   qkdpki sae  -ca DIR -id SAE_ID -out DIR [-years N]
+  qkdpki controller -ca DIR -hosts h1,h2,... -out DIR [-years N]
   qkdpki net  -file network.json (add-node ID URL | add-link A B | add-sae SAE_ID NODE | remove-sae SAE_ID | show)
 
 ca writes ca.pem and ca.key; keep ca.key offline, it can mint new nodes and applications
@@ -33,6 +34,8 @@ node writes one node's bundle: kms/ (node.pem, node.key, master.key; role kme, f
 app/ (admin.pem, admin.key; role admin, for the dashboard) and ui/ (ui.pem, ui.key; HTTPS only)
 sae writes sae.pem, sae.key and ca.pem for one application (role sae), a client certificate
 whose common name is the SAE ID the KMS authorizes it as
+controller writes the network controller's controller.pem and controller.key (role controller, HTTPS only) and an
+operator.pem and operator.key (role operator) for whoever changes the network; agents use their node's admin certificate
 net edits the network description every node shares (nodes, QKD links, SAEs), creating it if needed`
 
 // Certificate roles, carried in the organizational unit: the KMS authorizes callers by role and
@@ -42,6 +45,9 @@ const (
 	roleSAE   = "sae"
 	roleAdmin = "admin"
 	roleUI    = "ui"
+	// the network controller serves with roleController and lets roleOperator change the network
+	roleController = "controller"
+	roleOperator   = "operator"
 )
 
 func main() {
@@ -57,6 +63,8 @@ func main() {
 		err = cmdNode(os.Args[2:])
 	case "sae":
 		err = cmdSAE(os.Args[2:])
+	case "controller":
+		err = cmdController(os.Args[2:])
 	case "net":
 		err = cmdNet(os.Args[2:])
 	default:
@@ -175,6 +183,33 @@ func cmdSAE(args []string) error {
 		return err
 	}
 	fmt.Printf("SAE %s written to %s\n", *id, *out)
+	return nil
+}
+
+func cmdController(args []string) error {
+	fs := flag.NewFlagSet("controller", flag.ExitOnError)
+	caDir := fs.String("ca", "", "CA directory from qkdpki ca (required)")
+	hosts := fs.String("hosts", "", "comma-separated DNS names and IPs the controller is reached at (required)")
+	out := fs.String("out", "", "output directory (required)")
+	years := fs.Int("years", 2, "validity in years")
+	fs.Parse(args)
+	if *caDir == "" || *hosts == "" || *out == "" {
+		return errors.New("controller: -ca, -hosts and -out are required")
+	}
+	ca, caKey, err := loadCA(*caDir)
+	if err != nil {
+		return err
+	}
+	hostList := append(strings.Split(*hosts, ","), "localhost", "127.0.0.1", "controller")
+	if err := issue(ca, caKey, *out, "controller", "controller", roleController, hostList,
+		[]x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, *years); err != nil {
+		return err
+	}
+	if err := issue(ca, caKey, *out, "operator", "operator", roleOperator, nil,
+		[]x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, *years); err != nil {
+		return err
+	}
+	fmt.Printf("controller written to %s (hosts %s), with an operator certificate\n", *out, strings.Join(hostList, ", "))
 	return nil
 }
 

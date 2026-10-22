@@ -5,7 +5,6 @@ pooling each link; usage: evaluate.py <recording dir or parent dir> [...] [--out
 
 import argparse
 import json
-import math
 import os
 import re
 import shutil
@@ -32,7 +31,8 @@ TS_SUFFIX = '_timestamp_sequence.npy'
 NAME_RE = re.compile(r'^(?P<start>\d{8}_\d{6})_(?P<ip>\d+_\d+_\d+_\d+)_p(?P<port>\d+)' + re.escape(TS_SUFFIX) + '$')
 IP_RE = re.compile(r'(?<![\d.])\d{1,3}[._]\d{1,3}[._]\d{1,3}[._]\d{1,3}(?![\d.])')
 SWEEP_PS = [50, 100, 150, 200, 300, 400, 500, 750, 1000, 1500, 2000]
-# name, importtt flags, the JSON field holding its disclosure (None: total minus CRC), needs the Python EC service
+# name, importtt flags, the JSON field holding its disclosure (None: total minus CRC), needs the Python EC service;
+# only Cascade by default, the codes are legacy and compared only when --methods asks for them
 METHODS = {
     'cascade': ('Cascade, optimized', ['-cascade'], 'cascade_parities', False),
     'ldpc5g': ('5G NR LDPC', ['-ldpc5g'], 'ldpc5g_leaked_bits', True),
@@ -295,7 +295,7 @@ def write_pair_report(res, work):
     L = [f'### Evaluation of {res["name"]}', '',
          f'**Recording:** {res["start"][:4]}-{res["start"][4:6]}-{res["start"][6:8]} {res["start"][9:11]}:{res["start"][11:13]}:{res["start"][13:]}, '
          f'link {res["link"]}, evaluated on {datetime.now():%Y-%m-%d} by `evaluation/evaluate.py` with the code as it stands and the settings of `acquisition/config.json`. '
-         'Error correction, verification and privacy amplification at $\\varepsilon_\\mathrm{sec} = 10^{-10}$, $\\varepsilon_\\mathrm{cor} = 10^{-15}$ as in `doc/finite_key_procedure.md`.', '']
+         'Error correction, verification and privacy amplification at $\\varepsilon_\\mathrm{sec} = 10^{-10}$, $\\varepsilon_\\mathrm{cor} = 10^{-15}$ as in `doc/security.md`.', '']
     if res['notes']:
         L += ['**Notes:** ' + '; '.join(res['notes']) + '.', '']
     L += ['### Data', '', '| Side | Site | Clicks | Length | Rate | Channels 1/2/3/4 |', '|---|---|---|---|---|---|']
@@ -441,7 +441,7 @@ def main(argv=None):
     ap.add_argument('--out', type=Path, help='output directory, default <first recording directory>/evaluation/<date>')
     ap.add_argument('--config', type=Path, default=ROOT / 'acquisition' / 'config.json', help='site names and search settings')
     ap.add_argument('--importtt', help='importtt binary; default: built from this checkout with go')
-    ap.add_argument('--methods', default=','.join(METHODS), help=f'comma-separated error-correction methods, from {",".join(METHODS)}')
+    ap.add_argument('--methods', default='cascade', help=f'comma-separated error-correction methods, from {",".join(METHODS)}; all but cascade are legacy')
     ap.add_argument('--no-live', action='store_true', help='skip the live tracker replay')
     ap.add_argument('--no-sweep', action='store_true', help='skip the coincidence-window sweep')
     ap.add_argument('--no-pool', action='store_true', help='skip pooling each link\'s recordings')
@@ -466,10 +466,10 @@ def main(argv=None):
     except PermissionError:  # read-only install, as in the tools image: write next to where it was run
         out = Path.cwd() / 'evaluation_results' / out.name
         out.mkdir(parents=True, exist_ok=True)
-    it = Importtt(find_importtt(args.importtt), ec_python())
+    it = Importtt(find_importtt(args.importtt), ec_python() if any(METHODS[m][3] for m in args.methods) else None)
     ec_py = it.env.get('QKD_EC_PYTHON')
-    if not ec_py:
-        log('5G NR LDPC unavailable (pip install -r evaluation/requirements.txt, or set QKD_EC_PYTHON): using polar as the main method')
+    if not ec_py and any(METHODS[m][3] for m in args.methods):
+        log('5G NR LDPC unavailable (pip install -r ec/requirements.txt, or set QKD_EC_PYTHON): it is skipped')
     log(f'{len(pairs)} pair(s), output in {out}')
 
     results = []

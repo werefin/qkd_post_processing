@@ -1,0 +1,16 @@
+# Go lint in CI: correctness checks; unchecked errors of best-effort writes (JSON answers, logs) are left alone
+version: "2"
+linters:
+  default: none
+  enable: [govet, staticcheck, ineffassign, unused, misspell, bodyclose]
+  settings:
+    staticcheck:
+      checks: ["all", "-ST1000", "-ST1003", "-ST1005", "-ST1020", "-ST1021", "-ST1022", "-QF*"]
+  exclusions:
+    rules:
+      # Poly1305 keyed once with QKD key material is exactly the one-time MAC the relay needs
+      - path: relay/polymac.go
+        text: "poly1305 is deprecated"
+      # sacrificed-sample estimators the docs describe, kept beside the correction-based one
+      - path: qkd/
+        text: "func (siftAndSampleQBER|siftSampleWithTiming) is unused"

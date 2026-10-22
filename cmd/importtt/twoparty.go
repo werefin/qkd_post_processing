@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
@@ -26,12 +27,20 @@ import (
 const (
 	publicTSSuffix    = "_public_timestamp_sequence.npy"
 	publicFlagsSuffix = "_public_flags.npy"
+	// a reduced recording keeps the multi-photon flags of its full segment, whose neighboring clicks it dropped
+	multiPhotonSuffix = "_multiphoton.npy"
+	// a block streamed in segments: Alice keeps her bits and flags only, Bob each kept click's index
+	aliceBitsSuffix   = "_alice_bits.npy"
+	aliceFlagsSuffix  = "_alice_flags.npy"
+	publicIndexSuffix = "_public_index.npy"
 )
 
 // twoPartyOptions is what main hands the two-party roles
 type twoPartyOptions struct {
 	role, peer, session, exportDir, keystore string
 	dirs                                     []string
+	streamDigest                             []byte // a block streamed in segments: the whole announcement's digest
+	streamClicks                             int    // and how many clicks it holds
 	jsonOut                                  bool
 	mpWindowPS, windowPS                     int64
 	filter                                   bool
@@ -153,7 +162,11 @@ func aliceEvents(o twoPartyOptions) (events []qkd.DetectionEvent, perRec [][]qkd
 		if len(t) != len(ch) || len(t) == 0 {
 			return nil, nil, nil, fmt.Errorf("%s: empty recording or timestamp and channel counts differ", d)
 		}
-		ev, _, _, _ := buildEvents(t, ch, detectMultiPhoton(t, ch, o.mpWindowPS), nil, func(ts int64) int64 { return ts })
+		mp, err := ownMultiPhoton(ts, t, ch, o.mpWindowPS)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		ev, _, _, _ := buildEvents(t, ch, mp, nil, func(ts int64) int64 { return ts })
 		if o.delays != nil {
 			ev = qkd.ApplyDetectorDelays(ev, o.delays.Alice)
 		}
@@ -162,6 +175,140 @@ func aliceEvents(o twoPartyOptions) (events []qkd.DetectionEvent, perRec [][]qkd
 		bases = append(bases, base)
 	}
 	return events, perRec, bases, nil
+}
+
+// streamedClicks is Alice's view of a streamed block: one packed bit per announced click and its 2-bit flag
+// (basis, multi-photon), four to a byte, in announcement order
+type streamedClicks struct {
+	n           int
+	bits, flags []int8
+}
+
+func (c streamedClicks) Len() int { return c.n }
+func (c streamedClicks) Click(i int) (byte, qkd.Basis, bool) {
+	bit := byte(c.bits[i/8]) >> (7 - i%8) & 1
+	f := byte(c.flags[i/4]) >> (2 * (i % 4)) & 3
+	return bit, qkd.Basis(f & 1), f&2 != 0
+}
+
+// runAliceStreamed runs Alice's half of a block streamed in segments: her clicks were announced and dropped as
+// each segment closed, and only her bits and flags are left
+func runAliceStreamed(o twoPartyOptions, out twoPartyJSON, bitsPath string) (twoPartyJSON, error) {
+	if len(o.streamDigest) == 0 || o.streamClicks <= 0 {
+		return out, errors.New("a streamed block needs -announcement-digest and -announcement-clicks")
+	}
+	bits, err := loadNpyInt8(bitsPath)
+	if err != nil {
+		return out, err
+	}
+	flags, err := loadNpyInt8(strings.TrimSuffix(bitsPath, aliceBitsSuffix) + aliceFlagsSuffix)
+	if err != nil {
+		return out, err
+	}
+	n := o.streamClicks
+	if len(bits) != (n+7)/8 || len(flags) != (n+3)/4 {
+		return out, fmt.Errorf("%d clicks need %d bytes of bits and %d of flags, found %d and %d", n, (n+7)/8, (n+3)/4, len(bits), len(flags))
+	}
+	out.OwnClicks = n
+	out.AnnouncementDigest, out.AnnouncementClicks = fmt.Sprintf("%x", o.streamDigest[:8]), n
+	conn, err := o.connect()
+	if err != nil {
+		return out, err
+	}
+	res, err := qkd.RunAliceClicks(conn, streamedClicks{n, bits, flags}, o.streamDigest, o.cfg)
+	if err != nil {
+		return out, err
+	}
+	return finishRoleOutput(out, o, res)
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+// ownMultiPhoton is the recording's multi-photon flags: from its sidecar when it has one, else detected
+func ownMultiPhoton(tsPath string, t []int64, ch []int8, windowPS int64) ([]bool, error) {
+	side := strings.TrimSuffix(tsPath, "_timestamp_sequence.npy") + multiPhotonSuffix
+	if _, err := os.Stat(side); err != nil {
+		return detectMultiPhoton(t, ch, windowPS), nil
+	}
+	f, err := loadNpyInt8(side)
+	if err != nil {
+		return nil, err
+	}
+	if len(f) != len(t) {
+		return nil, fmt.Errorf("%s: %d flags for %d clicks", side, len(f), len(t))
+	}
+	mp := make([]bool, len(f))
+	for i, v := range f {
+		mp[i] = v != 0
+	}
+	return mp, nil
+}
+
+// exportPublic writes Alice's announcement straight from her arrays: timing (detector delays applied), basis and
+// multi-photon flag per valid click, never the bit; no event list is built, so a segment costs little memory
+func exportPublic(o twoPartyOptions, out twoPartyJSON) (twoPartyJSON, error) {
+	if err := os.MkdirAll(o.exportDir, 0o755); err != nil {
+		return out, err
+	}
+	h := sha256.New()
+	var rec [10]byte
+	for _, d := range o.dirs {
+		tsFile, base, err := ownRecording(d)
+		if err != nil {
+			return out, err
+		}
+		t, err := loadNpyInt64(tsFile)
+		if err != nil {
+			return out, err
+		}
+		ch, err := loadNpyInt8(channelPath(tsFile))
+		if err != nil {
+			return out, err
+		}
+		if len(t) != len(ch) || len(t) == 0 {
+			return out, fmt.Errorf("%s: empty recording or timestamp and channel counts differ", d)
+		}
+		mp, err := ownMultiPhoton(tsFile, t, ch, o.mpWindowPS)
+		if err != nil {
+			return out, err
+		}
+		ts := make([]int64, 0, len(t))
+		flags := make([]int8, 0, len(t))
+		for i, c := range ch {
+			basis, bit, ok := channelToBasisBit(c)
+			if !ok {
+				continue
+			}
+			at := t[i]
+			if o.delays != nil {
+				at -= int64(math.Round(o.delays.Alice[basis][bit&1]))
+			}
+			f := int8(basis)
+			if mp[i] {
+				f |= 2
+			}
+			ts, flags = append(ts, at), append(flags, f)
+			// the digest Bob checks, as qkd.PublicDigest computes it over the same events
+			binary.LittleEndian.PutUint64(rec[:8], uint64(at))
+			rec[8], rec[9] = byte(basis), byte(f>>1)
+			h.Write(rec[:])
+		}
+		tsPath, flagPath := filepath.Join(o.exportDir, base+publicTSSuffix), filepath.Join(o.exportDir, base+publicFlagsSuffix)
+		if err := writeNpyInt64(tsPath, ts); err != nil {
+			return out, err
+		}
+		if err := writeNpyInt8(flagPath, flags); err != nil {
+			return out, err
+		}
+		out.OwnClicks += len(ts)
+		out.PublicFiles = append(out.PublicFiles, tsPath, flagPath)
+	}
+	digest := h.Sum(nil)
+	out.AnnouncementDigest, out.AnnouncementClicks = fmt.Sprintf("%x", digest[:8]), out.OwnClicks
+	return out, nil
 }
 
 // ownRecording finds the one recording of this site in dir (announcements are not counted)
@@ -181,41 +328,19 @@ func ownRecording(dir string) (path, base string, err error) {
 
 func runAliceRole(o twoPartyOptions) (twoPartyJSON, error) {
 	out := twoPartyJSON{Role: "alice", Peer: o.peer, Session: o.session, Method: o.cfg.Method, Recordings: len(o.dirs)}
-	events, perRec, bases, err := aliceEvents(o)
+	if o.exportDir != "" {
+		return exportPublic(o, out)
+	}
+	if bits, _ := filepath.Glob(filepath.Join(o.dirs[0], "*"+aliceBitsSuffix)); len(bits) == 1 && len(o.dirs) == 1 {
+		return runAliceStreamed(o, out, bits[0])
+	}
+	events, _, _, err := aliceEvents(o)
 	if err != nil {
 		return out, err
 	}
 	out.OwnClicks = len(events)
 	digest := qkd.PublicDigest(qkd.StripBit(events))
 	out.AnnouncementDigest, out.AnnouncementClicks = fmt.Sprintf("%x", digest[:8]), len(events)
-
-	if o.exportDir != "" {
-		// the announcement: timing, basis and multi-photon flag per click, never the bit
-		if err := os.MkdirAll(o.exportDir, 0o755); err != nil {
-			return out, err
-		}
-		for i, ev := range perRec {
-			ts := make([]int64, len(ev))
-			flags := make([]int8, len(ev))
-			for j, e := range ev {
-				ts[j] = e.TimestampPS
-				flags[j] = int8(e.Basis)
-				if e.MultiPhoton {
-					flags[j] |= 2
-				}
-			}
-			tsPath := filepath.Join(o.exportDir, bases[i]+publicTSSuffix)
-			flagPath := filepath.Join(o.exportDir, bases[i]+publicFlagsSuffix)
-			if err := writeNpyInt64(tsPath, ts); err != nil {
-				return out, err
-			}
-			if err := writeNpyInt8(flagPath, flags); err != nil {
-				return out, err
-			}
-			out.PublicFiles = append(out.PublicFiles, tsPath, flagPath)
-		}
-		return out, nil
-	}
 
 	conn, err := o.connect()
 	if err != nil {
@@ -234,6 +359,7 @@ type bobRecording struct {
 	alice  []qkd.DetectionEvent // announced events, bits unknown (always 0)
 	bob    []qkd.DetectionEvent
 	filter *qkd.CoincidenceFilter
+	index  []int64 // a streamed block: each announced click's index in the whole announcement
 }
 
 func loadBobRecording(dir string, o twoPartyOptions) (bobRecording, error) {
@@ -277,6 +403,14 @@ func loadBobRecording(dir string, o twoPartyOptions) (bobRecording, error) {
 		}
 		r.alice[i] = qkd.DetectionEvent{TimestampPS: at[i], Basis: qkd.Basis(flags[i] & 1), MultiPhoton: flags[i]&2 != 0}
 	}
+	if idx := strings.TrimSuffix(tsA, publicTSSuffix) + publicIndexSuffix; fileExists(idx) {
+		if r.index, err = loadNpyInt64(idx); err != nil {
+			return r, err
+		}
+		if len(r.index) != len(at) {
+			return r, fmt.Errorf("%s: %d indices for %d announced clicks", dir, len(r.index), len(at))
+		}
+	}
 	a0, b0 := at[0], bt[0]
 	skew := report.ClockSkew
 	toAliceClock := func(ts int64) int64 {
@@ -309,7 +443,7 @@ func runBobRole(o twoPartyOptions) (twoPartyJSON, error) {
 			return out, err
 		}
 		announced = append(announced, r.alice...)
-		recs = append(recs, loadedRecording{alice: r.alice, bob: r.bob, filter: r.filter})
+		recs = append(recs, loadedRecording{alice: r.alice, bob: r.bob, filter: r.filter, index: r.index})
 		out.OwnClicks += len(r.bob)
 	}
 	digest := qkd.PublicDigest(qkd.StripBit(announced))
@@ -330,6 +464,21 @@ func runBobRole(o twoPartyOptions) (twoPartyJSON, error) {
 	}
 	cfg := o.cfg
 	cfg.AnnouncementDigest = digest
+	if streamed := recs[0].index; streamed != nil {
+		// Bob holds only the announced clicks that can pair; the pair list still names the whole announcement's
+		if len(o.dirs) != 1 || len(o.streamDigest) == 0 || o.streamClicks <= 0 {
+			return out, errors.New("a streamed block is one directory, with -announcement-digest and -announcement-clicks")
+		}
+		cfg.AnnouncementDigest, cfg.AnnouncementEvents = o.streamDigest, o.streamClicks
+		cfg.AnnouncementIndex = make([]int32, len(streamed))
+		for i, v := range streamed {
+			if v < 0 || v >= int64(o.streamClicks) || (i > 0 && v <= streamed[i-1]) {
+				return out, fmt.Errorf("announced click index %d out of order or range", v)
+			}
+			cfg.AnnouncementIndex[i] = int32(v)
+		}
+		out.AnnouncementDigest, out.AnnouncementClicks = fmt.Sprintf("%x", o.streamDigest[:8]), o.streamClicks
+	}
 	cfg.WindowPS = o.windowPS
 	if cfg.WindowPS == 0 && filt != nil {
 		cfg.WindowPS = filt.WindowPS

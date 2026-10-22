@@ -28,8 +28,8 @@ SEGMENT_DONE = '.recording_done'
 STATE_FILE = 'continuous_state.json'
 BLOCKS_FILE = 'blocks.jsonl'
 HISTORY = 720  # segments kept in the status history, two hours of 10 s segments
-METHOD_FLAGS = {'cascade': ['-cascade'], 'ldpc5g': ['-ldpc5g'], 'polar': ['-polar']}
-LEAK_FIELD = {'cascade': 'cascade_parities', 'ldpc5g': 'ldpc5g_leaked_bits', 'polar': 'polar_leaked_bits'}
+METHOD_FLAGS = {'cascade': ['-cascade']}  # optimized Cascade only; the codes stay as legacy in the Go library
+LEAK_FIELD = {'cascade': 'cascade_parities'}
 
 
 def log(level, msg):
@@ -154,8 +154,8 @@ class Processor:
         if report['detected']:
             self.state['align'] = {'delay_ref': int(sk['delay_b_minus_a_at_reference_ps']),
                                    't_ref': a0 + int(sk['reference_elapsed_ps']), 'slope': float(sk['slope_ps_per_s'])}
-            # block discard is the fastest method; only the sifting statistics and the events cache are wanted here
-            out = self.importtt_json([seg])
+            # only the sifting statistics and the events cache are wanted here: the legacy block discard is fastest
+            out = self.importtt_json([seg], '-discard')
             entry.update(sifted=out['sifted_bits'], qber_vis=out['qber_vis'], window_ps=out['window_ps'],
                          sigma_ps=out.get('filter_sigma_ps'), accidentals=out.get('filter_predicted_accidental_fraction'))
         if not self.args.keep_raw:

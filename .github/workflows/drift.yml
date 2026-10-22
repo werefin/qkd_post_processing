@@ -1,0 +1,44 @@
+# Weekly: what changed under the code without a commit --> new vulnerabilities in Go, the standard library and the
+# Python packages, newer module versions, and whether the images still build from fresh base images
+name: drift
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with: { go-version: stable }
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      - name: modules with newer versions
+        run: go list -m -u all | grep '\[' || echo "every module is current"
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - run: pip install pip-audit
+      - name: pip-audit
+        run: pip-audit -r services/requirements.txt -r ec/requirements.txt
+
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - name: fresh build of every image
+        run: |
+          for target in kms app tools; do
+            docker buildx build --pull --no-cache --target "$target" .
+          done

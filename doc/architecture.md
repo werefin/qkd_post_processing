@@ -1,6 +1,6 @@
 ### Architecture
 
-Scope: the structure of the codebase, meaning module boundaries, data flow, exported APIs and build and deployment mechanics. It is not a security proof: where a module makes a cryptographic or correctness claim, this document states it in one sentence and defers the justification to `security_proof.md`, `finite_key_procedure.md` and `key_management.md`. Code is cited by file and identifier, never by line.
+Scope: the structure of the codebase, meaning module boundaries, data flow, exported APIs and build and deployment mechanics. It is not a security proof: where a module makes a cryptographic or correctness claim, this document states it in one sentence and defers the justification to `security.md` and `key_management.md`. Code is cited by file and identifier, never by line.
 
 ### Overview
 
@@ -21,16 +21,20 @@ The Go module `qkd_post_processing` (Go 1.24, `go.mod`) has three library packag
 | `cmd/qkdpki/` | The network's private CA, per-node credential bundles, application certificates, and edits to the shared network description |
 | `cmd/importtt/` | CLI: the full chain over real dual-TimeTagger recordings |
 | `cmd/qkd_post_processing/` | CLI: the full chain over simulated click streams |
+| `cmd/controller/` | The network controller: desired nodes, links and settings, each node's config in answer to its agent's heartbeat, the network view and its stats |
 | `cmd/tuneblock/` | CLI: compares block-discard generator matrices on one fixed batch |
 | `acquisition/` | Python: records from two TimeTaggers, finds their clock offset and skew, CHSH diagnostic |
 | `ec/` | `ldpc5g.py`: the matrix work of 5G NR LDPC on `py3gpp` (TS 38.212 matrices) and `ldpc` (belief propagation), as a service (`serve`) for the Go pipeline and on its own for `scripts/ec_compare.py` |
 | `pyec/` | Go client for that service: a pool of its processes implementing `qkd.LDPC5GBackend` |
-| `ui/` | Flask dashboard: every operation of one node through the browser |
-| `deploy/` | Per-node deployment: `compose.yml` (kms, app, ui containers), `Caddyfile`, `setup.sh`, `trust-ca.sh` |
+| `services/` | The node's services from one image, each on its own port: agent, acquisition, processing, web (`services.md`) |
+| `ui/` | The dashboard page the web service serves: template, script, styles, logo |
+| `api/` | OpenAPI 3.1 of the controller and the node services |
+| `deploy/` | Docker deployment: `compose.yml` (one node), `controller.yml`, `lab.yml`, `Caddyfile`, `setup.sh`, `trust-ca.sh` |
+| `.github/` | CI, weekly drift checks, image releases, Dependabot |
 | `doc/` | This document and the formal procedures |
 | `references/` | Vendor documents, local only: ignored by git and Docker and refused by the pre-commit hook |
-| `scripts/` | `test.sh` (build, vet, fmt, race, cross-architecture), `tune-blocksize.sh`, `cross_check_toeplitz.py` |
-| `Dockerfile`, `Makefile`, `go.mod`, `go.sum` | Multi-stage build of the kms, app and tools images; `make` targets; module definition |
+| `scripts/` | `release.sh` (tags a release), `tune-blocksize.sh`, `cross_check_toeplitz.py`, `ec_compare.py` |
+| `Dockerfile`, `Makefile`, `go.mod`, `go.sum`, `ruff.toml`, `.golangci.yml` | Multi-stage build of the kms, app and tools images; `make` targets; module definition; lint settings |
 
 ### Data flow
 
@@ -84,7 +88,7 @@ The four strategies are mutually exclusive at the CLI level and structurally sep
 
 `cmd/importtt/main.go` and `cmd/qkd_post_processing/main.go` both enforce that `-winnow`, `-ldpc`, `-polar`, and `-search-matrix` are mutually exclusive at flag-parsing time; `main()` then dispatches to exactly one of `runDiscardPipeline` / `runWinnowPipeline` / `runLDPCPipeline` / `runPolarPipeline` (plus `runEpochedPipeline` in `cmd/importtt`, discard-only). The four strategies differ structurally, not just parametrically: discard measures QBER from the blocks it already dropped (`CalculateQBER`, `qber.go`), while Winnow, LDPC, and polar never discard anything up front, so they measure QBER from a separate sacrificed public sample (`siftAndSampleQBER`, `qber.go`) taken before reconciliation runs.
 
-The Error correction section of `doc/finite_key_procedure.md` records which to use: rate-adaptive polar codes by default, LDPC as the alternative tuned per link, Winnow where belief propagation is judged too complex to operate, and discard only as the simplest, most conservative baseline, whose reconciliation inefficiency is markedly worse than any corrector's.
+Real post-processing uses optimized Cascade only: the default of both CLIs, and the only method the services, the dashboard and the evaluation run. Block discard (`-discard`, with `-matrix` or `-search-matrix`), Winnow, regular LDPC, polar and 5G NR LDPC stay in the library as legacy implementations, with their tests, for comparison (`doc/ec_comparison.md`).
 
 ### Pipeline stages
 
@@ -173,7 +177,7 @@ Purpose: correct errors via one LDPC syndrome reveal per block, decoded by norma
 | `LDPCRunConfig` | `struct { ...; BlockLength int; ColWeight int; RowWeight int; MaxIterations int; Seed int64; ... }` | `pipeline_ldpc.go` |
 | `RunLDPC` | `func RunLDPC(aliceEvents, bobEvents []DetectionEvent, cfg LDPCRunConfig) (LDPCRunResult, error)` | `pipeline_ldpc.go` |
 
-Inputs: same QBER-sample-then-reconcile structure as Winnow. `BuildRegularLDPC` constructs a Gallager-style regular sparse parity-check matrix with 4-cycle avoidance up to a cost cap (`ldpcCycleAvoidanceMaxPairs`, `ldpc.go`); `BuildPEGLDPC` is an alternative Progressive Edge Growth construction that directly maximizes local girth (available as a library function; not wired to a CLI flag in either `cmd/importtt` or `cmd/qkd_post_processing`). Output: `LDPCRunResult` carrying `LDPCBlocks`/`LDPCConverged` (syndrome satisfied within the iteration cap) /`LDPCLeakedBits`. Selectable parameters: `-ldpc-block` (codeword length, 0 = one block spanning the whole remaining key), `-ldpc-wc`/`-ldpc-wr` (column/row weight; code rate is `1-wc/wr`, which the Error correction section of `doc/finite_key_procedure.md` recommends tuning comfortably --> not marginally --> below `1-h2(QBER)`, since a finite-degree regular code's real decoding threshold runs below the Shannon bound), `-ldpc-iterations` (belief propagation cap per block, 0 = default 50, `defaultLDPCMaxIterations`, `ldpc.go`), `-ldpc-sample` (QBER sample fraction, default 0.05).
+Inputs: same QBER-sample-then-reconcile structure as Winnow. `BuildRegularLDPC` constructs a Gallager-style regular sparse parity-check matrix with 4-cycle avoidance up to a cost cap (`ldpcCycleAvoidanceMaxPairs`, `ldpc.go`); `BuildPEGLDPC` is an alternative Progressive Edge Growth construction that directly maximizes local girth (available as a library function; not wired to a CLI flag in either `cmd/importtt` or `cmd/qkd_post_processing`). Output: `LDPCRunResult` carrying `LDPCBlocks`/`LDPCConverged` (syndrome satisfied within the iteration cap) /`LDPCLeakedBits`. Selectable parameters: `-ldpc-block` (codeword length, 0 = one block spanning the whole remaining key), `-ldpc-wc`/`-ldpc-wr` (column/row weight; code rate is `1-wc/wr`, which Error correction methods in `doc/security.md` recommends tuning comfortably --> not marginally --> below `1-h2(QBER)`, since a finite-degree regular code's real decoding threshold runs below the Shannon bound), `-ldpc-iterations` (belief propagation cap per block, 0 = default 50, `defaultLDPCMaxIterations`, `ldpc.go`), `-ldpc-sample` (QBER sample fraction, default 0.05).
 
 ### Error correction: polar codes
 
@@ -235,7 +239,7 @@ Purpose: a cheap, fast second check over the EC-surviving stream, to catch what 
 | `ReconcileChunks` | `func ReconcileChunks(ownBits []byte, ownCRC, peerCRC []uint16, chunkSize int) ChunkReconcileResult` | `crcverify.go` |
 | `CRCVerify` | `func CRCVerify(alice, bob []byte, chunkSize int) CRCVerifyResult` | `crcverify.go` |
 
-Inputs: the EC-surviving bit stream, plus `chunkSize` in bits (`-chunk`). Algorithm: CRC-16/CCITT-FALSE (`crc16Poly = 0x1021`, `crcverify.go`) computed per chunk, 16 bits leaked per surviving chunk. Selectable parameter: `-chunk` --> discard's default is 2048 bits; Winnow/LDPC need a much smaller value (the CLIs' help text suggests ~128) since without an upfront discard step, a large CRC chunk containing even one residual error discards far more good bits per catch. Claim (one sentence; the Error verification and correctness section of `doc/finite_key_procedure.md` and `security_proof.md` give the justification): CRC-16 alone bounds correctness only to about `2⁻¹⁶`, which is why `universalhash.go` (see Finite-key sizing) exists as a stronger check immediately before privacy amplification.
+Inputs: the EC-surviving bit stream, plus `chunkSize` in bits (`-chunk`). Algorithm: CRC-16/CCITT-FALSE (`crc16Poly = 0x1021`, `crcverify.go`) computed per chunk, 16 bits leaked per surviving chunk. Selectable parameter: `-chunk` --> discard's default is 2048 bits; Winnow/LDPC need a much smaller value (the CLIs' help text suggests ~128) since without an upfront discard step, a large CRC chunk containing even one residual error discards far more good bits per catch. Claim (one sentence; `doc/security.md` gives the justification): CRC-16 alone bounds correctness only to about `2⁻¹⁶`, which is why `universalhash.go` (see Finite-key sizing) exists as a stronger check immediately before privacy amplification.
 
 ### QBER estimation
 
@@ -283,11 +287,11 @@ Purpose: two read-only / structural diagnostics layered on top of the chain abov
 | `EpochedResult` | `struct { Epochs []EpochResult; FinalKeyBits, FinalKeyBytes []byte }` | `epoch.go` |
 | `RunEpoched` | `func RunEpoched(aliceEvents, bobEvents []DetectionEvent, cfg Config, epochPS int64) (EpochedResult, error)` | `epoch.go` |
 
-`ReportWindowQuality` (`cmd/importtt -window-report`) buckets already-sifted pairs by elapsed time and reports each bucket's own QBER --> diagnostic only; it never selects which bits become key, precisely because doing so after seeing per-bucket QBER would be the kind of post-selection bias the Phase-error estimation section of `doc/finite_key_procedure.md` and `EstimatePhaseError`'s `conservative` parameter exist to guard against. `RunEpoched` (`cmd/importtt -epoch-s`) is structural, not diagnostic: it reruns the entire discard-only `Run` chain independently once per fixed time epoch instead of pooling a whole recording into one QBER estimate, so a noisy epoch contributes zero key bits on its own account rather than being silently averaged in or excluded after the fact. It is wired to the block-discard path only --> `cmd/importtt` refuses `-epoch-s` together with `-winnow`/`-ldpc`/`-search-matrix` (`cmd/importtt/main.go`).
+`ReportWindowQuality` (`cmd/importtt -window-report`) buckets already-sifted pairs by elapsed time and reports each bucket's own QBER --> diagnostic only; it never selects which bits become key, precisely because doing so after seeing per-bucket QBER would be the kind of post-selection bias the phase-error estimate in `doc/security.md` and `EstimatePhaseError`'s `conservative` parameter exist to guard against. `RunEpoched` (`cmd/importtt -epoch-s`) is structural, not diagnostic: it reruns the entire discard-only `Run` chain independently once per fixed time epoch instead of pooling a whole recording into one QBER estimate, so a noisy epoch contributes zero key bits on its own account rather than being silently averaged in or excluded after the fact. It is wired to the block-discard path only --> `cmd/importtt` refuses `-epoch-s` together with `-winnow`/`-ldpc`/`-search-matrix` (`cmd/importtt/main.go`).
 
 ### Finite-key sizing
 
-`finitekey.go` is the non-asymptotic replacement for `SecureKeyLength` (`privacyamp.go`); `doc/finite_key_procedure.md` is the authoritative, formal procedure this module implements --> this section describes the Go API surface only, not the derivation. Do not treat anything below as re-deriving or superseding that document or `security_proof.md`.
+`finitekey.go` is the non-asymptotic replacement for `SecureKeyLength` (`privacyamp.go`); `doc/security.md` is the authoritative, formal procedure this module implements --> this section describes the Go API surface only, not the derivation. Do not treat anything below as re-deriving or superseding that document.
 
 | Identifier | Signature | File | Operational meaning of its parameters |
 |---|---|---|---|
@@ -297,7 +301,7 @@ Purpose: two read-only / structural diagnostics layered on top of the chain abov
 | `SecurityBudget` | `struct { EpsPE, EpsPA, EpsCor float64 }` | `finitekey.go` | the three composable security parameters this procedure tracks per PA block |
 | `SplitSecurityBudget` | `func SplitSecurityBudget(epsSec, epsCor float64) SecurityBudget` | `finitekey.go` | splits a target total secrecy failure probability `epsSec` into `EpsPE`/`EpsPA` (each `epsSec/3`) while keeping correctness (`epsCor`) tracked separately, per the procedure's own composition convention |
 
-Use `conservative=true` in `EstimatePhaseError` unless and until bit and phase errors have been confirmed independent for the specific detector/source pair in use --> this is an explicit open item in the Phase-error estimation section of `doc/finite_key_procedure.md`, not something either this module or this document resolves on its own. See `doc/finite_key_procedure.md` for the full procedure, including recommended parameter values, PA block-size guidance, and the universal-hash correctness check (`universalhash.go`, run just before this stage) that this finite-key accounting depends on.
+Use `conservative=true` in `EstimatePhaseError` unless and until bit and phase errors have been confirmed independent for the specific detector/source pair in use --> this is an explicit open item in the phase-error estimate in `doc/security.md`, not something either this module or this document resolves on its own. See `doc/security.md` for the full procedure, including recommended parameter values, PA block-size guidance, and the universal-hash correctness check (`universalhash.go`, run just before this stage) that this finite-key accounting depends on.
 
 ### Key store
 
@@ -379,35 +383,38 @@ Each hop takes the pad and the MAC key in one draw from its own half of the pool
 | Target | Command | Purpose |
 |---|---|---|
 | `build` | `go build ./...` | compile everything |
-| `test` | `go test ./... -v` | the Go test suite |
-| `test-all` | `./scripts/test.sh` | build, vet, fmt, race tests, cross-architecture build |
+| `test` | `go test -race -count=1 ./...` | the Go test suite, race detector on |
+| `lint` | golangci-lint, `ruff check .` | Go and Python lint, as CI runs them |
+| `pytest` | `python3 -m unittest ...` | the services' and acquisition's Python tests |
+| `services` | `python3 -m services all` | every node service in one process, for development |
 | `bench` | `go test -run '^$' -bench . -benchmem ./...` | benchmarks only |
 | `tune` | `./scripts/tune-blocksize.sh` | block-size sweep for the discard strategy |
 | `run` | `go run ./cmd/qkd_post_processing -n 300000 -err 0.005 -chunk 3000` | demo run |
 | `vet`, `fmt` | `go vet ./...`, `gofmt -l .` | static analysis, formatting check |
-| `check` | `fmt vet build test run` | everything in one go |
+| `check` | `fmt vet build test lint pytest` | what CI runs, locally |
 
 ### Commands
 
 | Binary | Source | What it does |
 |---|---|---|
 | `kms` | `cmd/kms/` | the key management system of one node, see above |
-| `qkdpki` | `cmd/qkdpki/main.go` | `ca` (network CA), `node` (kms, app and ui credentials plus master key), `sae` (application certificate), `net` (edit `network.json`) |
+| `controller` | `cmd/controller/` | the network controller (`services.md`): `state.go` the desired network and each node's config, `api.go` heartbeat, network view, events and stats, `main.go` mutual TLS |
+| `qkdpki` | `cmd/qkdpki/main.go` | `ca` (network CA), `node` (kms, app and ui credentials plus master key), `sae` (application certificate), `controller` (controller and operator certificates), `net` (edit `network.json`) |
 | `importtt` | `cmd/importtt/main.go` | loads a real recording (`npy.go`), aligns clocks with `coincidence_peak.py`'s affine model, maps channels to basis and bit, filters coincidences, runs the chosen chain; `-dir a,b,c` pools recordings, `-calibrate-delays` and `-detector-delays` handle per-detector delays, `-keystore` writes the key as ETSI records, `-json` prints one report |
 | `qkd_post_processing` | `cmd/qkd_post_processing/main.go` | simulates correlated click streams (`simulate`) and runs the same chain |
 | `tuneblock` | `cmd/tuneblock/main.go` | runs `Run` once per candidate generator matrix on one simulated batch |
 
 ### Images
 
-One multi-stage file. The `build` stage cross-compiles every command with `CGO_ENABLED=0` on the build machine's own architecture for the target's (`--platform=$BUILDPLATFORM`, `GOARCH=$TARGETARCH`), so amd64 and arm64 nodes build from the same file. Target `kms` is the `kms` and `qkdpki` binaries on a distroless static base, about 13 MB, no shell, non-root. Target `app` is Python 3.12 slim with the dashboard, the acquisition scripts and the `importtt` and `qkd_post_processing` binaries, about 550 MB, running gunicorn with one worker (jobs, caches and the acquisition process live in it) and eight threads, with a health check on `/healthz`. Target `tools` adds matplotlib and every binary, for offline analysis. `.dockerignore` keeps credentials, recordings, keys, `deploy/`, `doc/` and `references/` out of the build context.
+One multi-stage file. The `build` stage cross-compiles every command with `CGO_ENABLED=0` on the build machine's own architecture for the target's (`--platform=$BUILDPLATFORM`, `GOARCH=$TARGETARCH`), so amd64 and arm64 nodes build from the same file. Target `kms` is the `kms`, `controller` and `qkdpki` binaries on a distroless static base, no shell, non-root. Target `app` is Python 3.12 slim with the `services` package, the dashboard page, the acquisition scripts and the `importtt` and `qkd_post_processing` binaries; `SERVICE` picks which service a container runs, under gunicorn with one worker (jobs, caches and the TimeTagger's processes live in it) and several threads, with a health check on its own `/healthz`. Target `tools` adds matplotlib and every binary, for offline analysis. `.dockerignore` keeps credentials, recordings, keys, `deploy/`, `doc/` and `references/` out of the build context.
 
 ### One node
 
-`compose.yml` runs three containers per node, each read-only, without Linux capabilities (the front end keeps only the one its binary carries), with no-new-privileges, as the installing user, and with only its own credentials mounted: `kms` (`pki/kms`: node certificate, node key, master key), `app` (`pki/app`: the admin certificate and the dashboard's SAE certificate, never the node key or the master key) and `ui` (Caddy with `pki/ui`, a server-only certificate from the network CA, and the node's login). `setup.sh` drives everything with Docker alone: `ca`, `node`, `link`, `sae` and `bundle` on the administration machine, `install`, `up`, `down`, `logs` and `status` on a node. `deployment.md` is the operator's guide.
+`compose.yml` runs the node's containers, each read-only, without Linux capabilities (the front end keeps only the one its binary carries), with no-new-privileges, as the installing user, and with only its own credentials and data mounted: `kms` (`pki/kms`: node certificate, node key, master key), the four services of the `app` image (`pki/app`: the admin certificate and the dashboard's SAE certificate, never the node key or the master key) and `ui` (Caddy with `pki/ui`, a server-only certificate from the network CA, and the node's login). `controller.yml` runs the network controller. `setup.sh` drives everything with Docker alone: `ca`, `node`, `link`, `sae`, `bundle` and `controller` on the administration machine, `install`, `use-controller`, `up`, `down`, `logs` and `status` on a node. `deployment.md` is the operator's guide.
 
-### Dashboard
+### Node services
 
-`ui/app.py` is a Flask application serving one page and a JSON API: `status`, `upload` and `recordings` (pairs detected by shared start time), `config` and `acquire/start|stop|status` (drives `tt_record_dual.py`), `align/live` (any pair, analysis cached per pair and file version), `jobs` (key extraction, two-party extraction with a neighbor and delay calibration as background jobs with live logs and a stored history; a background listener starts this node's half when a neighbor announces; extraction writes the key into `<import>/<neighbor>/`, where the KMS takes it), `chsh/run|download`, `run` (the simulator, whose demo keys stay apart and never reach the KMS), and `node`, `kms/audit`, `kms/status`, `kms/enc`, `kms/dec` (the KMS through the admin certificate and the dashboard's own SAE certificate; key exchange answers carry key IDs and SHA-256 fingerprints, never key material). The page loads no inline script (`script-src 'self'`), and every server string is escaped before display (`esc`, `main.js`).
+`services/` is one Python package, four services: `agent` (controller link, two-party schedule, monitor, alerts, KMS pages), `acquisition` (everything driving the TimeTagger), `processing` (alignment, jobs, evaluations, CHSH, simulator, block work) and `web` (the page and a streaming proxy of every `/api` call to its owner). Each package lists its Flask blueprints and starts its threads; `serve.create_app(name)` builds one service, or all of them in one process. `services.md` describes each module, how the services call each other (HTTP with a service token, shared data folders) and the API files in `api/`. The page loads no inline script (`script-src 'self'`), and every server string is escaped before display (`esc`, `main.js`).
 
 ### Acquisition scripts
 

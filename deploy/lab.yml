@@ -1,22 +1,39 @@
-# Dashboard alone, for a lab PC: Windows with Docker Desktop, or any Docker host --> no key management system
-# and no login, so it listens on this PC only --> docker compose -f deploy/lab.yml up -d --build
+# Lab PC, Windows with Docker Desktop or any Docker host: the node's services from one image, each on its own port,
+# no key management system and no login, so only the web page listens, on this PC --> docker compose -f deploy/lab.yml up -d --build
 name: qkd-lab
 
+x-app: &app
+  build: { context: .., target: app }
+  image: qkd_post_processing/app:lab
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs: ["/tmp:size=512m"]
+  # one Docker-managed volume holds config, recordings and logs; the web page uploads and downloads them
+  volumes: ["lab-data:/data"]
+  environment: &env
+    AGENT_URL: http://agent:9100
+    ACQUISITION_URL: http://acquisition:9101
+    PROCESSING_URL: http://processing:9102
+    # uploads and job scratch space are spooled to disk: recordings are far larger than memory
+    TMPDIR: /data/tmp
+    RECORDINGS_MAX_GB: ${RECORDINGS_MAX_GB:-0}
+
 services:
-  app:
-    build: { context: .., target: app }
-    image: qkd_post_processing/app:lab
-    restart: unless-stopped
-    read_only: true
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    environment:
-      # uploads and job scratch space are spooled to disk: recordings are far larger than memory
-      TMPDIR: /data/tmp
-      RECORDINGS_MAX_GB: ${RECORDINGS_MAX_GB:-0}
-    # one Docker-managed volume holds config, recordings and logs; the web page uploads and downloads them
-    volumes: ["lab-data:/data"]
-    tmpfs: ["/tmp:size=512m"]
+  agent:
+    <<: *app
+    environment: { <<: *env, SERVICE: agent }
+  acquisition:
+    <<: *app
+    environment: { <<: *env, SERVICE: acquisition }
+  processing:
+    <<: *app
+    environment: { <<: *env, SERVICE: processing }
+  web:
+    <<: *app
+    environment: { <<: *env, SERVICE: web }
+    depends_on: [agent, acquisition, processing]
     ports: ["127.0.0.1:9823:9823"]
 
 volumes:

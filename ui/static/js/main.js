@@ -479,7 +479,8 @@ function metricItems(m) {
     items.push(['Window (fit HWHM)', `±${m.filter_window_ps} ps`],
       ['Predicted accidentals', ((m.filter_predicted_accidental_fraction || 0) * 100).toFixed(1) + '%']);
   }
-  if (m.method === 'ldpc5g') items.push(['5G NR frames', `${m.ldpc5g_frames || 0} (${m.ldpc5g_failed || 0} failed, ${m.ldpc5g_attempts || 0} attempts)`], ['Bits corrected', m.ldpc5g_bits_corrected || 0], ['Leaked (syndromes, tags)', m.ldpc5g_leaked_bits]);
+  if (m.method === 'cascade') items.push(['Cascade parities', `${m.cascade_parities || 0} in ${m.cascade_rounds || 0} round trips`], ['Corrections', m.cascade_corrections || 0], ['Leaked (parities, CRCs)', m.leaked_bits_total || m.ec_leaked_bits || 0]);
+  else if (m.method === 'ldpc5g') items.push(['5G NR frames', `${m.ldpc5g_frames || 0} (${m.ldpc5g_failed || 0} failed, ${m.ldpc5g_attempts || 0} attempts)`], ['Bits corrected', m.ldpc5g_bits_corrected || 0], ['Leaked (syndromes, tags)', m.ldpc5g_leaked_bits]);
   else if (m.method === 'polar') items.push(['Polar blocks', m.polar_blocks], ['Bits corrected', m.polar_bits_corrected], ['Leaked (frozen values)', m.polar_leaked_bits]);
   else if (m.method === 'winnow') items.push(['Corrections', m.winnow_corrections], ['Leaked (syndromes)', m.winnow_leaked_bits]);
   else if (m.method === 'ldpc') items.push(['Blocks converged', `${m.ldpc_converged || 0} / ${m.ldpc_blocks}`], ['Leaked (syndromes)', m.ldpc_leaked_bits]);
@@ -514,14 +515,6 @@ function redrawRunPlots() {
   });
 }
 
-const methodSelect = document.getElementById('f-method');
-function syncMethodFields() {
-  for (const name of ['cascade', 'ldpc5g', 'polar', 'ldpc', 'winnow', 'discard']) {
-    document.getElementById('method-' + name).style.display = methodSelect.value === name ? '' : 'none';
-  }
-}
-methodSelect.addEventListener('change', syncMethodFields);
-syncMethodFields();
 
 document.getElementById('run-form').addEventListener('submit', async e => {
   e.preventDefault();
@@ -531,22 +524,10 @@ document.getElementById('run-form').addEventListener('submit', async e => {
   btn.disabled = true;
   btn.textContent = 'Running...';
   try {
-    const method = methodSelect.value;
     const body = {
       n: Number(document.getElementById('f-n').value), err: Number(document.getElementById('f-err').value),
-      method, asymptotic: document.getElementById('f-asymptotic').checked,
+      method: 'cascade', asymptotic: document.getElementById('f-asymptotic').checked,
     };
-    if (method === 'polar') {
-      body.polar_margin = Number(document.getElementById('f-polar-margin').value);
-      body.polar_list = Number(document.getElementById('f-polar-list').value);
-    } else if (method === 'winnow') {
-      body.winnow_blocks = document.getElementById('f-winnow-blocks').value;
-    } else if (method === 'ldpc') {
-      body.ldpc_wc = Number(document.getElementById('f-ldpc-wc').value);
-      body.ldpc_wr = Number(document.getElementById('f-ldpc-wr').value);
-    } else {
-      body.search_matrix = document.getElementById('f-search').checked;
-    }
     const m = await postJSON('/api/run', body);
     document.getElementById('run-chips').innerHTML = chipsHTML([...metricItems(m), ['Elapsed', m.elapsed_ms + ' ms']]);
     PLOTS.forEach(p => history[p.key].push(p.val(m) * 1) > METRICS_MAX_HISTORY && history[p.key].shift());
@@ -611,7 +592,9 @@ async function refreshNode() {
     document.getElementById('kms-dot').className = 'status-dot offline';
     setEl('kms-label', 'KMS unreachable');
     setBadge('net-badge', e.message, 'danger');
-    document.getElementById('home-node-chips').innerHTML = chipsHTML([['KMS', e.message]]);
+    // a node without a KMS, such as a lab PC, is not an error: say what it means instead of the raw message
+    document.getElementById('home-node-chips').innerHTML = chipsHTML([['KMS', /not connected/.test(e.message)
+      ? 'not configured: recordings, alignment and analysis only' : e.message]]);
   }
   redrawHomeGauge();
 }
@@ -888,16 +871,14 @@ for (const id of ['align-a', 'align-b']) document.getElementById(id).addEventLis
 let shownJob = null;
 
 function extractParams() {
-  const method = document.getElementById('extract-method').value;
   const p = {
     pairs: extractPairs.filter(q => q.checked).map(q => ({ a: q.a, b: q.b })),
-    method,
+    method: 'cascade',
     filter: document.getElementById('extract-filter').checked,
     asymptotic: document.getElementById('extract-asymptotic').checked,
     delays: document.getElementById('extract-delays').checked,
     link: document.getElementById('extract-link').value,
   };
-  if (document.getElementById('extract-soft').checked && ['ldpc5g', 'polar', 'ldpc'].includes(method)) p.soft_bins = 16;
   if (p.asymptotic) p.link = '';  // an asymptotic length certifies nothing, so it never becomes key
   return p;
 }
@@ -933,9 +914,7 @@ document.getElementById('tp-start-btn').addEventListener('click', async () => {
   err.textContent = '';
   const p = extractParams();
   const params = { peer: document.getElementById('tp-peer').value, recordings: [...tpChosen], filter: p.filter, asymptotic: p.asymptotic, delays: p.delays };
-  if (p.soft_bins) params.soft_bins = p.soft_bins;
-  params.method = p.method === 'polar' ? 'polar' : 'ldpc5g';
-  if (p.method !== params.method) { err.textContent = 'two-party extraction runs 5G NR LDPC or polar codes'; return; }
+  params.method = 'cascade';
   if (!params.peer) { err.textContent = 'this node has no QKD link'; return; }
   if (!params.recordings.length) { err.textContent = "tick this node's own recordings"; return; }
   try {
@@ -1163,7 +1142,7 @@ document.getElementById('cont-start').addEventListener('click', async () => {
   const replay = document.getElementById('cont-source').value === 'replay';
   const body = {
     segment_s: Number(document.getElementById('cont-segment').value), block_s: Number(document.getElementById('cont-block').value),
-    method: document.getElementById('cont-method').value, neighbor: document.getElementById('cont-neighbor').value,
+    method: 'cascade', neighbor: document.getElementById('cont-neighbor').value,
   };
   if (replay) body.replay = { a: document.getElementById('cont-a').value, b: document.getElementById('cont-b').value, speed: Number(document.getElementById('cont-speed').value) };
   else body.link = document.getElementById('cont-link').value;
@@ -1227,7 +1206,7 @@ async function refreshContinuous() {
         <td>${x.index}</td><td>${fmtDur(x.seconds)} (${x.segments} seg.)</td><td>${x.sifted ?? '-'}</td>
         <td>${x.qber != null ? fmtNum(100 * x.qber, 2) + '%' : '-'}</td><td>${x.ec_leak ?? '-'}</td><td>${x.f != null ? fmtNum(x.f, 2) : '-'}</td>
         <td>${x.phase_error_bound != null ? fmtNum(100 * x.phase_error_bound, 1) + '%' : '-'}</td>
-        <td class="${x.key_bits > 0 ? 'positive' : ''}">${x.error ? 'failed: ' + esc(x.error) : x.key_bits + ' bits'}</td>
+        <td class="${x.error ? 'wrap error-cell' : x.key_bits > 0 ? 'positive' : ''}">${x.error ? 'failed: ' + esc(x.error) : x.key_bits + ' bits'}</td>
         <td>${x.keys_saved || 0}</td><td>${fmtNum(x.processing_s, 1)} s</td></tr>`).join('') : emptyRow(10, 'no block distilled yet');
   }
   if (d.params) chips.unshift(['Source', d.params.source + (d.params.speed && d.params.speed !== 1 ? ` x${d.params.speed}` : '')],
@@ -1878,7 +1857,7 @@ async function refreshTwoParty() {
       <td>${utc(b.block)}</td><td>${esc(b.peer)}</td><td>${b.role === 'alice' ? 'offered' : 'answered'}</td><td>${b.sifted ?? '-'}</td>
       <td>${b.qber != null ? fmtNum(100 * b.qber, 2) + '%' : '-'}</td><td>${b.phase_error_bound != null ? fmtNum(100 * b.phase_error_bound, 1) + '%' : '-'}</td>
       <td>${b.ec_leak ?? '-'}</td><td>${b.rounds ?? '-'}</td>
-      <td class="${b.key_bits > 0 ? 'positive' : ''}">${b.ok ? b.key_bits + ' bits' : 'failed: ' + esc(b.error || '')}</td><td>${b.keys_saved ?? 0}</td>
+      <td class="${b.ok ? (b.key_bits > 0 ? 'positive' : '') : 'wrap error-cell'}">${b.ok ? b.key_bits + ' bits' : 'failed: ' + esc(b.error || '')}</td><td>${b.keys_saved ?? 0}</td>
       <td>${esc(b.aligned_by || '-')}</td><td>${fmtNum((b.finished || 0) - (b.started || 0), 1)} s</td></tr>`).join('') : emptyRow(12, 'no block yet');
   const logEl = document.getElementById('tp-log');
   logEl.textContent = (d.log || []).join('\n');
@@ -1981,7 +1960,8 @@ function drawMonitor() {
   const last = d.blocks[d.blocks.length - 1], lastOk = ok[ok.length - 1];
   const okRaw = d.blocks.filter(b => b.ok), lastOkRaw = okRaw[okRaw.length - 1];
   // systems and the channel between them
-  monBox('mon-local', d.local.recording ? 'ok' : 'idle', `${d.node || 'this node'}, ${d.local.site || 'no site'}`,
+  const site = d.local.site || 'no site';
+  monBox('mon-local', d.local.recording ? 'ok' : 'idle', !d.node || d.node === site ? site : `${d.node}, site ${site}`,
     d.local.recording ? `TimeTagger recording\nfor ${fmtDur((Date.now() / 1000) - (d.local.since || Date.now() / 1000))}` : 'not recording');
   monBox('mon-remote', d.remote.reachable ? 'ok' : 'idle', d.remote.node || '-', d.remote.reachable ? 'key management system reachable' : (d.remote.error || 'not reachable'));
   const ann = okRaw.filter(b => b.announced_bytes).slice(-5);
@@ -1992,8 +1972,12 @@ function drawMonitor() {
   document.getElementById('mon-stages').innerHTML = d.stages.map((s, i) => `<div class="mon-stage ${i < d.stage ? 'done' : ''} ${i === d.stage ? 'now' + (i === 4 ? ' good' : '') : ''}">${esc(s)}</div>`).join('');
   setBadge('mon-stage-badge', d.stages[d.stage], d.stage === 4 ? 'success' : d.stage === 3 ? 'warn' : 'muted');
   // gauges
+  // sync: the share of the last segment's quarter-second slices whose peak centre the clock tracker accepted,
+  // measured on the answering node; the announcing node, which has no tracker, falls back on how blocks aligned
+  const syncPts = d.sync || [], sp = syncPts[syncPts.length - 1];
   const how = last && (last.aligned_by || last.aligned_by_peer);
-  const sync = !last ? 0 : !last.ok ? 20 : how && how.startsWith('previous') ? 100 : 60;
+  const sync = sp && sp.slices ? Math.round(100 * sp.locked_slices / sp.slices)
+    : !last ? 0 : !last.ok ? 20 : how && how.startsWith('previous') ? 100 : 60;
   const recent = ok.slice(-10).map(x => x.key);
   const keyRate = recent.length ? recent.reduce((a, b) => a + b, 0) / recent.length : 0;
   drawGauge('mon-g-sync', sync, 100); setEl('mon-gv-sync', `${sync}%`);
@@ -2010,6 +1994,16 @@ function drawMonitor() {
   // settings, pool and service, as label and value rows
   const kv = rows => rows.map(([k, v]) => `<span class="k">${esc(k)}</span><span class="v">${esc(v)}</span>`).join('');
   const win = okRaw.map(b => b.window_ps ?? b.window_ps_peer).filter(v => v != null).pop();
+  const pm = (v, e, unit) => v == null ? '-' : `${fmtNum(v, 2)}${e != null ? ' ± ' + fmtNum(e, 2) : ''} ${unit}`;
+  document.getElementById('mon-sync').innerHTML = kv(sp ? [
+    ['Peak centres accepted', `${sp.locked_slices} of ${sp.slices} slices`],
+    ['Residual of the centres', sp.residual_rms_ps != null ? `${fmtNum(sp.residual_rms_ps, 1)} ps rms` : '-'],
+    ['Delay uncertainty', `± ${fmtNum(sp.delay_sd_ps, 1)} ps`],
+    ['Clock skew', pm(sp.skew_ppb, sp.skew_sd_ppb, 'ppb')],
+    ['Skew drift', `${fmtNum(sp.skew_drift_ppb_per_min, 3)} ppb/min`],
+    ['Peak width (sigma)', sp.peak_sigma_ps != null ? `${fmtNum(sp.peak_sigma_ps, 0)} ps` : '-'],
+    ['Last alignment', sp.lost ? 'lock lost, searching again' : sp.how],
+  ] : [['Tracked by', 'the answering node; this node announces']]);
   document.getElementById('mon-settings').innerHTML = kv([
     ['Coincidence time window', win != null ? `±${fmtNum(win / 1e3, 2)} ns` : '-- ns'],
     ['Privacy amplification ratio', lastOkRaw && lastOkRaw.compression != null ? fmtNum(lastOkRaw.compression, 2) : '--'],
@@ -2069,6 +2063,11 @@ function drawMonitor() {
     plot('mon-fid-time', [{ name: 'fidelity', color: CLOG_COLORS[6], xs: okT, ys: recentOk.map(x => x.fid) }],
       { xFmt: minAgo, xRange: [-120, 0], badges: true, yFmt: v => `${clogFmt(v)}%` });
     note('fid-time', 'Bell-state fidelity lower bound 1 - QBER_HV - QBER_DA, per block');
+    const sRecent = syncPts.filter(p => p.at > now - 7200), sT = sRecent.map(p => (p.at - now) / 60);
+    plot('mon-sync-time', [{ name: 'residual of the peak centres', color: CLOG_COLORS[0], xs: sT, ys: sRecent.map(p => p.residual_rms_ps) },
+      { name: 'delay uncertainty', color: CLOG_COLORS[2], xs: sT, ys: sRecent.map(p => p.delay_sd_ps) }],
+      { xFmt: minAgo, xRange: [-120, 0], badges: true, yFmt: v => `${clogFmt(v)} ps` });
+    note('sync-time', syncPts.length ? 'per segment: how far the measured peak centres sit from the tracked clock model, and how well the model knows the delay' : 'measured on the answering node of this link');
   }
   if (monTab === 'history') {
     const okAll = ok.map(x => x.t);

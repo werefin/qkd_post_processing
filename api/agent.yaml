@@ -1,0 +1,102 @@
+# QKD node agent: every route of the agent service, port 9100; services/tests checks that they match
+openapi: 3.1.0
+info:
+  title: QKD node agent
+  version: 1.0.0
+  description: 'Network controller link, continuous two-party scheduling, link monitor, alerts and the KMS pages'
+servers: [{ url: 'http://agent:9100' }]
+security: [{ serviceToken: [] }]
+paths:
+  /healthz:
+    get:
+      security: []
+      responses: { '200': { $ref: 'common.yaml#/components/responses/Health' } }
+  /readyz:
+    get:
+      security: []
+      responses: { '200': { $ref: 'common.yaml#/components/responses/Ready' } }
+  /metrics:
+    get:
+      security: []
+      responses: { '200': { $ref: 'common.yaml#/components/responses/Metrics' } }
+  /api/alerts:
+    get:
+      summary: 'Current alerts of this node'
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/controller:
+    get:
+      summary: 'State of the link to the network controller'
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/kms/audit:
+    get:
+      summary: 'KMS audit trail, newest n entries'
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/kms/dec:
+    post:
+      summary: 'ETSI Get Key with Key IDs as the dashboard SAE, fingerprints only'
+      requestBody: { content: { application/json: { schema: { type: object } } } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/kms/enc:
+    post:
+      summary: 'ETSI Get Key as the dashboard SAE, fingerprints only'
+      requestBody: { content: { application/json: { schema: { type: object } } } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/kms/status:
+    get:
+      summary: 'ETSI key status toward a slave SAE'
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/monitor:
+    get:
+      summary: 'Link monitor of one neighbor: systems, channels, stage, pools and blocks'
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/monitor/blocks.{fmt}:
+    get:
+      summary: 'One link''s blocks as csv or json'
+      parameters:
+        - { name: fmt, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/node:
+    get:
+      summary: 'This node, its links and the network, from the KMS'
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/twoparty/start:
+    post:
+      summary: 'Starts continuous two-party QKD with these settings, unless the controller manages the node'
+      requestBody: { content: { application/json: { schema: { type: object } } } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/twoparty/status:
+    get:
+      summary: 'Settings, recorder, queue, recent blocks and alerts'
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/twoparty/stop:
+    post:
+      summary: 'Stops recording and scheduling, unless the controller manages the node'
+      requestBody: { content: { application/json: { schema: { type: object } } } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+components:
+  securitySchemes:
+    serviceToken: { $ref: 'common.yaml#/components/securitySchemes/serviceToken' }

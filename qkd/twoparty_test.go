@@ -187,3 +187,68 @@ func TestTwoPartyCascade(t *testing.T) {
 		}
 	}
 }
+
+// TestTwoPartyReducedAnnouncement: Bob holding only the announced clicks that can pair, with their indices in
+// the whole announcement, and Alice holding only her bits and flags, exchange exactly the messages of the whole
+// run and end with the same key
+func TestTwoPartyReducedAnnouncement(t *testing.T) {
+	alice, bob := simulateClicks(200000, 0.03, 12)
+	// clicks of Alice's with no partner of Bob's, as most are at MHz rates
+	end := alice[len(alice)-1].TimestampPS
+	for k := range 100000 {
+		alice = append(alice, DetectionEvent{TimestampPS: end + int64(k+1)*1_000_000, Basis: Basis(k % 2), Bit: byte(k / 2 % 2)})
+	}
+	cfg := twoPartyCfg()
+	cfg.Method = "cascade"
+	full, _, ea, eb := runBoth(alice, bob, cfg, cfg)
+	if ea != nil || eb != nil {
+		t.Fatalf("whole run: alice %v, bob %v", ea, eb)
+	}
+	// Bob keeps the announced clicks with one of his within 2 windows, as the stream does
+	pub := StripBit(alice)
+	near := make([]bool, len(pub))
+	j := 0
+	for i, a := range pub {
+		for j < len(bob) && bob[j].TimestampPS < a.TimestampPS-2*cfg.WindowPS {
+			j++
+		}
+		near[i] = j < len(bob) && bob[j].TimestampPS <= a.TimestampPS+2*cfg.WindowPS
+	}
+	var reduced []PublicEvent
+	var index []int32
+	for i, ok := range near {
+		if ok {
+			reduced, index = append(reduced, pub[i]), append(index, int32(i))
+		}
+	}
+	if len(reduced) != 200000 {
+		t.Fatalf("kept %d of %d announced clicks", len(reduced), len(pub))
+	}
+	cb := cfg
+	cb.AnnouncementIndex, cb.AnnouncementEvents, cb.AnnouncementDigest = index, len(pub), PublicDigest(pub)
+	connA, connB := PipeConns()
+	done := make(chan struct{})
+	var ra TwoPartyResult
+	go func() {
+		ra, ea = RunAliceClicks(connA, eventClicks(alice), PublicDigest(pub), cfg)
+		close(done)
+	}()
+	rb, eb := RunBob(connB, reduced, bob, cb)
+	<-done
+	if ea != nil || eb != nil {
+		t.Fatalf("reduced run: alice %v, bob %v", ea, eb)
+	}
+	// the privacy-amplification seed is fresh each run: the same length, disclosure and pairs, not the same bytes
+	if len(ra.FinalKeyBits) == 0 || !bytes.Equal(ra.FinalKeyBytes, rb.FinalKeyBytes) || len(ra.FinalKeyBits) != len(full.FinalKeyBits) ||
+		ra.SiftedBits != full.SiftedBits || ra.LeakedBits != full.LeakedBits || ra.QBER != full.QBER {
+		t.Fatalf("reduced %d sifted, %d leaked, %d key bits; whole %d, %d, %d", ra.SiftedBits, ra.LeakedBits,
+			len(ra.FinalKeyBits), full.SiftedBits, full.LeakedBits, len(full.FinalKeyBits))
+	}
+	// a reduced announcement without the whole one's digest is refused
+	cb.AnnouncementDigest = nil
+	connA, connB = PipeConns()
+	go RunAliceClicks(connA, eventClicks(alice), PublicDigest(pub), cfg)
+	if _, err := RunBob(connB, reduced, bob, cb); err == nil {
+		t.Fatal("a reduced announcement without the whole digest was accepted")
+	}
+}

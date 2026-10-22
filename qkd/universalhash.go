@@ -1,5 +1,5 @@
 // Universal-hash correctness check: unlike a fixed CRC, a random-seed
-// Toeplitz hash bounds epsCor exactly (doc/finite_key_procedure.md)
+// Toeplitz hash bounds epsCor exactly (doc/security.md)
 package qkd
 
 import (

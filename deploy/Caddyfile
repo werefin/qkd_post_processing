@@ -23,5 +23,5 @@ https://:8443 {
 		-Server
 	}
 	# no body size limit here: recordings are large, the app enforces UPLOAD_MAX_MB itself
-	reverse_proxy app:9823
+	reverse_proxy web:9823
 }

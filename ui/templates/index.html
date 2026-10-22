@@ -324,23 +324,12 @@
         <div class="card">
           <div class="card-head"><span class="card-title">Options</span></div>
           <div class="card-body">
-            <div class="field">
-              <label class="field-label" for="extract-method">Error correction</label>
-              <select class="input" id="extract-method">
-                <option value="cascade" selected>Cascade, optimized (least disclosure)</option>
-                <option value="ldpc5g">5G NR LDPC, blind (one-way)</option>
-                <option value="polar">Polar codes, rate-adaptive</option>
-                <option value="ldpc">LDPC belief propagation</option>
-                <option value="winnow">Winnow</option>
-                <option value="discard">Block discard (baseline)</option>
-              </select>
-            </div>
+            <p class="hint" style="padding:0 0 .6rem">Error correction: optimized Cascade (Martinez-Mateo et al. 2015), the least disclosure; the QBER is counted from the errors it corrects, so no bits are sacrificed.</p>
             <div class="field">
               <label class="field-label" for="extract-link">Hand the key to the KMS pool of link</label>
               <select class="input" id="extract-link"></select>
             </div>
             <div class="checkbox-row"><input type="checkbox" id="extract-filter" checked><label for="extract-filter">Coincidence filtering: drift removal, window = HWHM of the Gaussian peak fit</label></div>
-            <div class="checkbox-row"><input type="checkbox" id="extract-soft"><label for="extract-soft">Timing-aware decoding (polar and LDPC)</label></div>
             <div class="checkbox-row"><input type="checkbox" id="extract-delays"><label for="extract-delays">Apply the detector delay calibration <span id="extract-delays-state" class="hint"></span></label></div>
             <div class="checkbox-row"><input type="checkbox" id="extract-asymptotic"><label for="extract-asymptotic">Asymptotic key length (comparison only, the key is not saved)</label></div>
             <div class="btn-row">
@@ -355,7 +344,7 @@
       <div class="card">
         <div class="card-head"><span class="card-title">Two-party extraction with a neighbor</span></div>
         <div class="card-body">
-          <p class="hint" style="padding:0 0 .6rem">The production mode: this node holds only its own TimeTagger's recordings and announces their timing, bases and multi-photon flags, never a bit. The neighbor finds its own recording of the same start time, aligns, matches and decodes, and both nodes store the same key under the same key_IDs in their pools for this link. Start it from the side whose detectors click less; requests from neighbors run by themselves and appear in the history below. Uses the error correction (5G NR LDPC or polar) and the options above.</p>
+          <p class="hint" style="padding:0 0 .6rem">The production mode: this node holds only its own TimeTagger's recordings and announces their timing, bases and multi-photon flags, never a bit. The neighbor finds its own recording of the same start time, aligns, matches and decodes, and both nodes store the same key under the same key_IDs in their pools for this link. Start it from the side whose detectors click less; requests from neighbors run by themselves and appear in the history below. Uses optimized Cascade and the options above.</p>
           <div class="field">
             <label class="field-label" for="tp-peer">Neighbor</label>
             <select class="input" id="tp-peer"></select>
@@ -392,7 +381,7 @@
     <section class="section" id="section-continuous">
       <div class="section-header section-header--wide">
         <h1 class="section-title">Continuous <span class="grad-text">QKD</span></h1>
-        <p class="section-sub">Records without end in segments; each segment is aligned and sifted as it lands, its raw arrays replaced by about 1 MB of events, and every block of data goes through optimized Cascade (or 5G NR LDPC), verification and finite-key privacy amplification into the chosen link's KMS pool while the next block fills. Blocks of 5 minutes reach about 70% of the key rate of hour-long blocks; a block of seconds certifies nothing.</p>
+        <p class="section-sub">Records without end in segments and streams each one as it closes; every block of data then goes through optimized Cascade, verification and finite-key privacy amplification into the link's KMS pool, seconds after it ends. Blocks of 5 minutes reach about 70% of the key rate of hour-long blocks; a block of seconds certifies nothing.</p>
       </div>
       <div class="card">
         <div class="card-head">
@@ -404,7 +393,7 @@
           <div class="field-row">
             <div class="field"><label class="field-label" for="tp-site">This node's TimeTagger (site)</label><select class="input" id="tp-site"></select></div>
             <div class="field"><label class="field-label" for="tp-block">Block (s)</label><input class="input" id="tp-block" type="number" value="300" min="30" step="10"></div>
-            <div class="field"><label class="field-label" for="tp-segment">Segment (s)</label><input class="input" id="tp-segment" type="number" value="10" min="1"></div>
+            <div class="field"><label class="field-label" for="tp-segment">Segment (s)</label><input class="input" id="tp-segment" type="number" value="5" min="1"></div>
             <div class="field"><label class="field-label" for="tp-qber">Expected QBER</label><input class="input" id="tp-qber" type="number" value="0.05" min="0.001" max="0.2" step="0.005"></div>
           </div>
           <div class="field"><span class="field-label">Announce to these neighbors</span><div class="chips" id="tp-peers" style="padding:.3rem 0;border:0"></div></div>
@@ -446,10 +435,6 @@
           <div class="field-row">
             <div class="field"><label class="field-label" for="cont-block">Block (s of data)</label><input class="input" id="cont-block" type="number" value="300" min="10"></div>
             <div class="field"><label class="field-label" for="cont-segment">Segment (s)</label><input class="input" id="cont-segment" type="number" value="10" min="1"></div>
-            <div class="field">
-              <label class="field-label" for="cont-method">Error correction</label>
-              <select class="input" id="cont-method"><option value="cascade">Cascade, optimized</option><option value="ldpc5g">5G NR LDPC</option><option value="polar">polar SCL8</option></select>
-            </div>
           </div>
           <div class="btn-row">
             <button class="btn" id="cont-start" type="button">Start continuous QKD</button>
@@ -538,6 +523,8 @@
           <div class="mon-col">
             <div class="mon-plot"><div class="mon-plot-title">Bitrates of protocol stages [bps]</div><canvas id="mon-rates-time" class="plot-canvas clog-canvas" style="height:17rem"></canvas><div class="hint mon-plot-note" id="mon-n-rates-time"></div></div>
             <div class="mon-panel">
+              <div class="mon-panel-h">Clock sync</div>
+              <div class="mon-kv" id="mon-sync"></div>
               <div class="mon-panel-h">QKD settings</div>
               <div class="mon-kv" id="mon-settings"></div>
               <div class="mon-panel-h">Number of 256-bit keys in the link's pool</div>
@@ -552,6 +539,7 @@
           <div class="mon-col">
             <div class="mon-plot"><div class="mon-plot-title">QBER, quantum bit error [%]</div><canvas id="mon-qber-time" class="plot-canvas clog-canvas" style="height:17rem"></canvas><div class="hint mon-plot-note" id="mon-n-qber-time"></div></div>
             <div class="mon-plot"><div class="mon-plot-title">Fidelity [%]</div><canvas id="mon-fid-time" class="plot-canvas clog-canvas" style="height:17rem"></canvas><div class="hint mon-plot-note" id="mon-n-fid-time"></div></div>
+            <div class="mon-plot"><div class="mon-plot-title">Clock sync [ps]</div><canvas id="mon-sync-time" class="plot-canvas clog-canvas" style="height:17rem"></canvas><div class="hint mon-plot-note" id="mon-n-sync-time"></div></div>
           </div>
         </div>
       </div>
@@ -822,33 +810,7 @@
               <div class="field"><label class="field-label" for="f-n">Raw attempts (n)</label><input class="input" id="f-n" type="number" value="300000" min="1000" step="1000"></div>
               <div class="field"><label class="field-label" for="f-err">Error rate</label><input class="input" id="f-err" type="number" value="0.02" min="0" max="0.5" step="0.001"></div>
             </div>
-            <div class="field">
-              <label class="field-label" for="f-method">Error correction</label>
-              <select class="input" id="f-method">
-                <option value="cascade" selected>Cascade, optimized (least disclosure)</option>
-                <option value="ldpc5g">5G NR LDPC, blind (one-way)</option>
-                <option value="polar">Polar codes, rate-adaptive</option>
-                <option value="ldpc">LDPC belief propagation</option>
-                <option value="winnow">Winnow</option>
-                <option value="discard">Block discard (baseline)</option>
-              </select>
-            </div>
-            <div id="method-cascade"><p class="hint" style="padding:0 0 .6rem">Brassard-Salvail Cascade as optimized by Martinez-Mateo et al. (2015): blocks from the QBER growing x4, no parity disclosed twice, halves inferred, corrections cascading back; f about 1.03-1.07.</p></div>
-            <div id="method-ldpc5g" style="display:none"><p class="hint" style="padding:0 0 .6rem">3GPP TS 38.212 base graph 1 (py3gpp), exact belief propagation (ldpc library); the rate adapts by revealing punctured positions while a frame fails.</p></div>
-            <div id="method-polar" class="field-row" style="display:none">
-              <div class="field"><label class="field-label" for="f-polar-margin">Starting rate margin</label><input class="input" id="f-polar-margin" type="number" value="0.02" min="0" max="0.3" step="0.01"></div>
-              <div class="field"><label class="field-label" for="f-polar-list">SCL list size</label><input class="input" id="f-polar-list" type="number" value="8" min="1" max="32" step="1"></div>
-            </div>
-            <div id="method-discard">
-              <div class="checkbox-row"><input type="checkbox" id="f-search"><label for="f-search">Use a searched generator matrix (designed on independent proxy data)</label></div>
-            </div>
-            <div id="method-winnow" style="display:none">
-              <div class="field"><label class="field-label" for="f-winnow-blocks">Block sizes per pass</label><input class="input" id="f-winnow-blocks" type="text" value="" placeholder="planned from the QBER"></div>
-            </div>
-            <div id="method-ldpc" class="field-row" style="display:none">
-              <div class="field"><label class="field-label" for="f-ldpc-wc">Column weight (wc)</label><input class="input" id="f-ldpc-wc" type="number" value="3" min="2"></div>
-              <div class="field"><label class="field-label" for="f-ldpc-wr">Row weight (wr)</label><input class="input" id="f-ldpc-wr" type="number" value="10" min="3"></div>
-            </div>
+            <p class="hint" style="padding:0 0 .6rem">Error correction: optimized Cascade (Martinez-Mateo et al. 2015), the least disclosure; blocks from the QBER growing x4, no parity disclosed twice, halves inferred, corrections cascading back; f about 1.03-1.07.</p>
             <div class="checkbox-row"><input type="checkbox" id="f-asymptotic"><label for="f-asymptotic">Asymptotic key length (comparison only, no finite-size guarantee)</label></div>
             <button class="btn" id="run-btn" type="submit">Run simulation</button>
             <div class="error-msg" id="run-error" style="padding-left:0"></div>

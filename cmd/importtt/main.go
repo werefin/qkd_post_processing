@@ -584,32 +584,33 @@ func main() {
 	windowReport := flag.Bool("window-report", false, "print each time-bucket's own measured QBER as a diagnostic; does not select bits for the key (see windowreport.go for why not)")
 	windowReportBucketS := flag.Float64("window-report-bucket-s", 0.5, "time-bucket width for -window-report, in seconds")
 	windowReportMinPairs := flag.Int("window-report-min-pairs", 10, "buckets with fewer sifted pairs than this report as insufficient data rather than a QBER")
-	epochS := flag.Float64("epoch-s", 0, "run the protocol independently once per this many seconds instead of pooling the whole recording into one QBER estimate; each epoch sizes its own privacy amplification from its own measured QBER, so a noisy epoch contributes zero bits rather than being picked after the fact (see epoch.go); 0 disables this; only applies to the default block-discard method, not -winnow/-ldpc/-search-matrix")
+	epochS := flag.Float64("epoch-s", 0, "run the protocol independently once per this many seconds instead of pooling the whole recording into one QBER estimate; each epoch sizes its own privacy amplification from its own measured QBER, so a noisy epoch contributes zero bits rather than being picked after the fact (see epoch.go); 0 disables this; only applies to the legacy block discard (-discard)")
 	matrixName := flag.String("matrix", "bch", "step 2 generator matrix: bch")
 	chunkSize := flag.Int("chunk", 2048, "step 3 CRC chunk size (bits); with -winnow too, the CRC pass after correction")
 	keystoreDir := flag.String("keystore", "", "directory to save the final key into (ETSI 014 key_ID/key JSON); empty = don't save")
 	keystoreMax := flag.Int("keystore-max", 0, "maximum keys to keep in -keystore, 0 = unlimited; existing keys are never evicted, only this run's own new keys are held back past the cap")
-	cascade := flag.Bool("cascade", false, "correct errors with optimized Cascade (cascade.go): the least disclosure, f about 1.03-1.07, interactive, so single-site only")
+	cascade := flag.Bool("cascade", false, "correct errors with optimized Cascade (cascade.go), the least disclosure, f about 1.03-1.07; the default when no other method is given")
+	discard := flag.Bool("discard", false, "legacy, not used in production: block discard, with -matrix or -search-matrix")
 	cascadePasses := flag.Int("cascade-passes", 0, "Cascade passes, 0 = the measured default of 3")
 	cascadeSample := flag.Bool("cascade-sample", false, "with -cascade: sacrifice a random sample for the QBER as the other methods do, instead of counting the errors correction finds")
-	winnow := flag.Bool("winnow", false, "correct errors with Winnow instead of discarding blocks (see winnow.go/pipeline_winnow.go)")
+	winnow := flag.Bool("winnow", false, "legacy, not used in production: correct errors with Winnow instead of discarding blocks (see winnow.go/pipeline_winnow.go)")
 	winnowBlocks := flag.String("winnow-blocks", "", "comma-separated block size per Winnow pass; empty plans them from the sample QBER: a power of two holding about 0.45 errors, doubling each pass (qkd.WinnowSchedule)")
 	winnowSample := flag.Float64("winnow-sample", 0.05, "fraction of sifted bits sacrificed to measure QBER directly before Winnow correction")
-	ldpc := flag.Bool("ldpc", false, "correct errors with LDPC belief propagation instead of discarding blocks (see ldpc.go/pipeline_ldpc.go)")
+	ldpc := flag.Bool("ldpc", false, "legacy, not used in production: correct errors with LDPC belief propagation instead of discarding blocks (see ldpc.go/pipeline_ldpc.go)")
 	ldpcBlock := flag.Int("ldpc-block", 0, "LDPC codeword length in bits, 0 = one block covering the whole remaining sifted key")
 	ldpcWc := flag.Int("ldpc-wc", 3, "LDPC column weight (variable node degree)")
 	ldpcWr := flag.Int("ldpc-wr", 10, "LDPC row weight (check node degree); tune rate=1-wc/wr comfortably below 1-h2(QBER), not just barely under it; a regular code's real decoding threshold runs below the Shannon bound, see ldpc_test.go")
 	ldpcIterations := flag.Int("ldpc-iterations", 0, "belief propagation iteration cap per block, 0 = default 50")
 	ldpcSample := flag.Float64("ldpc-sample", 0.05, "fraction of sifted bits sacrificed to measure QBER directly before LDPC correction")
-	ldpc5g := flag.Bool("ldpc5g", false, "correct errors with 5G NR LDPC (TS 38.212 matrices from py3gpp, belief propagation from the ldpc library, blind reconciliation), the best one-way method, for two-party; needs ec/requirements.txt")
-	polar := flag.Bool("polar", false, "correct errors with polar codes (successive cancellation list decoding) instead of discarding blocks (see polar.go/pipeline_polar.go)")
+	ldpc5g := flag.Bool("ldpc5g", false, "legacy, not used in production: correct errors with 5G NR LDPC (TS 38.212 matrices from py3gpp, belief propagation from the ldpc library, blind reconciliation), the best one-way method, for two-party; needs ec/requirements.txt")
+	polar := flag.Bool("polar", false, "legacy, not used in production: correct errors with polar codes (successive cancellation list decoding) instead of discarding blocks (see polar.go/pipeline_polar.go)")
 	polarN := flag.Int("polar-n", 0, "polar codeword length in bits, must be a power of two; 0 = largest power of two covering the remaining sifted key, at most 2^16")
 	polarMargin := flag.Float64("polar-margin", 0.02, "starting rate margin below the per-block capacity; on a failed block hash the margin rises by 0.02 and only the extra frozen values are revealed (rate-adaptive)")
 	polarSample := flag.Float64("polar-sample", 0.05, "fraction of sifted bits sacrificed to measure QBER directly before polar correction")
 	polarList := flag.Int("polar-list", 8, "SCL decoder list size (path count L); 1 = plain successive cancellation, larger L trades decode time for a lower block failure rate")
 	polarSeed := flag.Int64("polar-seed", 1, "PRNG seed for polar's QBER sample selection; must be agreed publicly")
 	softBins := flag.Int("soft-bins", 0, "with -ldpc or -polar: timing-aware soft reconciliation, per-bit error rates from this many public time-offset bins (doc/timing_aware_reconciliation.md); 0 = one flat QBER")
-	searchMatrix := flag.Bool("search-matrix", false, "design a step 2 matrix by searching on simulated data at -search-offline-err, then apply it here, instead of -matrix (see matrixsearch.go)")
+	searchMatrix := flag.Bool("search-matrix", false, "legacy, not used in production: design a step 2 matrix by searching on simulated data at -search-offline-err, then apply it here, instead of -matrix (see matrixsearch.go)")
 	searchM := flag.Int("search-m", 16, "block size for the searched matrix")
 	searchP := flag.Int("search-p", 4, "parity bits for the searched matrix")
 	searchIterations := flag.Int("search-iterations", 3000, "hill-climbing steps for the search")
@@ -618,7 +619,7 @@ func main() {
 	searchOfflineN := flag.Int("search-offline-n", 100000, "raw attempts in the simulated proxy dataset used to design the matrix")
 	searchOfflineMP := flag.Float64("search-offline-multiphoton", 0.01, "multi-photon rate for the simulated proxy data; match your detector's real rate so the search sees realistic sifting losses")
 	searchOfflineJitter := flag.Int64("search-offline-jitter", 300, "detector timing jitter in picoseconds for the simulated proxy data; match your setup so the search sees realistic coincidence-window losses")
-	asymptotic := flag.Bool("asymptotic", false, "with -winnow/-ldpc/-polar: size the key by the asymptotic n(1-h2(QBER)) instead of the default finite-key bound (doc/security_proof.md section 2)")
+	asymptotic := flag.Bool("asymptotic", false, "with -winnow/-ldpc/-polar: size the key by the asymptotic n(1-h2(QBER)) instead of the default finite-key bound (doc/security.md)")
 	epsSec := flag.Float64("eps-sec", 1e-10, "finite-key secrecy failure probability per block")
 	sampleAuto := flag.Bool("sample-auto", true, "finite-key mode: size the QBER sample to maximize the finite key, from the sifted count and -expected-qber only; overrides -ldpc-sample/-polar-sample/-winnow-sample")
 	expectedQBER := flag.Float64("expected-qber", 0, "declared QBER prior for -sample-auto; 0 = the coincidence filter's timing-based prediction, or 0.05 without the filter")
@@ -628,6 +629,8 @@ func main() {
 	peer := flag.String("peer", "", "two-party: the neighbor node running the other half")
 	session := flag.String("session", "", "two-party: the session name both halves use")
 	exportPublic := flag.String("export-public", "", "two-party, alice: write the announcement (timing, basis and multi-photon flag, never bits) into this directory and exit")
+	streamDigest := flag.String("announcement-digest", "", "two-party, a block streamed in segments: SHA-256 (hex) of the whole announcement both sides hashed as it streamed")
+	streamClicks := flag.Int("announcement-clicks", 0, "two-party, a block streamed in segments: how many clicks the whole announcement holds")
 	peerTimeout := flag.Duration("peer-timeout", 15*time.Minute, "two-party: how long to wait for each message from the peer")
 	cpuProfile := flag.String("cpuprofile", "", "write a CPU profile of this run to this file (go tool pprof)")
 	flag.Parse()
@@ -647,16 +650,20 @@ func main() {
 		os.Exit(2)
 	}
 	methods := 0
-	for _, m := range []bool{*winnow, *ldpc, *polar, *searchMatrix, *ldpc5g, *cascade} {
+	for _, m := range []bool{*winnow, *ldpc, *polar, *searchMatrix, *ldpc5g, *cascade, *discard} {
 		if m {
 			methods++
 		}
 	}
 	if methods > 1 {
-		fail(*jsonOut, "-cascade, -winnow, -ldpc, -polar, -ldpc5g and -search-matrix are mutually exclusive")
+		fail(*jsonOut, "-cascade, -discard, -winnow, -ldpc, -polar, -ldpc5g and -search-matrix are mutually exclusive")
 	}
-	if *epochS > 0 && (*winnow || *ldpc || *polar || *searchMatrix || *cascade) {
-		fail(*jsonOut, "-epoch-s only applies to the default block-discard method, not -winnow/-ldpc/-polar/-search-matrix")
+	// optimized Cascade unless a legacy method is asked for; the matrix search is a variant of block discard
+	if !(*winnow || *ldpc || *polar || *searchMatrix || *ldpc5g || *discard) {
+		*cascade = true
+	}
+	if *epochS > 0 && !*discard {
+		fail(*jsonOut, "-epoch-s only applies to the legacy block discard (-discard)")
 	}
 	if *softBins < 0 || (*softBins > 0 && !*ldpc && !*polar && !*ldpc5g) {
 		fail(*jsonOut, "-soft-bins must be >= 0 and only applies to -ldpc, -polar or -ldpc5g")
@@ -704,7 +711,12 @@ func main() {
 		for _, d := range strings.Split(*dir, ",") {
 			dirs = append(dirs, strings.TrimSpace(d))
 		}
+		digest, err := hex.DecodeString(*streamDigest)
+		if err != nil {
+			fail(*jsonOut, "-announcement-digest: %v", err)
+		}
 		runTwoParty(twoPartyOptions{
+			streamDigest: digest, streamClicks: *streamClicks,
 			role: *role, peer: *peer, session: *session, exportDir: *exportPublic, keystore: *keystoreDir,
 			dirs: dirs, jsonOut: *jsonOut, mpWindowPS: *multiPhotonWindowPS, windowPS: *windowPS,
 			filter: *filter, driftCfg: driftCfg, winCfg: winCfg, delays: delays, expectedQBER: *expectedQBER,
@@ -1563,7 +1575,8 @@ type loadedRecording struct {
 	tsPathA, tsPathB       string
 	report                 coincidenceReport
 	alice, bob             []qkd.DetectionEvent
-	rawAlice, rawBob       int // clicks before PruneToCoincidenceRange
+	index                  []int64 // two-party, a streamed block: each announced click's index in the whole announcement
+	rawAlice, rawBob       int     // clicks before PruneToCoincidenceRange
 	droppedA, droppedB     int
 	flaggedMPA, flaggedMPB int
 	filter                 *qkd.CoincidenceFilter

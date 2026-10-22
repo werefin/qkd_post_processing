@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,10 @@ import (
 // her own files, Bob his own files plus Alice's announcement and a report naming it input A
 func splitRecording(t *testing.T, joint string) (aliceDir, bobDir string) {
 	t.Helper()
+	// example recording is real data, kept locally and never committed, so CI has none
+	if _, err := os.Stat(joint); errors.Is(err, os.ErrNotExist) {
+		t.Skipf("%s not present", joint)
+	}
 	tsA, tsB, report, err := findRecording(joint)
 	if err != nil {
 		t.Fatal(err)

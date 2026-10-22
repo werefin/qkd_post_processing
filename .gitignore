@@ -11,6 +11,9 @@
 /ui/keys
 /ui/recordings
 /ui/config
+/ui/import
+/ui/continuous
+/ui/evaluations
 # Network CA, node credential bundles and node data: secrets and key material, never committed
 /deploy/ca/
 /deploy/nodes/
@@ -36,3 +39,5 @@ continuous_state.json
 *_coincidences.csv
 *_coincidences_histograms.jsonl
 coincidence_logs/
+/deploy/controller/
+.ruff_cache/

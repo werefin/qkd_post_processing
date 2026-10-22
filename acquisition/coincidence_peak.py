@@ -7,7 +7,6 @@ import argparse
 import json
 import math
 import os
-import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path

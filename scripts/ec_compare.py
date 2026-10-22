@@ -5,7 +5,6 @@ Error-correction comparison on one simulated binary symmetric channel per QBER: 
 
 import argparse
 import json
-import math
 import subprocess
 import sys
 import time

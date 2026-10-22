@@ -1,5 +1,5 @@
-# One node of the QKD network: kms (key management system), app (dashboard and post-processing)
-# and ui (HTTPS front end) --> run through ./setup.sh up <NODE_ID>, which passes nodes/<NODE_ID>/.env
+# One node of the QKD network: kms (key management system), four services from the one app image, each on its own
+# port (agent, acquisition, processing, web), and ui (HTTPS front end) --> run through ./setup.sh up <NODE_ID>
 
 x-hardened: &hardened
   restart: unless-stopped
@@ -11,11 +11,33 @@ x-hardened: &hardened
     driver: json-file
     options: { max-size: "10m", max-file: "5" }
 
+# every service of the app image: the node, its KMS, where the others listen, and the token they show each other
+x-app: &app
+  <<: *hardened
+  build: { context: .., target: app }
+  image: ${APP_IMAGE:-qkd_post_processing/app}:${IMAGE_TAG:-local}
+  tmpfs: ["/tmp:size=512m"]
+  environment: &app-env
+    NODE_ID: ${NODE_ID:?}
+    KMS_URL: https://kms:8443
+    KMS_CA: /etc/qkd/app/ca.pem
+    KMS_ADMIN_CERT: /etc/qkd/app/admin.pem
+    KMS_ADMIN_KEY: /etc/qkd/app/admin.key
+    KMS_SAE_CERT: /etc/qkd/app/sae.pem
+    KMS_SAE_KEY: /etc/qkd/app/sae.key
+    AGENT_URL: http://agent:9100
+    ACQUISITION_URL: http://acquisition:9101
+    PROCESSING_URL: http://processing:9102
+    WEB_URL: http://web:9823
+    SERVICE_TOKEN: ${SERVICE_TOKEN:?}
+    # uploads and job scratch space are spooled to disk: recordings are far larger than memory
+    TMPDIR: /data/tmp
+
 services:
   kms:
     <<: *hardened
     build: { context: .., target: kms }
-    image: qkd_post_processing/kms:${IMAGE_TAG:-local}
+    image: ${KMS_IMAGE:-qkd_post_processing/kms}:${IMAGE_TAG:-local}
     command:
       - -node-id=${NODE_ID:?}
       - -network=/etc/qkd/network.json
@@ -34,29 +56,34 @@ services:
     # lets nodes that share one host (tests, demos) reach each other through published ports
     extra_hosts: ["host.docker.internal:host-gateway"]
 
-  app:
-    <<: *hardened
-    build: { context: .., target: app }
-    image: qkd_post_processing/app:${IMAGE_TAG:-local}
+  # the node's link to the controller and its neighbors: scheduling, monitor and alerts
+  agent:
+    <<: *app
     depends_on: [kms]
     environment:
-      NODE_ID: ${NODE_ID}
-      KMS_URL: https://kms:8443
-      KMS_CA: /etc/qkd/app/ca.pem
-      KMS_ADMIN_CERT: /etc/qkd/app/admin.pem
-      KMS_ADMIN_KEY: /etc/qkd/app/admin.key
-      KMS_SAE_CERT: /etc/qkd/app/sae.pem
-      KMS_SAE_KEY: /etc/qkd/app/sae.key
-      UPLOAD_MAX_MB: ${UPLOAD_MAX_MB:-102400}
-      # uploads and job scratch space are spooled to disk: recordings are far larger than memory
-      TMPDIR: /data/tmp
+      <<: *app-env
+      SERVICE: agent
       TWO_PARTY_AUTO_ACCEPT: ${TWO_PARTY_AUTO_ACCEPT:-1}
-      RECORDINGS_MAX_GB: ${RECORDINGS_MAX_GB:-0}
-      # alerts of continuous two-party QKD: posted to the webhook when they change, if one is set
+      CONTROLLER_URL: ${CONTROLLER_URL:-}
       ALERT_WEBHOOK: ${ALERT_WEBHOOK:-}
       ALERT_MIN_KEYS: ${ALERT_MIN_KEYS:-100}
       ALERT_MAX_QBER: ${ALERT_MAX_QBER:-0.11}
     volumes:
+      - ${NODE_DIR}/pki/app:/etc/qkd/app:ro
+      - ${NODE_DIR}/data/config:/data/config
+      - ${NODE_DIR}/data/tmp:/data/tmp
+    expose: ["9100"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+
+  # the TimeTagger: config, recordings, live tracker, coincidence log and the two-party recorder
+  acquisition:
+    <<: *app
+    environment:
+      <<: *app-env
+      SERVICE: acquisition
+      UPLOAD_MAX_MB: ${UPLOAD_MAX_MB:-102400}
+      RECORDINGS_MAX_GB: ${RECORDINGS_MAX_GB:-0}
+    volumes: &data
       - ${NODE_DIR}/pki/app:/etc/qkd/app:ro
       - ${NODE_DIR}/data/recordings:/data/recordings
       - ${NODE_DIR}/data/continuous:/data/continuous
@@ -67,7 +94,27 @@ services:
       - ${NODE_DIR}/data/sim-keys:/data/sim-keys
       - ${NODE_DIR}/data/cache:/data/cache
       - ${NODE_DIR}/data/tmp:/data/tmp
-    tmpfs: ["/tmp:size=512m"]
+    expose: ["9101"]
+
+  # alignment, jobs, evaluations and the block work; keys go to the import folder the KMS reads
+  processing:
+    <<: *app
+    depends_on: [kms]
+    environment:
+      <<: *app-env
+      SERVICE: processing
+      KEYSTORE_MAX: ${KEYSTORE_MAX:-30000}
+    volumes: *data
+    expose: ["9102"]
+
+  # the dashboard, handing each /api call to its service
+  web:
+    <<: *app
+    depends_on: [agent, acquisition, processing]
+    environment:
+      <<: *app-env
+      SERVICE: web
+    volumes: ["${NODE_DIR}/data/tmp:/data/tmp"]
     expose: ["9823"]
 
   ui:
@@ -75,7 +122,7 @@ services:
     image: caddy:2.8
     # the caddy binary carries this file capability, and exec fails without it in the bounding set
     cap_add: [NET_BIND_SERVICE]
-    depends_on: [app]
+    depends_on: [web]
     environment:
       UI_USER: ${UI_USER:?}
       UI_PASSWORD_HASH: ${UI_PASSWORD_HASH:?}

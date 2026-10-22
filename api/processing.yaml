@@ -1,0 +1,124 @@
+# QKD node processing: every route of the processing service, port 9102; services/tests checks that they match
+openapi: 3.1.0
+info:
+  title: QKD node processing
+  version: 1.0.0
+  description: 'Simulator, alignment, jobs, evaluations, CHSH and the block work of continuous two-party QKD'
+servers: [{ url: 'http://processing:9102' }]
+security: [{ serviceToken: [] }]
+paths:
+  /healthz:
+    get:
+      security: []
+      responses: { '200': { $ref: 'common.yaml#/components/responses/Health' } }
+  /readyz:
+    get:
+      security: []
+      responses: { '200': { $ref: 'common.yaml#/components/responses/Ready' } }
+  /metrics:
+    get:
+      security: []
+      responses: { '200': { $ref: 'common.yaml#/components/responses/Metrics' } }
+  /api/align/live:
+    get:
+      summary: 'Coincidence-peak analysis of a recording pair, with plots'
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/chsh/download:
+    get:
+      summary: 'Last CHSH diagnostic as CSV'
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/chsh/run:
+    post:
+      summary: 'CHSH diagnostic of a pair'
+      requestBody: { content: { application/json: { schema: { type: object } } } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/evaluations:
+    get:
+      summary: 'Stored evaluations'
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/evaluations/{name}:
+    get:
+      summary: 'One evaluation''s results'
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/evaluations/{name}/{rel}:
+    get:
+      summary: 'One file of an evaluation: png, md or json'
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: rel, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/jobs:
+    get:
+      summary: 'Job history'
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+    post:
+      summary: 'Queues a job: extract, calibrate, evaluate or twoparty-alice'
+      requestBody: { content: { application/json: { schema: { type: object } } } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/jobs/{job_id}:
+    get:
+      summary: 'One job with its log'
+      parameters:
+        - { name: job_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/run:
+    post:
+      summary: 'Runs the simulator'
+      requestBody: { content: { application/json: { schema: { type: object } } } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /api/status:
+    get:
+      summary: 'Node summary: recordings, simulator keys, job in progress'
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /v1/blocks:
+    get:
+      summary: 'One link''s block history: peer, limit'
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+    post:
+      summary: 'Queues Alice''s side of a block: peer, block, block_s, expected_qber'
+      requestBody: { content: { application/json: { schema: { type: object } } } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /v1/blocks/status:
+    get:
+      summary: 'Block queue, running block, recent blocks and clock skews'
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+  /v1/sessions:
+    post:
+      summary: 'Hands over a neighbor''s session from the mailbox: peer, session, kind'
+      requestBody: { content: { application/json: { schema: { type: object } } } }
+      responses:
+        '200': { $ref: 'common.yaml#/components/responses/Json' }
+        default: { $ref: 'common.yaml#/components/responses/Error' }
+components:
+  securitySchemes:
+    serviceToken: { $ref: 'common.yaml#/components/securitySchemes/serviceToken' }

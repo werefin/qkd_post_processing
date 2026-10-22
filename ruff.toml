@@ -1,0 +1,11 @@
+# Python lint in CI: real mistakes only (undefined names, unused imports, syntax), not style
+line-length = 140
+target-version = "py312"
+extend-exclude = ["references", ".venv"]
+
+[lint]
+select = ["F", "E9"]
+
+[lint.per-file-ignores]
+# a package's __init__ re-exports its modules' names
+"__init__.py" = ["F401"]

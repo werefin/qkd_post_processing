@@ -1,0 +1,66 @@
+# Started by hand only, never by a push: publishes the kms and app images of an existing version tag to GitHub
+# Container Registry, for amd64 and arm64, and creates its GitHub release --> Actions tab, or gh workflow run release.yml -f tag=vX.Y.Z
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: version tag to release, made by scripts/release.sh (vX.Y.Z)
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag }}
+
+jobs:
+  images:
+    name: image ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        target: [kms, app]
+    steps:
+      - uses: actions/checkout@v5
+        with: { ref: "refs/tags/${{ inputs.tag }}" }
+      # Go cross-compiles; the app stage's pip install runs under emulation for arm64
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}/${{ matrix.target }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ inputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.tag }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.target }}
+          cache-to: type=gha,scope=${{ matrix.target }},mode=max
+          provenance: true
+          sbom: true
+
+  github-release:
+    needs: images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with: { ref: "refs/tags/${{ inputs.tag }}" }
+      - name: release notes from the commits since the last tag
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: gh release create "${{ inputs.tag }}" --generate-notes --verify-tag

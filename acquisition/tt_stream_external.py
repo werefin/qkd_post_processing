@@ -11,7 +11,6 @@ channels permanently. Set up "tt_stream_connection_parameters"/"tt_settings", ru
 
 # custom multiprocessing.connection auth (see get_custom_multiprocess_communication_module)
 import os
-import sys
 import hmac
 import hashlib
 import socket

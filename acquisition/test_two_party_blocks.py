@@ -1,6 +1,6 @@
 '''
-Continuous two-party blocks: segments chosen and joined by UTC start, the announcement split and rebuilt, and
-Bob's block aligned to it, by a full search the first time and from the previous block's model after
+Continuous two-party segments: chosen by UTC start, dropped when old, and Bob's clicks aligned to Alice's
+announcement, by a full search the first time and from the previous clock model after
 run: python3 -m unittest acquisition/test_two_party_blocks.py
 '''
 
@@ -50,7 +50,7 @@ def two_sites(seconds=40, seed=3, lag_ps=37_000_000, skew=31e-9):
 
 
 class BlockTest(unittest.TestCase):
-    def test_segments_joined_and_announcement_round_trips(self):
+    def test_segments_chosen_by_utc_start_and_dropped(self):
         (a, cha, oa), _, _ = two_sites(seconds=20)
         with tempfile.TemporaryDirectory() as d:
             root = Path(d) / 'seg'
@@ -59,45 +59,24 @@ class BlockTest(unittest.TestCase):
             segs = tp.segments_in(root, T0, T0 + 20)
             self.assertEqual([s.name for s in segs], sorted(s.name for s in segs))
             self.assertEqual(len(segs), 2)
-            joined = tp.join_segments(segs, Path(d) / 'block')
-            np.testing.assert_array_equal(np.load(joined), a[:np.load(joined).size])
-            files = {'x_public_timestamp_sequence.npy': os.urandom(tp.PART_BYTES + 1234), 'x_public_flags.npy': b'abc'}
-            parts = tp.announcement_parts(files, T0)
-            self.assertEqual(len(parts), 3)
-            self.assertEqual(tp.join_announcement(list(reversed(parts))), files)
-            with self.assertRaises(ValueError):
-                tp.join_announcement(parts[:-1])
-            bad = dict(parts[0], name='../evil_public_flags.npy')
-            with self.assertRaises(ValueError):
-                tp.join_announcement([bad] + parts[1:])
             self.assertEqual(tp.drop_old_segments(root, T0 + 10), 1)
 
-    def test_block_aligned_by_search_then_by_model(self):
+    def test_segments_aligned_by_search_then_by_model(self):
         (a, cha, oa), (b, chb, ob), (pa, pb) = two_sites()
-        with tempfile.TemporaryDirectory() as d:
-            ra, rb = Path(d) / 'a', Path(d) / 'b'
-            write_segments(ra, oa, a, cha, 10, 4, 0.0, '192_0_2_1')
-            # Bob's host cuts 0.3 s later: block edges differ a little, inside a block nothing is lost
-            write_segments(rb, ob, b, chb, 10, 4, 0.3, '192_0_2_2')
-            model, hows = None, []
-            for block in range(2):
-                start, end = T0 + 20 * block, T0 + 20 * (block + 1)
-                work = Path(d) / f'block{block}'
-                pub = tp.join_segments(tp.segments_in(ra, start, end), work / 'alice')
-                own = tp.join_segments(tp.segments_in(rb, start, end), work / 'bob')
-                n_before = np.load(own).size
-                report, model, how = tp.align_block(pub, own, model, {'slope_range_ppb': 200.0})
-                hows.append(how)
-                self.assertTrue(report['detected'])
-                self.assertAlmostEqual(report['clock_skew']['skew_ppb'], 31, delta=1.0)
-                kept = np.load(own)
-                self.assertLess(kept.size, n_before / 5)  # most of Bob's clicks cannot pair and are dropped
-                # every genuine partner of an announced click inside the block survives the pruning
-                ann = np.load(pub)
-                inside = (pa >= ann[0]) & (pa <= ann[-1]) & (pb >= kept[0]) & (pb <= kept[-1])
-                self.assertTrue(np.isin(pb[inside], kept).all())
-                self.assertTrue((Path(own).parent / 'pair_coincidence.json').is_file())
-            self.assertEqual(hows, ['full search', "previous block's clock model"])
+        model, hows = None, []
+        for k in range(4):
+            # Bob's host cuts 0.3 s later: segment edges differ a little, inside a segment nothing is lost
+            sa = a[(a >= oa + k * 10 * PS) & (a < oa + (k + 1) * 10 * PS)]
+            sb = b[(b >= ob + int((k * 10 + 0.3) * PS)) & (b < ob + int(((k + 1) * 10 + 0.3) * PS))]
+            report, keep, model, how = tp.align_arrays(sa, sb, model, {'slope_range_ppb': 200.0})
+            hows.append(how)
+            self.assertTrue(report['detected'])
+            self.assertAlmostEqual(report['clock_skew']['skew_ppb'], 31, delta=1.0)
+            self.assertLess(keep.sum(), sb.size / 5)  # most of Bob's clicks cannot pair and are dropped
+            # every genuine partner of an announced click in both segments survives the pruning
+            inside = np.isin(pa, sa) & np.isin(pb, sb)
+            self.assertTrue(np.isin(pb[inside], sb[keep]).all())
+        self.assertEqual(hows, ['full search'] + ['previous clock model'] * 3)
 
 
 if __name__ == '__main__':
