@@ -3,7 +3,7 @@ openapi: 3.1.0
 info:
   title: QKD node agent
   version: 1.0.0
-  description: 'Network controller link, continuous two-party scheduling, link monitor, alerts and the KMS pages'
+  description: 'Network controller link, Live QKD scheduling, link monitor, alerts and the KMS pages'
 servers: [{ url: 'http://agent:9100' }]
 security: [{ serviceToken: [] }]
 paths:
@@ -79,7 +79,7 @@ paths:
         default: { $ref: 'common.yaml#/components/responses/Error' }
   /api/twoparty/start:
     post:
-      summary: 'Starts continuous two-party QKD with these settings, unless the controller manages the node'
+      summary: 'Starts Live QKD with these settings, unless the controller manages the node'
       requestBody: { content: { application/json: { schema: { type: object } } } }
       responses:
         '200': { $ref: 'common.yaml#/components/responses/Json' }

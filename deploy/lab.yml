@@ -24,12 +24,16 @@ services:
   agent:
     <<: *app
     environment: { <<: *env, SERVICE: agent }
+  # Docker fills a fresh volume from the image's /data on first mount: one container at a time, or the
+  # others fail with "file exists", so agent is created first
   acquisition:
     <<: *app
     environment: { <<: *env, SERVICE: acquisition }
+    depends_on: [agent]
   processing:
     <<: *app
     environment: { <<: *env, SERVICE: processing }
+    depends_on: [agent]
   web:
     <<: *app
     environment: { <<: *env, SERVICE: web }

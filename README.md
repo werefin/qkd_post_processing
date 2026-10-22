@@ -116,16 +116,12 @@ Everything runs in Docker. One controller holds the network (nodes, links, setti
 
 ### What a node does from its dashboard
 
-- **Acquisition**: load the TimeTagger config, record from both sites, and watch the coincidence peak live while the TimeTaggers stream: the tracker locks onto the lag and clock skew within seconds, then shows the clock-corrected peak, its HWHM, the true-pair rate and the accidentals as they evolve. Stored recordings can be replayed through the same tracker.
-- **Recordings**: upload recordings copied off remote boxes; pairs are recognized by their shared start time.
-- **Alignment**: coincidence-peak lag, window, score and clock skew for any pair, with zoomable plots.
-- **Two-party key extraction**: the production mode; this node announces its own recordings' timing to a neighbor, which aligns, matches and decodes with its own, and both pools receive the same certified key under the same key_IDs.
-- **Key extraction**: the chain on one pair or several pooled at one site, as a background job with a live log; detector delay calibration.
-- **Continuous QKD**: in production, each node records its own TimeTagger without end and, every block, offers it to the neighbor it announces to; both run optimized Cascade and both pools receive the same keys, resuming by themselves after a restart.
+- **Home**: the node, the keys in its link pools, links to every page, and the TimeTagger config.
+- **Live QKD**: in production, each node records its own TimeTagger without end and, every block, offers it to the neighbor it announces to; both run optimized Cascade and both pools receive the same keys, resuming by themselves after a restart.
 - **Link monitor**: one link as it runs, with the same views as the TimeTagger vendor's QKD monitor: both systems and the channel between them, the quantum channel's stage, sync, fidelity, QBER and key-rate gauges, singles and coincidences per polarization, heralding, the bit rate after each protocol stage, the run's history, and every block as CSV or JSON.
-- **Evaluation**: every stage of the chain on chosen recordings, with figures, kept on the node.
 - **Network and KMS**: links and their reachability, each end's half of every pool, routes, applications, an end-to-end ETSI key exchange between two dashboards (key IDs and fingerprints only), the audit trail.
-- **CHSH diagnostic** and the **simulator**, whose demo keys never reach the KMS.
+- **Coincidence log**: singles, coincidences in a signal and a noise ROI, and the QBER, one CSV row per integration window, live from the TimeTaggers or from stored recordings.
+- **CHSH diagnostic**: per-block singles and coincidence counts per channel pair for one recording pair.
 
 ### Real detector data from the command line
 
@@ -139,11 +135,11 @@ go run ./cmd/importtt -dir acquisition/<recording dir> -cascade
 
 `importtt` filters coincidences (drift removal, window from the half width at half maximum of a Gaussian fit to the peak, [`doc/coincidence_filtering.md`](doc/coincidence_filtering.md)), corrects errors with optimized Cascade, the least disclosure, f 1.03 to 1.08, counting the QBER from the errors it corrects so no sample is sacrificed  verifies with CRC-16 and a universal hash, and sizes the key by the finite-key bound at $\varepsilon_\mathrm{sec} = 10^{-10}$, $\varepsilon_\mathrm{cor} = 10^{-15}$ ([`doc/security.md`](doc/security.md)). `-dir a,b,c` pools recordings into one block, `-keystore dir` writes the key as ETSI 014 records, `-json` prints one report, and `-window-sweep 50,100,...` adds sifted bits and QBER for each window from the same load.
 
-A single recording of a few seconds is too short for a finite key; continuous QKD distils blocks of minutes (below), and `evaluation/evaluate.py` follows any recording through every stage with figures, kept locally, never committed. Fine timestamps must be announced in one direction only (Alice to Bob), see Per-detector delays and the timing side channel in [`doc/coincidence_filtering.md`](doc/coincidence_filtering.md).
+A single recording of a few seconds is too short for a finite key; Live QKD distils blocks of minutes (below), and `evaluation/evaluate.py` follows any recording through every stage with figures, kept locally, never committed. Fine timestamps must be announced in one direction only (Alice to Bob), see Per-detector delays and the timing side channel in [`doc/coincidence_filtering.md`](doc/coincidence_filtering.md).
 
-### Continuous QKD
+### Live QKD
 
-Continuous QKD is the whole chain in production, from each node's own TimeTagger to final keys in the link pools, on any TimeTagger whose timestamps `tt_record_dual.py` can read: each node records without end in UTC-aligned segments, the announcing node streams each segment's timing to its neighbor as it closes, and every block both run optimized Cascade, verification and finite-key privacy amplification, with each link's block length planned from its QBER and pair rate ([`doc/security.md`](doc/security.md)). It runs from the dashboard or the network controller: Production: continuous two-party QKD in [`doc/deployment.md`](doc/deployment.md).
+Live QKD is the whole chain in production, from each node's own TimeTagger to final keys in the link pools, on any TimeTagger whose timestamps `tt_record_dual.py` can read: each node records without end in UTC-aligned segments, the announcing node streams each segment's timing to its neighbor as it closes, and every block both run optimized Cascade, verification and finite-key privacy amplification, with each link's block length planned from its QBER and pair rate ([`doc/security.md`](doc/security.md)). It runs from the dashboard's Live QKD page or the network controller: Production: Live QKD in [`doc/deployment.md`](doc/deployment.md).
 
 ### Applications
 

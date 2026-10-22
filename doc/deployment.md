@@ -47,7 +47,7 @@ Every node's HTTPS certificate is signed by the network CA, so trusting `ca.pem`
 ./trust-ca.sh nodes/A/pki/ui/ca.pem
 ```
 
-Then open `https://<node host>:<UI_PORT>` and log in as `admin` with the password `node` printed. Everything a node does is available from its dashboard: TimeTagger configuration and recording, upload of recordings from remote boxes, alignment of any recording pair, two-party key extraction with a neighbor (the production mode: each node uses only its own TimeTagger's recordings and both pools receive the same keys), single-site key extraction into a link's pool (one pair or several pooled), detector delay calibration, the CHSH diagnostic, the simulator, and the key management system (links and their reachability, pool halves, routes, applications, an end-to-end ETSI key exchange test between dashboards, and the audit trail).
+Then open `https://<node host>:<UI_PORT>` and log in as `admin` with the password `node` printed. The dashboard has Live QKD (two-party QKD with the neighbors: start, stop, settings, every block), the link monitor for each QKD link as it runs, the key management system (links and their reachability, pool halves, routes, applications, an end-to-end ETSI key exchange test between dashboards, and the audit trail), the coincidence log and the CHSH diagnostic; its home page loads the TimeTagger config.
 
 ### Controlling the network
 
@@ -62,7 +62,7 @@ With the controller running and the nodes pointed at it, the operator sets the w
 ./setup.sh ctl PUT /v1/links/A-B '{"a": "A", "b": "B", "announcer": "A", "active": false}'   # pause a link
 ```
 
-Within 10 s each node's agent picks up its config and starts or stops recording and announcing by itself. A managed node's dashboard shows its continuous QKD but refuses Start and Stop; disable it at the controller (`"enabled": false`) or delete it there to give it back to its dashboard. The controller only coordinates: if it is down, every node keeps running on the last config it received.
+Within 10 s each node's agent picks up its config and starts or stops recording and announcing by itself. A managed node's dashboard shows its Live QKD but refuses Start and Stop; disable it at the controller (`"enabled": false`) or delete it there to give it back to its dashboard. The controller only coordinates: if it is down, every node keeps running on the last config it received.
 
 ### Changing network
 
@@ -117,15 +117,15 @@ Everything a node keeps is under `deploy/nodes/<ID>/`:
 
 8 GB of RAM at minimum, 16 GB comfortable: the coincidence-peak search caps itself at about 4 GiB, and a pooled extraction of seventy seconds of recordings peaks at about 2 GB. Four or more cores; the peak refinement and skew fit run in parallel. Size the disk for the recordings, which are large; keys are small.
 
-### Production: continuous two-party QKD
+### Production: Live QKD
 
 With the nodes deployed, each link fills its pools by itself, at both ends, with the same keys under the same key_IDs; the key management system relays them to nodes further away (`doc/key_management.md`).
 
 **Clocks**: run NTP on every node. Each node cuts its recording into segments that start on the same UTC seconds as its neighbors', so the clocks must agree to well under a segment; the TimeTaggers' own clocks are aligned from the data and need nothing.
 
-**TimeTagger config**: on each node's dashboard, Acquisition page, load the acquisition `config.json` (same shape as `acquisition/config.example.json`) with the sites and their TimeTagger addresses; the node's recorder reads its own site's TimeTagger from it and refuses to start without it. Any TimeTagger whose timestamps `tt_record_dual.py` reads works: everything after the timestamps is this software's.
+**TimeTagger config**: on each node's dashboard, home page, load the acquisition `config.json` (same shape as `acquisition/config.example.json`) with the sites and their TimeTagger addresses; the node's recorder reads its own site's TimeTagger from it and refuses to start without it. Any TimeTagger whose timestamps `tt_record_dual.py` reads works: everything after the timestamps is this software's.
 
-**Start**: with the controller, add the nodes and links there (Controlling the network); the announcer of each link should be the end whose detectors click less. Without it, on each node open Continuous QKD, choose this node's TimeTagger under Two-party, production, and press Start; on one end of each link also tick the neighbor under Announce to: that node offers every block, the other answers by itself. Block length is planned per link by default, the shortest within 5% of the best key rate up to the longest block (15 minutes), from the link's QBER, pair rate and failed blocks (Automatic block length in `doc/security.md`); untick Automatic for every block at the longest.
+**Start**: with the controller, add the nodes and links there (Controlling the network); the announcer of each link should be the end whose detectors click less. Without it, on each node open Live QKD, choose this node's TimeTagger under Two-party, production, and press Start; on one end of each link also tick the neighbor under Announce to: that node offers every block, the other answers by itself. Block length is planned per link by default, the shortest within 5% of the best key rate up to the longest block (15 minutes), from the link's QBER, pair rate and failed blocks (Automatic block length in `doc/security.md`); untick Automatic for every block at the longest.
 
 **What happens**: as soon as a segment closes, the announcing node sends its timing, never a bit, to the neighbor in about 3.3 bytes per click; the neighbor aligns its own segment of the same time from the previous clock model and answers with a bare receipt. The announcing node keeps only its bit and flags per click; the neighbor keeps, for itself, the announced clicks that can pair, a few percent at MHz rates, with their indices. Nothing else is disclosed, memory stays bounded by one segment and nothing piles up. When the block closes, both run the usual protocol (sifting by the neighbor's pair list, optimized Cascade, verification and finite-key privacy amplification) on what they kept, which takes seconds, and the key lands in the link's pool at both ends. Both nodes list every block with its QBER, phase-error bound, disclosure, round trips and key.
 
@@ -133,7 +133,7 @@ With the nodes deployed, each link fills its pools by itself, at both ends, with
 
 **Real time**: the block length is set by the finite-key statistics, not by computing: a block certifies key only with enough pairs, so the first key comes one block after the start (5 minutes) and then a new batch every block, seconds after it closes. The pools turn these batches into a steady key rate for applications. The announcement needs about 10 MB/s of link per 3 MHz of the announcing detectors; a slower link or a smaller node takes shorter segments (`segment_s`), which also lower the memory per segment.
 
-**Watching it**: the Link monitor page shows each link as it runs: both systems and the channel between them, the quantum channel's stage from waiting for signal to generating secure keys, sync, fidelity, QBER and key rate, the singles and coincidences per polarization, heralding, the bit rate after each protocol stage, and the whole run's history, with every block as CSV or JSON. The sidebar and the Continuous QKD page show the alerts: the recorder stopped, a block failed, the QBER above `ALERT_MAX_QBER`, no key with a neighbor for three blocks, a pool below `ALERT_MIN_KEYS`, the key management system not answering; with `ALERT_WEBHOOK` set they are also posted there.
+**Watching it**: the Link monitor page shows each link as it runs: both systems and the channel between them, the quantum channel's stage from waiting for signal to generating secure keys, sync, fidelity, QBER and key rate, the singles and coincidences per polarization, heralding, the bit rate after each protocol stage, and the whole run's history, with every block as CSV or JSON. The sidebar and the Live QKD page show the alerts: the recorder stopped, a block failed, the QBER above `ALERT_MAX_QBER`, no key with a neighbor for three blocks, a pool below `ALERT_MIN_KEYS`, the key management system not answering; with `ALERT_WEBHOOK` set they are also posted there.
 
 **Restarts**: the settings are kept on the node; after a reboot or a container restart the node starts recording again and continues the schedule where it was, and a recorder left behind by a crash is stopped first. Stop ends recording and scheduling on that node until Start is pressed again.
 
@@ -141,17 +141,17 @@ With the nodes deployed, each link fills its pools by itself, at both ends, with
 
 ### Lab PC, Windows included
 
-A photonics lab PC needs the dashboard only, for recordings, alignment and the coincidence log: no key management system, no certificates and no login. `deploy/lab.yml` runs the four services from one image, the same on Windows, macOS and Linux; only the web page is published.
+A photonics lab PC needs the dashboard only, for the coincidence log and the CHSH diagnostic: no key management system, no certificates and no login. `deploy/lab.yml` runs the four services from one image, the same on Windows, macOS and Linux; only the web page is published.
 
 **Windows**: install Docker Desktop with the WSL2 backend (`wsl --install` in an administrator PowerShell, reboot, then Docker Desktop), and clone the repository. In PowerShell, from the repository:
 
 ```powershell
 docker compose -f deploy/lab.yml up -d --build      # first start builds the image, a few minutes
-start http://localhost:9823                         # the dashboard; load the config on the Acquisition page
+start http://localhost:9823                         # the dashboard; load the config on the home page
 docker compose -f deploy/lab.yml down               # stop; the data stays
 ```
 
-**Data**: config, recordings and coincidence logs live in the Docker volume `qkd-lab_lab-data` and survive restarts and rebuilds; logs and recordings are downloaded and uploaded from the dashboard. `docker compose -f deploy/lab.yml down -v` deletes them.
+**Data**: config, recordings and coincidence logs live in the Docker volume `qkd-lab_lab-data` and survive restarts and rebuilds; coincidence logs are downloaded from the dashboard. `docker compose -f deploy/lab.yml down -v` deletes them.
 
 **TimeTaggers**: the container reaches them through Docker Desktop's network like any program on the PC, so the PC must reach their address and port (40404 by default); allow it in the Windows firewall if asked.
 

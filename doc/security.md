@@ -29,7 +29,7 @@ These are starting values: choose them for the application and record them with 
 
 ### One block, stage by stage
 
-A recording, a set of pooled recordings (`-dir a,b,c`, none selected by its error rate) or a continuous-mode block is one block. Every classical message is public and authenticated.
+A recording, a set of pooled recordings (`-dir a,b,c`, none selected by its error rate) or a Live QKD block is one block. Every classical message is public and authenticated.
 
 **Sifting**: coincidences are matched from public timing, basis and multi-photon flag only; drift is removed and the window set from the peak's half width (`doc/coincidence_filtering.md`); pairs in different bases are dropped. Timestamps are announced one way only, Alice to Bob, so a pair's offset $\Delta t$ is never public. Output: $n_\mathrm{sift}$ bit pairs.
 
@@ -110,7 +110,7 @@ Block length is therefore the lever: the pools turn batches into a steady rate, 
 
 ### Automatic block length
 
-Continuous QKD plans each block's length per link (`block_auto`, on by default), up to the longest allowed (`block_s`, 15 minutes by default).
+Live QKD plans each block's length per link (`block_auto`, on by default), up to the longest allowed (`block_s`, 15 minutes by default).
 
 - **Prediction**: from the link's last ten finished blocks, its sifted pairs per second, QBER and Cascade's measured $f$; each length $L$ gets the key $K(L)$ of the bound above on the counts these imply (`PredictCorrectionKey`, which `TestPredictCorrectionKeyMatchesDistillation` checks against distillation).
 - **Failures**: a failed block gives no key, so with $\lambda$ failed blocks per second over the last fifty (as if an hour without failure came first) the expected rate is $e^{-\lambda L} K(L) / L$; a link that keeps failing gets shorter blocks.
@@ -124,7 +124,7 @@ Error correction is **optimized Cascade**: $\mathrm{leak}_\mathrm{EC}$ is every 
 
 ### Two-party post-processing
 
-Each site runs its own half on its own recording (`RunAlice`, `RunBob`, `importtt -role`). The messages carry Alice's announcement (per click timestamp, basis, multi-photon flag), Bob's pair list, sample seeds and bits or Cascade's parities, frame syndromes and tags, CRCs, the verification tag and the privacy-amplification seed, key length and key_IDs; Bob never sends a timestamp. In continuous mode Alice announces segment by segment as each closes, and the rest is unchanged: Bob answers each segment with a bare receipt, keeps for himself the announced clicks that can pair and their indices, and at the block's end sends the same pair list, in the whole announcement's indices, that the whole-block run would; both check they hashed the same announcement (`two_party_stream.py`, `RunAliceClicks`, `TwoPartyConfig.AnnouncementIndex`, `TestTwoPartyReducedAnnouncement`). The disclosure charged is the same as in the joint pipeline (`TestTwoPartyMatchesJoint`, `TestTwoPartyCascade`). The messages travel between the nodes' KMEs over TLS 1.3, computational authentication that only has to hold while the protocol runs: breaking it later does not help against a key already produced.
+Each site runs its own half on its own recording (`RunAlice`, `RunBob`, `importtt -role`). The messages carry Alice's announcement (per click timestamp, basis, multi-photon flag), Bob's pair list, sample seeds and bits or Cascade's parities, frame syndromes and tags, CRCs, the verification tag and the privacy-amplification seed, key length and key_IDs; Bob never sends a timestamp. In Live QKD Alice announces segment by segment as each closes, and the rest is unchanged: Bob answers each segment with a bare receipt, keeps for himself the announced clicks that can pair and their indices, and at the block's end sends the same pair list, in the whole announcement's indices, that the whole-block run would; both check they hashed the same announcement (`two_party_stream.py`, `RunAliceClicks`, `TwoPartyConfig.AnnouncementIndex`, `TestTwoPartyReducedAnnouncement`). The disclosure charged is the same as in the joint pipeline (`TestTwoPartyMatchesJoint`, `TestTwoPartyCascade`). The messages travel between the nodes' KMEs over TLS 1.3, computational authentication that only has to hold while the protocol runs: breaking it later does not help against a key already produced.
 
 ### Pools: no key used twice
 

@@ -24,7 +24,7 @@ flowchart LR
 
 `cmd/controller`, one instance for the network, run from the `kms` image with `--entrypoint controller` (`deploy/controller.yml`). It holds the network as the operator wants it and nothing else: the nodes (each with the site its TimeTagger has in that node's acquisition config, and whether it takes part), the links (the two nodes, which one announces, whether it runs) and the settings every node shares (segment length, longest block and whether blocks are planned per link, expected QBER, blocks kept on disk). That desired state is the only thing on disk (`network.json`, written atomically); what the nodes report lives in memory.
 
-**Southbound**: every node's agent sends a heartbeat every 10 s (`POST /v1/agents/{id}/heartbeat`) with its status: which services answer, whether the recorder runs, its alerts, the last block of every link and both halves of every pool. The answer is the config that node must apply: whether continuous QKD runs, its site, the neighbors it announces to and the shared settings. A node runs continuous QKD while it is enabled and has at least one active link to an enabled neighbor, and announces on the links where it is the announcer.
+**Southbound**: every node's agent sends a heartbeat every 10 s (`POST /v1/agents/{id}/heartbeat`) with its status: which services answer, whether the recorder runs, its alerts, the last block of every link and both halves of every pool. The answer is the config that node must apply: whether Live QKD runs, its site, the neighbors it announces to and the shared settings. A node runs Live QKD while it is enabled and has at least one active link to an enabled neighbor, and announces on the links where it is the announcer.
 
 **Northbound**: the operator reads the whole network (`GET /v1/network`: desired state, each node's config, its last status and whether it is up), follows it live (`GET /v1/events`, server-sent events on every change and at least every 15 s), and changes it (`PUT` and `DELETE` on `/v1/nodes/{id}` and `/v1/links/{name}`, `PUT /v1/settings`). Every change is checked (known nodes, the announcer one of the link's two, block length a whole number of segments) and bumps the revision.
 
@@ -37,19 +37,19 @@ flowchart LR
 `services/agent`, port 9100: the node's link to the controller and to its neighbors.
 
 - **controller.py**: the heartbeat and applying the config that comes back; `/api/controller` shows the link's state.
-- **twoparty.py**: the continuous two-party settings and their schedule: every block both sites have finished is queued at the processing service toward each neighbor this node announces to, and marked done only once the processing service took it, so nothing is lost while it restarts.
-- **listener.py**: notices a neighbor's session in the KMS mailbox and hands it to the processing service: a manual announcement becomes a Bob job, a continuous block goes to the block queue.
+- **twoparty.py**: the Live QKD settings and their schedule: every block both sites have finished is queued at the processing service toward each neighbor this node announces to, and marked done only once the processing service took it, so nothing is lost while it restarts.
+- **listener.py**: notices a neighbor's session in the KMS mailbox and hands it to the processing service: a manual announcement becomes a Bob job, a Live QKD block goes to the block queue.
 - **live_status.py**: exchanges the current singles with every neighbor every two seconds, for the monitor.
 - **monitor.py**, **alerts.py**: the link monitor, the alerts and the watchdog that restarts the recorder.
 - **kms_api.py**: the key management pages, through the node's admin and dashboard SAE certificates.
 
 ### Acquisition
 
-`services/acquisition`, port 9101: everything that drives the TimeTagger, which serves one mode at a time (`tagger.py` holds that lock): the acquisition config, uploads and stored recordings, recordings and replays through the live tracker, the coincidence log, and the two-party recorder (`/v1/recorder`), which records this node's TimeTagger without end in UTC-aligned segments, reports the singles of every read and every segment, and drops segments no block will need; from the agent's start to its stop the TimeTagger belongs to continuous QKD, so no other mode takes it, even while the recorder restarts.
+`services/acquisition`, port 9101: everything that drives the TimeTagger, which serves one mode at a time (`tagger.py` holds that lock): the acquisition config, uploads and stored recordings, recordings and replays through the live tracker, the coincidence log, and the two-party recorder (`/v1/recorder`), which records this node's TimeTagger without end in UTC-aligned segments, reports the singles of every read and every segment, and drops segments no block will need; from the agent's start to its stop the TimeTagger belongs to Live QKD, so no other mode takes it, even while the recorder restarts.
 
 ### Processing
 
-`services/processing`, port 9102: everything that turns recordings into analysis and keys. Alignment of any pair (cached per pair and file version), background jobs one at a time (extraction, calibration, evaluation, manual two-party halves; each kind registers itself in `jobs.py`), evaluations, the CHSH diagnostic, the simulator, and the block work of continuous two-party QKD (`blocks/`: Alice's and Bob's sides of a block, streamed segment by segment as they close with one worker per neighbor and role, and the block log every link's history is read from). Keys go to the import folder the KMS reads from; `importtt` talks to the neighbor through the KMS mailbox with the node's admin certificate.
+`services/processing`, port 9102: everything that turns recordings into analysis and keys. Alignment of any pair (cached per pair and file version), background jobs one at a time (extraction, calibration, evaluation, manual two-party halves; each kind registers itself in `jobs.py`), evaluations, the CHSH diagnostic, the simulator, and the block work of Live QKD (`blocks/`: Alice's and Bob's sides of a block, streamed segment by segment as they close with one worker per neighbor and role, and the block log every link's history is read from). Keys go to the import folder the KMS reads from; `importtt` talks to the neighbor through the KMS mailbox with the node's admin certificate.
 
 ### Web
 

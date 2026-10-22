@@ -3,7 +3,7 @@ openapi: 3.1.0
 info:
   title: QKD node processing
   version: 1.0.0
-  description: 'Simulator, alignment, jobs, evaluations, CHSH and the block work of continuous two-party QKD'
+  description: 'Simulator, alignment, jobs, evaluations, CHSH and the block work of Live QKD'
 servers: [{ url: 'http://processing:9102' }]
 security: [{ serviceToken: [] }]
 paths:

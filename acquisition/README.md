@@ -26,7 +26,7 @@ The catch: two TimeTaggers run on independent local clocks, and there's no wire 
 | `coincidence_peak.py` | `_coarse_search` (FFT cross-correlation over binned counts, `numba`-jitted `_bin_timestamps`), then `_refine_candidate`/`_best_window` (exact timestamp differences, finds the best coincidence-window width), then `_fit_clock_skew` (segment-wise linear fit of lag vs. elapsed time, `_grid_search_clock_skew` as a fallback). `analyze_arrays` runs all three over two in-memory timestamp arrays and builds the JSON report (`fit_skew=False` skips the skew stage, for a fast live check); `analyze_files` wraps it with file loading, validation, and wall-overlap slicing. `save_plot` renders the diagnostic figure; `main` is the CLI (stdlib `argparse`; `--config` loads this section's JSON as defaults, no third-party dependency needed). |
 | `live_peak.py` | `LiveTracker`: `feed` appends each stream's new timestamps (relative to its first one, since raw TimeTagger timestamps exceed float64's exact range), `step` runs the lock (`_coarse_search` candidates, then `_pair_residuals` and the parallel `_skew_scan` over trial skews) or the per-chunk tracking (`_chunk_point`, `_refit`), `status` builds the JSON the dashboard draws. `tracker_kwargs` maps `config.json` onto it; `main` replays two recordings through it. |
 | `coincidence_logger.py`, `coincidences/` | Singles, coincidences and QBER per integration window into a CSV; see "Coincidence log for the photonics experiments". |
-| `two_party_blocks.py` | Continuous two-party QKD, the parts that work on whole segments, used by the processing service: segments chosen by UTC start (`segments_in`), Bob's clicks aligned to Alice's announcement from the previous clock model or a full search (`align_arrays`), old segments dropped. |
+| `two_party_blocks.py` | Live QKD, the parts that work on whole segments, used by the processing service: segments chosen by UTC start (`segments_in`), Bob's clicks aligned to Alice's announcement from the previous clock model or a full search (`align_arrays`), old segments dropped. |
 | `two_party_stream.py` | The per-segment stream: Alice's announcement in about 3.3 bytes per click (`encode`, `decode`, split into mailbox messages by `parts_of`), her flags packed four to a byte for the block (`pack_flags`), and Bob's own choice of what to keep, never sent (`masks`: the announced clicks with one of his within 4 ns, his within 6 ns of those), put on Alice's clock (`to_alice_clock`) with the identity report the block's importtt reads them with. |
 | `clock_tracker.py` | Real-time clock sync for the stream: a Kalman filter on the delay between the two clocks, the skew and the skew's drift (`ClockTracker`), fed with the coincidence peak's centre every quarter second of each segment (`slice_centres`, background-subtracted, stamped at the mean time of its pairs since the clocks drift by nanoseconds within a slice); it predicts the next segment's alignment, refuses centres more than five standard deviations off, declares the lock lost after eight misses in a row, and reports how well the clocks are held. |
 | `tt_replay.py` | `ReplayStream`, a stand-in for `TimeTaggerStream` playing a recording back at stream speed, looped; `pair_skew` gives B's loop its skew-scaled period. |
@@ -106,7 +106,7 @@ Notes from the field:
 - **Lock:** a coarse FFT correlation over the trailing `window_s` of data proposes candidate lags within `max_lag_ms`. For each candidate, a joint search over the clock skew (within `slope_range_ppb`) and the lag counts the pairs that line up, first in 2 ns bins, then in 100 ps bins. The best candidate locks once its score reaches 8. Without the skew search the peak smears by the skew times the window (19 ns per second at 19 ppb), and the coarse correlation alone cannot tell the true peak from a spurious one for several seconds.
 - **Track:** every `chunk_s` (0.5 s) of data gives one background-subtracted centroid of the pairs around the current lag model. A weighted line through the centroids of the last `fit_span_s` refits the lag and skew, and the recent pairs are rebinned against the corrected clocks, so the peak width (a Gaussian fit, reported as HWHM), the true-pair rate and the accidental share are always current. Six chunks in a row without a significant peak return the tracker to searching.
 
-Each update prints one `LIVE {json}` line, which the dashboard reads and draws on its Acquisition page, and every `interval_s` a readable summary, here on the synthetic streams of `test_live_peak.py` (-42 ppb of skew, 200 ps of jitter):
+Each update prints one `LIVE {json}` line, and every `interval_s` a readable summary, here on the synthetic streams of `test_live_peak.py` (-42 ppb of skew, 200 ps of jitter):
 
 ```
 [INFO] [live] locked after 1.7s of data: lag -2986.499 ns, skew -42.00 ppb, score 81.6
@@ -122,7 +122,7 @@ python3 tt_record_dual.py --no-live                               # disable live
 python3 tt_record_dual.py --live-interval-s 1 --live-window-s 10   # summary every second, search the trailing 10 s
 ```
 
-To try the tracker without TimeTaggers, replay two recordings through it at stream speed (`--speed 0` for as fast as possible), or use the replay button on the dashboard:
+To try the tracker without TimeTaggers, replay two recordings through it at stream speed (`--speed 0` for as fast as possible):
 
 ```bash
 python3 live_peak.py example/20260909/*_timestamp_sequence.npy --speed 1   # the two files, A first in sorted order
@@ -132,7 +132,7 @@ python3 live_peak.py example/20260909/*_timestamp_sequence.npy --speed 1   # the
 
 `tt_record_dual.py --stop-mode continuous` records until stopped and cuts the streams every `--segment-s` seconds (`record_dual.segment_s`, 10 by default) into a directory per segment, holding the usual recording pair, built under a hidden name and renamed when complete. A `.recording_done` marker follows the last segment. `--replay A.npy B.npy` plays two stored recordings instead of connecting to TimeTaggers (`tt_replay.py`), looping them with B's period scaled by the pair's clock skew so the lag runs on across loops as on a real link; `--replay-speed` plays faster than real time.
 
-`tt_record_dual.py --site NAME --stop-mode continuous` records one site's TimeTagger only, as each node of a two-party link does: segments are cut on UTC multiples of `--segment-s` and named by their UTC start, so two sites on NTP-synced clocks name the same stretch of time alike, and every read prints a `RATES` line with its counts per channel for the dashboard's live singles. The dashboard's continuous two-party QKD runs it and `two_party_blocks.py` (Production: continuous two-party QKD in `doc/deployment.md`).
+`tt_record_dual.py --site NAME --stop-mode continuous` records one site's TimeTagger only, as each node of a two-party link does: segments are cut on UTC multiples of `--segment-s` and named by their UTC start, so two sites on NTP-synced clocks name the same stretch of time alike, and every read prints a `RATES` line with its counts per channel for the dashboard's live singles. The dashboard's Live QKD runs it and `two_party_blocks.py` (Production: Live QKD in `doc/deployment.md`).
 
 ### Coincidence log for the photonics experiments
 
@@ -191,7 +191,7 @@ go run ./cmd/importtt -dir acquisition/example/20260909
 - shifts the second recording's timestamps onto the first's clock using the report's fitted lag *and* clock skew (not just the constant offset), so drift over a long recording doesn't smear the coincidence window
 - filters the coincidences (drift removal, window from the HWHM of a Gaussian fit to the peak), then runs optimized Cascade and finite-key privacy amplification, printing the same per-stage report as `cmd/qkd_post_processing`
 
-`-window` overrides the coincidence window, which otherwise comes from the coincidence filter; `-chunk` and the error-correction flags are the same ones `cmd/qkd_post_processing` takes. The dashboard runs all of this from the browser: Key extraction in `doc/deployment.md`. Requires `coincidence_peak.py`'s default `--strict` (peak actually detected) --> report with `"detected": false` is refused, since its clock alignment isn't trustworthy.
+`-window` overrides the coincidence window, which otherwise comes from the coincidence filter; `-chunk` and the error-correction flags are the same ones `cmd/qkd_post_processing` takes. Requires `coincidence_peak.py`'s default `--strict` (peak actually detected) --> report with `"detected": false` is refused, since its clock alignment isn't trustworthy.
 
 ### Optional: CHSH self-testing diagnostic
 

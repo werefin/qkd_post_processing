@@ -219,7 +219,6 @@ input, select { font-family: inherit; }
 .plots--lg { grid-template-columns: repeat(2, 1fr); }
 @media (max-width: 900px) { .plots--lg { grid-template-columns: 1fr; } }
 .plot-canvas--lg { height: 240px; cursor: crosshair; }
-.plot-hint { font-size: .64rem; color: var(--text3); margin-top: .4rem; }
 
 /* Gauge */
 .gauge-wrap { display: flex; flex-direction: column; align-items: center; padding: 1.2rem 1rem .6rem; }
@@ -242,9 +241,6 @@ input, select { font-family: inherit; }
 .progress-track { height: 6px; border-radius: 3px; background: var(--surface2); overflow: hidden; margin-top: .7rem; display: none; }
 .progress-track.active { display: block; }
 .progress-fill { height: 100%; width: 0%; background: var(--grad); transition: width .15s linear; }
-.file-list { margin-top: .7rem; font-size: .76rem; color: var(--text2); display: flex; flex-direction: column; gap: .25rem; }
-.file-list .ok  { color: var(--success); }
-.file-list .bad { color: var(--danger); }
 
 /* Log panel (acquisition output) */
 .log-panel {
@@ -276,8 +272,6 @@ input, select { font-family: inherit; }
 .data-table td.error-cell { color: var(--danger); }
 .data-table tbody td.positive { color: var(--success); }
 /* a table of names to tick: everything from the left, the tick box column only as wide as the box */
-.data-table--names th, .data-table--names td { text-align: left; }
-.data-table--names th:first-child, .data-table--names td:first-child { width: 1%; padding-right: .25rem; }
 /* inside a card's body a hint lines up with the fields, and a card ending in chips needs no rule under them */
 .card-body .hint { padding-left: 0; padding-right: 0; }
 .card > .chips:last-child { border-bottom: 0; }
@@ -303,16 +297,11 @@ input, select { font-family: inherit; }
   .hint { padding-left: 1rem; padding-right: 1rem; }
 }
 
-/* Key management and job views */
+/* Key management views */
 .data-table td.empty { text-align: center; color: var(--text3); padding: 1.5rem; }
 .data-table td.mono, .mono { font-family: 'JetBrains Mono', monospace; font-size: .78rem; word-break: break-all; }
 textarea.input { resize: vertical; min-height: 4.5rem; }
 .sidebar-title .mono { font-size: .8rem; opacity: .8; }
-
-/* evaluation figures: rendered PNGs on a white card, full width */
-.eval-figure { margin: 0 0 1rem; }
-.eval-fig { width: 100%; height: auto; border-radius: 10px; background: #fff; display: block; }
-.eval-figure figcaption { color: var(--text3); font-size: .75rem; margin-top: .3rem; }
 
 /* Coincidence log: plots and the chart tooltip */
 .clog-canvas { cursor: crosshair; margin-top: .5rem; }
@@ -345,6 +334,7 @@ textarea.input { resize: vertical; min-height: 4.5rem; }
 .mon-stage.now { color: var(--text); border-color: var(--warn); }
 .mon-stage.now.good { border-color: var(--success); }
 .grid--4 { grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); }
+.grid--5 { grid-template-columns: repeat(auto-fit, minmax(min(170px, 100%), 1fr)); }
 .mon-gauges { margin-bottom: 1rem; }
 .mon-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 @media (max-width: 900px) { .mon-grid { grid-template-columns: 1fr; } }

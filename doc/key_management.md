@@ -35,16 +35,16 @@ At start-up a node checks the description (known node IDs, no self-links, no dup
 
 ### How a link's pools are filled
 
-Both ends of a link must store the same keys under the same key_IDs, so post-processing runs as two parties, each node on its own TimeTagger's recording (`qkd/twoparty.go`, `importtt -role alice|bob`, the dashboard's two-party extraction):
+Both ends of a link must store the same keys under the same key_IDs, so post-processing runs as two parties, each node on its own TimeTagger's recording (`qkd/twoparty.go`, `importtt -role alice|bob`):
 
 - Alice's node announces, for every click, its timestamp, basis and multi-photon flag, never its bit; the announcement goes one way only.
 - Bob's node finds its own recording of the same start time, aligns it to the announcement (offset and clock skew), removes the drift, sets the window from the HWHM of the peak, matches the coincidences and sends back only which of Alice's clicks are paired.
 - Error correction is optimized Cascade: Bob asks Alice for the parities he needs, a whole pass's blocks in one request and then one request per halving step of all the searches under way, about a hundred round trips per block; Alice counts every parity she discloses herself. Nothing is sacrificed: after correction Bob announces, per basis, how many bits he corrected, which bound the other basis's phase errors (Errors counted by correction in `doc/security.md`). Both then exchange CRCs, Alice sends the verification tag, Bob confirms.
 - Both hash their verified bits with the same Toeplitz seed to the certified length, and Alice names one key_ID per 256-bit record. Each node writes the records into the import folder of the link, and its KMS takes them into the pool.
 
-Continuous two-party QKD runs this for every block without anyone starting it: each node records its own TimeTagger in segments that start on the same UTC seconds as its neighbor's, the node that announces offers each block's timing in parts, and the other answers with its own segments of the same time (Production: continuous two-party QKD in `doc/deployment.md`).
+Live QKD runs this for every block without anyone starting it: each node records its own TimeTagger in segments that start on the same UTC seconds as its neighbor's, the node that announces offers each block's timing in parts, and the other answers with its own segments of the same time (Production: Live QKD in `doc/deployment.md`).
 
-The messages travel between the two dashboards through the nodes' KMEs (`/kme/v1/pp/...`), so they are carried over the same mutual TLS as everything between nodes, and only between neighbors. Bob does the heavy part, filtering, matching and decoding, and never reveals his timing; Alice's node only builds events, transforms and hashes. Start a two-party extraction from the node whose detectors click less, so that its announcement is the smaller one; the other node answers by itself.
+The messages travel between the two nodes through the nodes' KMEs (`/kme/v1/pp/...`), so they are carried over the same mutual TLS as everything between nodes, and only between neighbors. Bob does the heavy part, filtering, matching and decoding, and never reveals his timing; Alice's node only builds events, transforms and hashes. The node whose detectors click less should announce, so that its announcement is the smaller one; the other node answers by itself.
 
 ### Pools and how they are split
 
