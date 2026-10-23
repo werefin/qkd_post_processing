@@ -27,8 +27,8 @@ import (
 const (
 	publicTSSuffix    = "_public_timestamp_sequence.npy"
 	publicFlagsSuffix = "_public_flags.npy"
-	// a reduced recording keeps the multi-photon flags of its full segment, whose neighboring clicks it dropped
-	multiPhotonSuffix = "_multiphoton.npy"
+	// Alice's squashed channel per click beside her recording, so her announcement and her bits share the random choices
+	squashedSuffix = "_squashed.npy"
 	// a block streamed in segments: Alice keeps her bits and flags only, Bob each kept click's index
 	aliceBitsSuffix   = "_alice_bits.npy"
 	aliceFlagsSuffix  = "_alice_flags.npy"
@@ -148,14 +148,11 @@ func aliceEvents(o twoPartyOptions) (events []qkd.DetectionEvent, perRec [][]qkd
 		if len(t) != len(ch) || len(t) == 0 {
 			return nil, nil, nil, fmt.Errorf("%s: empty recording or timestamp and channel counts differ", d)
 		}
-		mp, err := ownMultiPhoton(ts, t, ch, o.mpWindowPS)
+		sq, err := ownSquashed(ts, t, ch, o.mpWindowPS)
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		ev, _, _, _ := buildEvents(t, ch, mp, nil, func(ts int64) int64 { return ts })
-		if o.delays != nil {
-			ev = qkd.ApplyDetectorDelays(ev, o.delays.Alice)
-		}
+		ev, _, _ := buildEvents(t, ch, sq, nil, func(ts int64) int64 { return ts }, o.aliceDelays())
 		perRec = append(perRec, ev)
 		events = append(events, ev...)
 		bases = append(bases, base)
@@ -213,28 +210,40 @@ func fileExists(p string) bool {
 	return err == nil
 }
 
-// ownMultiPhoton is the recording's multi-photon flags: from its sidecar when it has one, else detected
-func ownMultiPhoton(tsPath string, t []int64, ch []int8, windowPS int64) ([]bool, error) {
-	side := strings.TrimSuffix(tsPath, "_timestamp_sequence.npy") + multiPhotonSuffix
-	if _, err := os.Stat(side); err != nil {
-		return detectMultiPhoton(t, ch, windowPS), nil
+// ownSquashed is Alice's squashed channel per click: from beside her recording when an earlier run made it, else
+// squashed now and kept there; no more secret than the channel file next to it
+func ownSquashed(tsPath string, t []int64, ch []int8, windowPS int64) ([]int8, error) {
+	side := strings.TrimSuffix(tsPath, "_timestamp_sequence.npy") + squashedSuffix
+	if fileExists(side) {
+		sq, err := loadNpyInt8(side)
+		if err != nil {
+			return nil, err
+		}
+		if len(sq) != len(t) {
+			return nil, fmt.Errorf("%s: %d squashed channels for %d clicks", side, len(sq), len(t))
+		}
+		return sq, nil
 	}
-	f, err := loadNpyInt8(side)
+	sq, _, err := squashClicks(t, ch, windowPS, squashRandom())
 	if err != nil {
 		return nil, err
 	}
-	if len(f) != len(t) {
-		return nil, fmt.Errorf("%s: %d flags for %d clicks", side, len(f), len(t))
+	// written beside and renamed, so a run that stops halfway leaves no partial choices behind
+	if err := writeNpyInt8(side+".tmp", sq); err != nil {
+		return nil, err
 	}
-	mp := make([]bool, len(f))
-	for i, v := range f {
-		mp[i] = v != 0
-	}
-	return mp, nil
+	return sq, os.Rename(side+".tmp", side)
 }
 
-// exportPublic writes Alice's announcement straight from her arrays: timing (detector delays applied), basis and
-// multi-photon flag per valid click, never the bit; no event list is built, so a segment costs little memory
+func (o twoPartyOptions) aliceDelays() *[2][2]float64 {
+	if o.delays == nil {
+		return nil
+	}
+	return &o.delays.Alice
+}
+
+// exportPublic writes Alice's announcement straight from her squashed clicks: timing (detector delays applied) and
+// basis per detection, never the bit; no event list is built, so a segment costs little memory
 func exportPublic(o twoPartyOptions, out twoPartyJSON) (twoPartyJSON, error) {
 	if err := os.MkdirAll(o.exportDir, 0o755); err != nil {
 		return out, err
@@ -257,25 +266,19 @@ func exportPublic(o twoPartyOptions, out twoPartyJSON) (twoPartyJSON, error) {
 		if len(t) != len(ch) || len(t) == 0 {
 			return out, fmt.Errorf("%s: empty recording or timestamp and channel counts differ", d)
 		}
-		mp, err := ownMultiPhoton(tsFile, t, ch, o.mpWindowPS)
+		sq, err := ownSquashed(tsFile, t, ch, o.mpWindowPS)
 		if err != nil {
 			return out, err
 		}
 		ts := make([]int64, 0, len(t))
 		flags := make([]int8, 0, len(t))
-		for i, c := range ch {
-			basis, bit, ok := channelToBasisBit(c)
+		for i, c := range sq {
+			basis, _, ok := channelToBasisBit(c)
 			if !ok {
 				continue
 			}
-			at := t[i]
-			if o.delays != nil {
-				at -= int64(math.Round(o.delays.Alice[basis][bit&1]))
-			}
+			at := t[i] - delayOf(o.aliceDelays(), ch[i])
 			f := int8(basis)
-			if mp[i] {
-				f |= 2
-			}
 			ts, flags = append(ts, at), append(flags, f)
 			// the digest Bob checks, as qkd.PublicDigest computes it over the same events
 			binary.LittleEndian.PutUint64(rec[:8], uint64(at))
@@ -404,10 +407,15 @@ func loadBobRecording(dir string, o twoPartyOptions) (bobRecording, error) {
 		aRel := skew.ReferenceElapsedPS + (bRel-(skew.ReferenceElapsedPS+skew.LagAtReferencePS))/(1+skew.SkewFraction)
 		return a0 + int64(math.Round(aRel))
 	}
-	r.bob, _, _, _ = buildEvents(bt, bch, detectMultiPhoton(bt, bch, o.mpWindowPS), nil, toAliceClock)
-	if o.delays != nil {
-		r.bob = qkd.ApplyDetectorDelays(r.bob, o.delays.Bob)
+	sq, _, err := squashClicks(bt, bch, o.mpWindowPS, squashRandom())
+	if err != nil {
+		return r, err
 	}
+	var delays *[2][2]float64
+	if o.delays != nil {
+		delays = &o.delays.Bob
+	}
+	r.bob, _, _ = buildEvents(bt, bch, sq, nil, toAliceClock, delays)
 	r.bob = qkd.PruneToCoincidenceRange(r.alice, r.bob, pruneRadiusPS(o.windowPS, report))
 	if o.filter {
 		corrected, fr, ferr := qkd.FilterCoincidences(r.alice, r.bob, o.driftCfg, o.winCfg)

@@ -246,6 +246,29 @@ class TestBlockLog(unittest.TestCase):
             self.assertEqual(blocks, sorted(blocks))
 
 
+class TestAliceKept(unittest.TestCase):
+    def test_bits_follow_the_squashed_detections(self):
+        import pathlib
+
+        import numpy as np
+
+        from services.processing.blocks import alice
+        # H and V within the window squashed to V, D alone, an invalid channel, A and H squashed to H
+        ch = np.array([1, 2, 3, 0, 4, 1], np.int8)
+        squashed = np.array([2, 0, 3, 0, 1, 0], np.int8)
+        flags = np.array([0, 1, 0], np.int8)
+        with tempfile.TemporaryDirectory() as d:
+            kept = alice.Kept(pathlib.Path(d) / 'kept')
+            kept.add(ch, squashed, flags, b'segment')
+            with self.assertRaises(ValueError):
+                kept.add(ch, squashed, flags[:2], b'segment')
+            self.assertEqual(kept.n, 3)
+            self.assertEqual(kept.counts.tolist(), [2, 1, 1, 1])
+            own = kept.write()
+            bits = np.unpackbits(np.load(own / 'block_alice_bits.npy').view(np.uint8))[:3]
+            self.assertEqual(bits.tolist(), [1, 0, 0])
+
+
 if __name__ == '__main__':
     unittest.main()
 

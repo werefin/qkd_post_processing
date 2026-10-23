@@ -73,8 +73,17 @@ func extractWindowInto(words []uint64, bitOffset int, dst []uint64) {
 // CLMUL implementation by init() in toeplitz_clmul_amd64.go when available
 var toeplitzImpl = toeplitzHashPopcount
 
-// toeplitzHashFast dispatches to the fastest implementation this CPU has
+// toeplitzImplCost is toeplitzImpl's work on n bits to l, in units of about one NTT butterfly: a popcount
+// per word per output bit, or with CLMUL a carry-less multiply per word pair of the whole product
+var toeplitzImplCost = func(n, l int) int { return l * (n/64 + 1) }
+
+// toeplitzHashFast dispatches to the fastest implementation this CPU has: the bit-level product for short
+// blocks, the number-theoretic transform once its O(L log L) costs less
 func toeplitzHashFast(x []byte, seed []byte, l int) []byte {
+	n := len(x)
+	if logL := max(bits.Len(uint(n+l-2)), 1); n > 0 && logL <= nttMaxLog && 3*logL<<logL < toeplitzImplCost(n, l) {
+		return toeplitzHashNTT(x, seed, l)
+	}
 	return toeplitzImpl(x, seed, l)
 }
 

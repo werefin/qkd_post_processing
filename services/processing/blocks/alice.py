@@ -20,6 +20,7 @@ from . import importtt, store
 
 SEGMENT_WAIT_S = 60  # after a segment should have closed, how long to wait for the recorder to write it
 PACK_CHUNK = 1 << 26  # clicks packed at a time at the block's end, a multiple of 8
+SQUASHED = '_squashed.npy'  # importtt's squashed channel per click, beside the segment, made with the announcement
 
 
 def wait_segment(start, segment_s):
@@ -54,13 +55,16 @@ class Kept:
         self.digest = hashlib.sha256()
         self.counts, self.seconds = np.zeros(4), 0.0
 
-    def add(self, ch, flags, blob):
-        valid = ch[(ch >= 1) & (ch <= 4)]
-        self.bits.write(((valid - 1) & 1).astype(np.uint8).tobytes())
+    def add(self, ch, squashed, flags, blob):
+        '''Bits of the announced detections, double clicks as importtt squashed them; singles of every raw click'''
+        announced = squashed[squashed > 0]
+        if announced.size != flags.size:
+            raise ValueError(f'{announced.size} squashed detections for {flags.size} announced')
+        self.bits.write(((announced - 1) & 1).astype(np.uint8).tobytes())
         self.flags.write(flags.astype(np.uint8).tobytes())
         self.digest.update(blob)
-        self.n += valid.size
-        self.counts += np.bincount(valid.astype(np.int64), minlength=5)[1:5]
+        self.n += announced.size
+        self.counts += np.bincount(ch[(ch >= 1) & (ch <= 4)].astype(np.int64), minlength=5)[1:5]
 
     def write(self):
         self.bits.close()
@@ -108,11 +112,14 @@ def run(peer, start, block_s, segment_s, expected_qber):
             _announce(peer, session, {**msg, 'segment': seg.name}, blob)
             ts_file = next(seg.glob('*' + tpb.TS))
             ch = np.load(ts_file.with_name(ts_file.name[:-len(tpb.TS)] + tpb.CH))
-            kept.add(ch, flags, blob)
+            squashed_file = ts_file.with_name(ts_file.name[:-len(tpb.TS)] + SQUASHED)
+            squashed = np.load(squashed_file)
+            squashed_file.unlink()
+            kept.add(ch, squashed, flags, blob)
             kept.seconds += max((int(pub_ts[-1]) - int(pub_ts[0])) / 1e12, 0.0)
             entry['segments'] += 1
             entry['announced_bytes'] += len(blob)
-            del ch, pub_ts, flags, blob
+            del ch, squashed, pub_ts, flags, blob
         if not kept.n:
             raise ValueError('no segments recorded in this block')
         entry['singles_local'], entry['seconds'] = kept.singles()

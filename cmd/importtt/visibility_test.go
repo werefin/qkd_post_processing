@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
+	crand "crypto/rand"
+	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"qkd_post_processing/qkd"
@@ -146,74 +150,110 @@ func TestChannelLabelIsExactInverseOfChannelToBasisBit(t *testing.T) {
 	}
 }
 
-// TestBasisPartnerChannel checks the 1<->2, 3<->4 pairing and that
-// non-measurement channels return 0 (no partner), never a wrong channel
-func TestBasisPartnerChannel(t *testing.T) {
-	want := map[int8]int8{1: 2, 2: 1, 3: 4, 4: 3, 0: 0, 5: 0, -1: 0}
-	for ch, w := range want {
-		if got := basisPartnerChannel(ch); got != w {
-			t.Fatalf("basisPartnerChannel(%d) = %d, want %d", ch, got, w)
-		}
-	}
-}
-
-// bruteForceMultiPhoton is an obviously-correct O(n^2) reference: flags a
-// click if ANY click on its basis-partner channel lands within windowPS
-func bruteForceMultiPhoton(timestamps []int64, channels []int8, windowPS int64) []bool {
-	flagged := make([]bool, len(timestamps))
-	for i := range timestamps {
-		partner := basisPartnerChannel(channels[i])
-		if partner == 0 {
+// bruteForceSquash is an obviously-correct reference: each measurement click no earlier one claimed
+// claims every later one within windowPS, and its outcome follows the table below, one random byte a choice
+func bruteForceSquash(timestamps []int64, channels []int8, windowPS int64, random []byte) ([]int8, int) {
+	out := make([]int8, len(channels))
+	claimed := make([]bool, len(channels))
+	groups := 0
+	for i := range channels {
+		if channels[i] < 1 || channels[i] > 4 || claimed[i] {
 			continue
 		}
-		for j := range timestamps {
-			if channels[j] != partner {
-				continue
-			}
-			d := timestamps[i] - timestamps[j]
-			if d < 0 {
-				d = -d
-			}
-			if d <= windowPS {
-				flagged[i] = true
-				break
+		seen := map[int8]bool{channels[i]: true}
+		size := 1
+		for j := i + 1; j < len(channels); j++ {
+			if channels[j] >= 1 && channels[j] <= 4 && timestamps[j]-timestamps[i] <= windowPS {
+				claimed[j] = true
+				seen[channels[j]] = true
+				size++
 			}
 		}
+		if size > 1 {
+			groups++
+		}
+		hv, da := seen[1] || seen[2], seen[3] || seen[4]
+		switch {
+		case len(seen) == 1:
+			out[i] = channels[i]
+		case hv && !da:
+			out[i], random = 1+int8(random[0]%2), random[1:]
+		case da && !hv:
+			out[i], random = 3+int8(random[0]%2), random[1:]
+		default:
+			out[i], random = 1+int8(random[0]%4), random[1:]
+		}
 	}
-	return flagged
+	return out, groups
 }
 
-// TestDetectMultiPhotonAgainstBruteForce fuzzes detectMultiPhoton against
-// the brute-force reference across dense, adversarial random click streams
-func TestDetectMultiPhotonAgainstBruteForce(t *testing.T) {
-	for seed := int64(0); seed < 200; seed++ {
+// TestSquashClicksAgainstBruteForce fuzzes squashClicks against the reference on dense click streams, with
+// the same random bytes, so every group and every outcome must agree
+func TestSquashClicksAgainstBruteForce(t *testing.T) {
+	for seed := int64(0); seed < 300; seed++ {
 		r := rand.New(rand.NewSource(seed))
 		n := 5 + r.Intn(80)
 		spanPS := int64(50 + r.Intn(2000))
-		windowPS := int64(1 + r.Intn(100))
-
+		windowPS := int64(r.Intn(100))
 		timestamps := make([]int64, n)
 		channels := make([]int8, n)
 		for i := range timestamps {
 			timestamps[i] = r.Int63n(spanPS)
-			channels[i] = int8(1 + r.Intn(4))
+			channels[i] = int8(r.Intn(6))
 		}
-		// detectMultiPhoton requires sorted-ascending timestamps (documented
-		// precondition); sort both arrays together to honor it
-		for i := 1; i < n; i++ {
-			for j := i; j > 0 && timestamps[j-1] > timestamps[j]; j-- {
-				timestamps[j-1], timestamps[j] = timestamps[j], timestamps[j-1]
-				channels[j-1], channels[j] = channels[j], channels[j-1]
-			}
-		}
+		slices.Sort(timestamps)
+		random := make([]byte, n)
+		r.Read(random)
 
-		got := detectMultiPhoton(timestamps, channels, windowPS)
-		want := bruteForceMultiPhoton(timestamps, channels, windowPS)
-		for i := range got {
-			if got[i] != want[i] {
-				t.Fatalf("seed=%d window=%d: index %d: got %v, want %v\nts=%v\nch=%v",
-					seed, windowPS, i, got[i], want[i], timestamps, channels)
+		got, gotGroups, err := squashClicks(timestamps, channels, windowPS, bytes.NewReader(random))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, wantGroups := bruteForceSquash(timestamps, channels, windowPS, random)
+		if !slices.Equal(got, want) || gotGroups != wantGroups {
+			t.Fatalf("seed=%d window=%d: got %v (%d groups), want %v (%d)\nts=%v\nch=%v",
+				seed, windowPS, got, gotGroups, want, wantGroups, timestamps, channels)
+		}
+	}
+}
+
+// TestSquashOutcomesAreUniform: a double click in one basis lands on either bit, one across bases on all four
+// outcomes, each about equally often, so a squashed click tells nothing of the physics behind it
+func TestSquashOutcomesAreUniform(t *testing.T) {
+	const n = 40_000
+	for _, tc := range []struct {
+		pair    [2]int8
+		allowed []int8
+	}{{[2]int8{1, 2}, []int8{1, 2}}, {[2]int8{4, 3}, []int8{3, 4}}, {[2]int8{1, 3}, []int8{1, 2, 3, 4}}, {[2]int8{4, 2}, []int8{1, 2, 3, 4}}} {
+		timestamps, channels := make([]int64, 2*n), make([]int8, 2*n)
+		for i := range n {
+			timestamps[2*i], timestamps[2*i+1] = int64(i)*1e6, int64(i)*1e6+500
+			channels[2*i], channels[2*i+1] = tc.pair[0], tc.pair[1]
+		}
+		sq, groups, err := squashClicks(timestamps, channels, 2000, crand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if groups != n {
+			t.Fatalf("%v: %d groups, want %d", tc.pair, groups, n)
+		}
+		counts := map[int8]int{}
+		for i, c := range sq {
+			if i%2 == 1 && c != 0 {
+				t.Fatalf("%v: the second click of a group kept its own detection", tc.pair)
 			}
+			if i%2 == 0 {
+				counts[c]++
+			}
+		}
+		for _, c := range tc.allowed {
+			want := float64(n) / float64(len(tc.allowed))
+			if math.Abs(float64(counts[c])-want) > 6*math.Sqrt(want) {
+				t.Fatalf("%v: outcome %d in %d of %d, want about %.0f", tc.pair, c, counts[c], n, want)
+			}
+		}
+		if total := len(counts); total != len(tc.allowed) {
+			t.Fatalf("%v: outcomes %v, allowed %v", tc.pair, counts, tc.allowed)
 		}
 	}
 }
@@ -258,38 +298,41 @@ func bruteForceVisibility(aliceEv, bobEv []qkd.DetectionEvent, windowPS int64) v
 
 // bruteForceBuildEvents independently re-derives buildEvents' output field
 // by field, without reusing channelToBasisBit or any of its control flow
-func bruteForceBuildEvents(timestamps []int64, channels []int8, multiPhoton []bool, shiftPS func(int64) int64) ([]qkd.DetectionEvent, int, int) {
+func bruteForceBuildEvents(timestamps []int64, channels, squashed []int8, shiftPS func(int64) int64, delays [2][2]float64) ([]qkd.DetectionEvent, int) {
 	labels := map[int8][2]byte{1: {0, 0}, 2: {0, 1}, 3: {1, 0}, 4: {1, 1}}
 	var events []qkd.DetectionEvent
-	dropped, flaggedMP := 0, 0
+	dropped := 0
 	for i := range timestamps {
-		bb, ok := labels[channels[i]]
-		if !ok {
+		if _, ok := labels[channels[i]]; !ok {
 			dropped++
+		}
+		bb, ok := labels[squashed[i]]
+		if !ok {
 			continue
 		}
-		if multiPhoton[i] {
-			flaggedMP++
+		// delay of the detector that fired, not of the squashed outcome
+		var delay float64
+		if phys, ok := labels[channels[i]]; ok {
+			delay = delays[phys[0]][phys[1]]
 		}
 		events = append(events, qkd.DetectionEvent{
-			TimestampPS: shiftPS(timestamps[i]),
+			TimestampPS: shiftPS(timestamps[i]) - int64(math.Round(delay)),
 			Basis:       qkd.Basis(bb[0]),
 			Bit:         bb[1],
-			MultiPhoton: multiPhoton[i],
 		})
 	}
-	return events, dropped, flaggedMP
+	return events, dropped
 }
 
-// TestBuildEventsAgainstBruteForce fuzzes buildEvents (turns raw recorded arrays into
-// DetectionEvents) against an independent reference, including invalid channels and a shift
+// TestBuildEventsAgainstBruteForce fuzzes buildEvents (turns squashed recorded arrays into
+// DetectionEvents) against an independent reference, including invalid channels, a shift and delays
 func TestBuildEventsAgainstBruteForce(t *testing.T) {
 	for seed := int64(0); seed < 200; seed++ {
 		r := rand.New(rand.NewSource(20000 + seed))
 		n := 1 + r.Intn(100)
 		timestamps := make([]int64, n)
 		channels := make([]int8, n)
-		multiPhoton := make([]bool, n)
+		squashed := make([]int8, n)
 		for i := 0; i < n; i++ {
 			timestamps[i] = r.Int63n(1_000_000_000)
 			// mix valid (1-4) and invalid (0, 5, -1) channels
@@ -302,17 +345,25 @@ func TestBuildEventsAgainstBruteForce(t *testing.T) {
 				channels[i] = -1
 			default:
 				channels[i] = int8(1 + r.Intn(4))
+				// most keep their channel, some were absorbed (0) or given another outcome
+				switch r.Intn(5) {
+				case 0:
+				case 1:
+					squashed[i] = int8(1 + r.Intn(4))
+				default:
+					squashed[i] = channels[i]
+				}
 			}
-			multiPhoton[i] = r.Float64() < 0.2
 		}
 		offset := r.Int63n(2000) - 1000
 		shift := func(ts int64) int64 { return ts*2 + offset } // non-trivial, non-identity
+		delays := [2][2]float64{{r.Float64() * 300, r.Float64() * 300}, {r.Float64() * 300, r.Float64() * 300}}
 
-		gotEvents, gotDropped, gotMP, _ := buildEvents(timestamps, channels, multiPhoton, nil, shift)
-		wantEvents, wantDropped, wantMP := bruteForceBuildEvents(timestamps, channels, multiPhoton, shift)
+		gotEvents, gotDropped, _ := buildEvents(timestamps, channels, squashed, nil, shift, &delays)
+		wantEvents, wantDropped := bruteForceBuildEvents(timestamps, channels, squashed, shift, delays)
 
-		if gotDropped != wantDropped || gotMP != wantMP {
-			t.Fatalf("seed=%d: dropped=%d want %d; flaggedMP=%d want %d", seed, gotDropped, wantDropped, gotMP, wantMP)
+		if gotDropped != wantDropped {
+			t.Fatalf("seed=%d: dropped=%d want %d", seed, gotDropped, wantDropped)
 		}
 		if len(gotEvents) != len(wantEvents) {
 			t.Fatalf("seed=%d: %d events, want %d", seed, len(gotEvents), len(wantEvents))

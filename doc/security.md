@@ -31,7 +31,9 @@ These are starting values: choose them for the application and record them with 
 
 A recording, a set of pooled recordings (`-dir a,b,c`, none selected by its error rate) or a Live QKD block is one block. Every classical message is public and authenticated.
 
-**Sifting**: coincidences are matched from public timing, basis and multi-photon flag only; drift is removed and the window set from the peak's half width (`doc/coincidence_filtering.md`); pairs in different bases are dropped. Timestamps are announced one way only, Alice to Bob, so a pair's offset $\Delta t$ is never public. Output: $n_\mathrm{sift}$ bit pairs.
+**Double clicks**: each site first makes one detection of every group of its clicks within 2 ns of the group's first click (`-multiphoton-window`), at that click's time: one detector keeps its outcome, two of one basis give that basis and a random bit, clicks in both bases a random basis and bit, from the operating system's random source. This is the squashing map of the passive BB84 measurement (Gittsovich et al., Phys. Rev. A 89, 012325 (2014), Theorem 14, with cross-clicks assigned uniformly; Beaudry, Moroder and Lütkenhaus, Phys. Rev. Lett. 101, 093601 (2008), for one basis): the detectors act on whatever arrives exactly as a qubit measurement followed by this processing, so the qubit proof below applies with no assumption on the photon number. A double click in one basis must get a random bit, not be dropped, which no squashing model covers; cross-clicks could be dropped (Theorem 14) and are kept instead, so no detection is lost. The detector delay subtracted from a squashed detection's time is that of the detector which fired, so the announced time says nothing of the random bit. Alice keeps her choices beside her recording (`*_squashed.npy`), so her announcement and her key bits come from the same ones.
+
+**Sifting**: coincidences are matched from public timing and basis only; drift is removed and the window set from the peak's half width (`doc/coincidence_filtering.md`); pairs in different bases are dropped. Timestamps are announced one way only, Alice to Bob, so a pair's offset $\Delta t$ is never public. Output: $n_\mathrm{sift}$ bit pairs.
 
 **Estimation set**, fixed before any bit is seen: either a **sacrificed sample** (Cascade with `-cascade-sample`), a share chosen from $n_\mathrm{sift}$ and a declared QBER only, picked by a public seed, revealed and discarded; or **errors counted by correction** (Cascade's default), where nothing is revealed and every remaining bit counts.
 
@@ -61,7 +63,7 @@ else $\ell = 0$. The third term is the verification tag's cost, so the tag is no
 
 *Proof.* Tomamichel and Leverrier 2017, Theorems 2 and 3, Eqs. (56)-(58), for the entanglement-based protocol with mutually unbiased bases, give $n(1 - h_2(\varphi)) - \mathrm{leak} - t - 2\log_2(1/(2\varepsilon_\mathrm{PA}))$, which $\ell$ meets since $\log_2(2/\varepsilon_\mathrm{cor}) \ge t$; the same terms are Supplementary Theorem 2 of Tomamichel et al. 2012.
 
-**Leftover hash term**: for a 2-universal family to $l$ bits, a uniform independent seed and $H_\mathrm{min}(X \mid E) \ge k$, the output is within $\tfrac12\sqrt{2^{\,l-k}}$ of uniform; setting this to $\varepsilon_\mathrm{PA}$ gives $l = k - 2\log_2(1/(2\varepsilon_\mathrm{PA}))$. Toeplitz matrices are 2-universal (Krawczyk 1994); the fast POPCNT and CLMUL paths are checked bit for bit against the defining implementation.
+**Leftover hash term**: for a 2-universal family to $l$ bits, a uniform independent seed and $H_\mathrm{min}(X \mid E) \ge k$, the output is within $\tfrac12\sqrt{2^{\,l-k}}$ of uniform; setting this to $\varepsilon_\mathrm{PA}$ gives $l = k - 2\log_2(1/(2\varepsilon_\mathrm{PA}))$. Toeplitz matrices are 2-universal (Krawczyk 1994). A short block is hashed by its carry-less product (CLMUL, or POPCNT), a long one as one integer convolution by number-theoretic transform modulo $p = 7 \cdot 2^{26} + 1$, the approach of Cryptomite (Foreman, Yeung, Edgington and Curchod, Quantum 9, 1584 (2025)), whichever costs less; each coefficient is at most $n < p$, so its parity is the hash bit exactly. Every path is checked bit for bit against the defining implementation, and the transform gave the same bits as Cryptomite's Toeplitz extractor on 310 random shapes up to $1.5 \cdot 10^6$ bits.
 
 ### Errors counted by correction
 
@@ -124,7 +126,7 @@ Error correction is **optimized Cascade**: $\mathrm{leak}_\mathrm{EC}$ is every 
 
 ### Two-party post-processing
 
-Each site runs its own half on its own recording (`RunAlice`, `RunBob`, `importtt -role`). The messages carry Alice's announcement (per click timestamp, basis, multi-photon flag), Bob's pair list, sample seeds and bits or Cascade's parities, frame syndromes and tags, CRCs, the verification tag and the privacy-amplification seed, key length and key_IDs; Bob never sends a timestamp. In Live QKD Alice announces segment by segment as each closes, and the rest is unchanged: Bob answers each segment with a bare receipt, keeps for himself the announced clicks that can pair and their indices, and at the block's end sends the same pair list, in the whole announcement's indices, that the whole-block run would; both check they hashed the same announcement (`two_party_stream.py`, `RunAliceClicks`, `TwoPartyConfig.AnnouncementIndex`, `TestTwoPartyReducedAnnouncement`). The disclosure charged is the same as in the joint pipeline (`TestTwoPartyMatchesJoint`, `TestTwoPartyCascade`). The messages travel between the nodes' KMEs over TLS 1.3, computational authentication that only has to hold while the protocol runs: breaking it later does not help against a key already produced.
+Each site runs its own half on its own recording (`RunAlice`, `RunBob`, `importtt -role`). The messages carry Alice's announcement (per squashed detection timestamp and basis), Bob's pair list, sample seeds and bits or Cascade's parities, frame syndromes and tags, CRCs, the verification tag and the privacy-amplification seed, key length and key_IDs; Bob never sends a timestamp. In Live QKD Alice announces segment by segment as each closes, and the rest is unchanged: Bob answers each segment with a bare receipt, keeps for himself the announced clicks that can pair and their indices, and at the block's end sends the same pair list, in the whole announcement's indices, that the whole-block run would; both check they hashed the same announcement (`two_party_stream.py`, `RunAliceClicks`, `TwoPartyConfig.AnnouncementIndex`, `TestTwoPartyReducedAnnouncement`). The disclosure charged is the same as in the joint pipeline (`TestTwoPartyMatchesJoint`, `TestTwoPartyCascade`). The messages travel between the nodes' KMEs over TLS 1.3, computational authentication that only has to hold while the protocol runs: breaking it later does not help against a key already produced.
 
 ### Pools: no key used twice
 
@@ -152,7 +154,7 @@ Every record is AES-256-GCM under a key derived from the node's master key by HK
 
 - **Fixed-length proof, variable-length use**: Tomamichel and Leverrier prove a protocol with a fixed abort threshold; here the length follows the observed errors, as treated by Tupkary, Tan and Lütkenhaus (arXiv:2311.01600), not yet checked line by line.
 - **Stopping rule**: a block ends after a time or data volume fixed in advance, never after a count of detections in one basis (Pfister et al., arXiv:1506.07502).
-- **Detectors**: basis-independent detection, double clicks, dead time and efficiency mismatch are assumptions on the hardware, not parameters of post-processing; per-channel coincidence counts show asymmetries to assess.
+- **Detectors**: double clicks are squashed (above), which needs the passive basis choice to be 50:50 and the four detectors equally efficient; that, dead time and efficiency mismatch are assumptions on the hardware, not parameters of post-processing; per-channel coincidence counts show asymmetries to assess.
 - **Timing side channel**: per-detector delays make an announced $\Delta t$ carry information about the bit; calibration lowers it, and timestamps are announced one way only (`doc/coincidence_filtering.md`).
 - **Bit and phase errors** are not assumed independent.
 - **Authentication of post-processing messages** is TLS between the nodes; Poly1305 under pool keys would make it information-theoretic at one pool key per message.
@@ -163,6 +165,7 @@ Every record is AES-256-GCM under a key derived from the node's master key by HK
 | Specification | Code |
 |---|---|
 | $\varepsilon$ budget | `SplitSecurityBudget`, `FiniteKeyConfig` |
+| Double clicks | `squashClicks`, `ownSquashed`, `delayOf` (`cmd/importtt`) |
 | Sifting | `MatchCoincidences`, `FilterCoincidences`, `Sift` |
 | Sacrificed sample | `OptimalSampleFraction`, `siftSample` |
 | Errors counted by correction | `correctionSample`, `CascadeRunConfig.SacrificeSample`, `chainRuleBits`, `chain_rule_bits` in `importtt -json` |

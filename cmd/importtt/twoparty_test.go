@@ -1,8 +1,12 @@
 package main
 
 import (
+	crand "crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +14,12 @@ import (
 
 	"qkd_post_processing/qkd"
 )
+
+// every squashing starts from the same random bytes, so a site squashing its recording twice, once for the
+// joint pipeline and once for its role, makes the same choices and the two can be compared pair for pair
+func init() {
+	squashRandom = func() io.Reader { return rand.New(rand.NewSource(1)) }
+}
 
 // splitRecording turns one joint recording directory into what each site really holds: Alice
 // her own files, Bob his own files plus Alice's announcement and a report naming it input A
@@ -131,5 +141,62 @@ func TestBobCountsPairsPerPolarization(t *testing.T) {
 	}
 	if a.PairCounts != nil || total != b.BasisBits[0]+b.BasisBits[1] || agree < 9*(total-agree) {
 		t.Fatalf("alice %v; bob %v over %v bits", a.PairCounts, b.PairCounts, b.BasisBits)
+	}
+}
+
+// TestAliceAnnouncesWhatSheKeeps: with real randomness, Alice's announcement and her own events for the role
+// come from the same squashing, kept beside her recording, and the announcement holds no bits nor the choices
+func TestAliceAnnouncesWhatSheKeeps(t *testing.T) {
+	defer func(f func() io.Reader) { squashRandom = f }(squashRandom)
+	squashRandom = func() io.Reader { return crand.Reader }
+	r := rand.New(rand.NewSource(3))
+	var ts []int64
+	var ch []int8
+	for i := range 20_000 {
+		at := int64(i) * 1_000_000
+		ts, ch = append(ts, at), append(ch, int8(1+r.Intn(4)))
+		// every third a double click 300 ps later, on any detector
+		if i%3 == 0 {
+			ts, ch = append(ts, at+300), append(ch, int8(1+r.Intn(4)))
+		}
+	}
+	own, pub := t.TempDir(), t.TempDir()
+	if err := writeNpyInt64(filepath.Join(own, "x_timestamp_sequence.npy"), ts); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeNpyInt8(filepath.Join(own, "x_channel_sequence.npy"), ch); err != nil {
+		t.Fatal(err)
+	}
+	o := twoPartyOptions{role: "alice", dirs: []string{own}, exportDir: pub, mpWindowPS: 2000}
+	out, err := runAliceRole(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.exportDir = ""
+	events, _, _, err := aliceEvents(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at, err := loadNpyInt64(filepath.Join(pub, "x"+publicTSSuffix))
+	if err != nil {
+		t.Fatal(err)
+	}
+	flags, err := loadNpyInt8(filepath.Join(pub, "x"+publicFlagsSuffix))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 20_000 || len(at) != len(events) || out.AnnouncementDigest != fmt.Sprintf("%x", qkd.PublicDigest(qkd.StripBit(events))[:8]) {
+		t.Fatalf("%d events, %d announced, digest %s", len(events), len(at), out.AnnouncementDigest)
+	}
+	for i, e := range events {
+		if e.TimestampPS != at[i] || int8(e.Basis) != flags[i] {
+			t.Fatalf("click %d: announced %d basis %d, kept %+v", i, at[i], flags[i], e)
+		}
+	}
+	if files, _ := os.ReadDir(pub); len(files) != 2 {
+		t.Fatalf("announcement holds %d files, want timing and bases only", len(files))
+	}
+	if !fileExists(filepath.Join(own, "x"+squashedSuffix)) {
+		t.Fatal("the squashing choices were not kept beside the recording")
 	}
 }

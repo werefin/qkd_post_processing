@@ -52,7 +52,7 @@ def alice(job):
             out = work / f'pub{i}'
             procs.run_logged(job['log'], [settings.IMPORTTT_BIN, '-role', 'alice', '-dir', str(d), '-export-public', str(out), '-json'])
             files = {f.name: base64.b64encode(f.read_bytes()).decode() for f in out.iterdir()}
-            job['log'].append(f'announcing {name} to {peer}: timing, bases and multi-photon flags, no bits')
+            job['log'].append(f'announcing {name} to {peer}: timing and bases, no bits')
             kms.pp_send(peer, session, 'offer', {'index': i, 'total': len(names), 'base': rec.base(name),
                                                  'files': files, 'params': {k: p.get(k) for k in flags.TWO_PARTY_PARAMS}})
             dirs.append(str(d))

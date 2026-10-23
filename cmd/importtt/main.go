@@ -4,12 +4,16 @@ package main
 
 import (
 	"bufio"
+	"crypto/rand"
 	"encoding/gob"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"math"
+	"math/bits"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -119,8 +123,8 @@ type jsonReport struct {
 	BRecording         string             `json:"b_recording"`
 	ADroppedClicks     int                `json:"a_dropped_clicks"`
 	BDroppedClicks     int                `json:"b_dropped_clicks"`
-	AMultiPhotonCount  int                `json:"a_multiphoton_count"`
-	BMultiPhotonCount  int                `json:"b_multiphoton_count"`
+	ASquashedCount     int                `json:"a_squashed_count"` // double clicks made one detection
+	BSquashedCount     int                `json:"b_squashed_count"`
 	VisibilityHV       float64            `json:"visibility_hv"`
 	VisibilityDA       float64            `json:"visibility_da"`
 	FidelityVis        float64            `json:"fidelity_vis"`
@@ -278,68 +282,71 @@ func channelToBasisBit(ch int8) (basis qkd.Basis, bit byte, ok bool) {
 	}
 }
 
-// basisPartnerChannel returns the other physical channel in the same basis
-// pair (1 <--> 2 for H/V, 3 <--> 4 for D/A), or 0 if ch isn't a measurement channel
-func basisPartnerChannel(ch int8) int8 {
-	switch ch {
-	case 1:
-		return 2
-	case 2:
-		return 1
-	case 3:
-		return 4
-	case 4:
-		return 3
-	default:
-		return 0
-	}
-}
+// squashRandom gives each squashing its random choices; tests make them repeatable
+var squashRandom = func() io.Reader { return rand.Reader }
 
-// detectMultiPhoton flags clicks with another click on their basis partner
-// channel within windowPS ps; timestamps must be sorted ascending
-func detectMultiPhoton(timestamps []int64, channels []int8, windowPS int64) []bool {
-	flagged := make([]bool, len(timestamps))
-	// per-channel index lists in two passes over plain arrays: a map append per click costs more than the scan
-	var counts [256]int
-	for _, ch := range channels {
-		counts[uint8(ch)]++
-	}
-	var byChannel [256][]int32
-	for c, n := range counts {
-		if n > 0 {
-			byChannel[c] = make([]int32, 0, n)
+// squashClicks makes one detection of each group of measurement clicks within windowPS of its first (squashing):
+// one channel keeps it, one basis gets a random bit, both bases a random basis and bit; timestamps ascending
+func squashClicks(timestamps []int64, channels []int8, windowPS int64, random io.Reader) (squashed []int8, groups int, err error) {
+	// squashed[i] is the outcome channel of a group's first click, 0 for the rest and for other channels
+	squashed = make([]int8, len(channels))
+	rnd := bufio.NewReader(random)
+	first, size := -1, 0
+	var mask byte
+	settle := func() error {
+		if size > 1 {
+			groups++
 		}
+		if bits.OnesCount8(mask) == 1 {
+			squashed[first] = int8(bits.TrailingZeros8(mask)) + 1
+			return nil
+		}
+		b, err := rnd.ReadByte()
+		if err != nil {
+			return fmt.Errorf("squashing: %w", err)
+		}
+		switch {
+		case mask&0b1100 == 0:
+			squashed[first] = 1 + int8(b&1)
+		case mask&0b0011 == 0:
+			squashed[first] = 3 + int8(b&1)
+		default:
+			squashed[first] = 1 + int8(b&3)
+		}
+		return nil
 	}
 	for i, ch := range channels {
-		byChannel[uint8(ch)] = append(byChannel[uint8(ch)], int32(i))
-	}
-	// each basis pair once (the relation is symmetric), the pairs in parallel: their clicks never overlap
-	var wg sync.WaitGroup
-	for c := range byChannel {
-		ch := int8(uint8(c))
-		partner := basisPartnerChannel(ch)
-		idxs, partnerIdxs := byChannel[c], byChannel[uint8(partner)]
-		if partner == 0 || partner < ch || len(idxs) == 0 || len(partnerIdxs) == 0 {
+		if ch < 1 || ch > 4 {
 			continue
 		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			pLo := 0
-			for _, i := range idxs {
-				t := timestamps[i]
-				for pLo < len(partnerIdxs) && timestamps[partnerIdxs[pLo]] < t-windowPS {
-					pLo++
-				}
-				for p := pLo; p < len(partnerIdxs) && timestamps[partnerIdxs[p]] <= t+windowPS; p++ {
-					flagged[i] = true
-					flagged[partnerIdxs[p]] = true
-				}
+		if t := timestamps[i]; first >= 0 && t >= timestamps[first] && t-timestamps[first] <= windowPS {
+			mask |= 1 << (ch - 1)
+			size++
+			continue
+		}
+		if first >= 0 {
+			if err := settle(); err != nil {
+				return nil, 0, err
 			}
-		}()
+		}
+		first, mask, size = i, 1<<(ch-1), 1
 	}
-	wg.Wait()
-	return flagged
+	if first >= 0 {
+		if err := settle(); err != nil {
+			return nil, 0, err
+		}
+	}
+	return squashed, groups, nil
+}
+
+// delayOf is the delay of the detector that fired, whatever outcome squashing gave the click, so the announced
+// time says nothing of a random bit; 0 without delays
+func delayOf(delays *[2][2]float64, ch int8) int64 {
+	basis, bit, ok := channelToBasisBit(ch)
+	if delays == nil || !ok {
+		return 0
+	}
+	return int64(math.Round(delays[basis][bit]))
 }
 
 // nearMask marks each x within radius of some ref (with refKeep, of some kept ref), in one pass over
@@ -367,37 +374,31 @@ func nearMask(x, ref []int64, refKeep []bool, radius int64) []bool {
 	return keep
 }
 
-// buildEvents maps a recording's arrays to DetectionEvents, applying
-// shiftPS first; multiPhoton[i] comes from detectMultiPhoton on raw timestamps
-func buildEvents(timestamps []int64, channels []int8, multiPhoton, keep []bool, shiftPS func(int64) int64) (events []qkd.DetectionEvent, dropped, flaggedMP, valid int) {
-	for i, ch := range channels {
+// buildEvents maps a recording's squashed clicks (squashClicks) to DetectionEvents, shifted by shiftPS less the delay
+// of the detector that fired (nil: none); dropped and valid count the raw channels
+func buildEvents(timestamps []int64, channels, squashed []int8, keep []bool, shiftPS func(int64) int64, delays *[2][2]float64) (events []qkd.DetectionEvent, dropped, valid int) {
+	for _, ch := range channels {
 		if _, _, ok := channelToBasisBit(ch); !ok {
 			dropped++
-		} else if multiPhoton[i] {
-			flaggedMP++
 		}
 	}
 	valid = len(channels) - dropped
 	// events only for the clicks keep allows (nil: all), so a busy side costs no more than it can pair
-	n := valid
-	if keep != nil {
-		n = 0
-		for _, k := range keep {
-			if k {
-				n++
-			}
+	n := 0
+	for i, c := range squashed {
+		if c > 0 && (keep == nil || keep[i]) {
+			n++
 		}
 	}
 	events = make([]qkd.DetectionEvent, 0, n)
-	for i, ch := range channels {
-		if keep != nil && !keep[i] {
+	for i, c := range squashed {
+		if c == 0 || keep != nil && !keep[i] {
 			continue
 		}
-		if basis, bit, ok := channelToBasisBit(ch); ok {
-			events = append(events, qkd.DetectionEvent{TimestampPS: shiftPS(timestamps[i]), Basis: basis, Bit: bit, MultiPhoton: multiPhoton[i]})
-		}
+		basis, bit, _ := channelToBasisBit(c)
+		events = append(events, qkd.DetectionEvent{TimestampPS: shiftPS(timestamps[i]) - delayOf(delays, channels[i]), Basis: basis, Bit: bit})
 	}
-	return events, dropped, flaggedMP, valid
+	return events, dropped, valid
 }
 
 // visibilityMetrics is a read-only diagnostic matching the vendor API's "qkd"
@@ -514,7 +515,7 @@ func printChannelDelays(delays map[string]map[string]struct {
 func main() {
 	dir := flag.String("dir", "", "recording directory (from tt_record_dual.py + coincidence_peak.py); a comma-separated list pools several recordings into one privacy-amplification block, all of them included")
 	windowPS := flag.Int64("window", 0, "coincidence window in picoseconds (0 = use the report's corrected window)")
-	multiPhotonWindowPS := flag.Int64("multiphoton-window", 2000, "reject a click as an ambiguous multi-photon event if another click lands on its basis partner channel within this many picoseconds of it (own side only, before cross-side matching); 0 disables this check")
+	multiPhotonWindowPS := flag.Int64("multiphoton-window", 2000, "squash each site's clicks within this many picoseconds of a first click into one detection, at that click's time: a double click in one basis gets that basis and a random bit, one across bases a random basis and bit (own side only, before cross-side matching)")
 	filter := flag.Bool("filter", true, "coincidence filtering from public timing only: track and remove the coincidence peak's drift over the recording, then set the window half-width to the HWHM of a Gaussian fit to the peak (coincfilter.go, doc/coincidence_filtering.md); an explicit -window still overrides the chosen width")
 	filterE0 := flag.Float64("filter-e0", 0.03, "declared intrinsic QBER prior used to predict QBER from the fitted peak (and to size the sample under -sample-auto); a public constant, never measured from the key bits")
 	filterSliceMS := flag.Int64("filter-slice-ms", 250, "time slice per drift estimate for -filter, in milliseconds")
@@ -659,13 +660,14 @@ func main() {
 	first := recs[0]
 	tsPathA, tsPathB, report := first.tsPathA, first.tsPathB, first.report
 	skew := report.ClockSkew
-	var droppedA, droppedB, flaggedMPA, flaggedMPB, rawAlice int
+	var droppedA, droppedB, squashedA, squashedB, rawAlice, rawBob int
 	for _, r := range recs {
 		rawAlice += r.rawAlice
 		droppedA += r.droppedA
 		droppedB += r.droppedB
-		flaggedMPA += r.flaggedMPA
-		flaggedMPB += r.flaggedMPB
+		rawBob += r.rawBob
+		squashedA += r.squashedA
+		squashedB += r.squashedB
 	}
 
 	window := *windowPS
@@ -697,7 +699,7 @@ func main() {
 		}
 		field("Coincidence window", "+-%d ps", window)
 		printCoincidenceFilter(filterResult)
-		field("Multi-photon clicks", "A: %d / %d, B: %d / %d (window=%d ps)", flaggedMPA, rawAlice, flaggedMPB, len(bobEv), *multiPhotonWindowPS)
+		field("Double clicks squashed", "A: %d / %d, B: %d / %d (window=%d ps)", squashedA, rawAlice, squashedB, rawBob, *multiPhotonWindowPS)
 		field("GOMAXPROCS", "%d", runtime.GOMAXPROCS(0))
 	}
 
@@ -781,8 +783,8 @@ func main() {
 		rep.BRecording = filepath.Base(tsPathB)
 		rep.ADroppedClicks = droppedA
 		rep.BDroppedClicks = droppedB
-		rep.AMultiPhotonCount = flaggedMPA
-		rep.BMultiPhotonCount = flaggedMPB
+		rep.ASquashedCount = squashedA
+		rep.BSquashedCount = squashedB
 		rep.VisibilityHV = vis.VisibilityHV
 		rep.VisibilityDA = vis.VisibilityDA
 		rep.FidelityVis = vis.FidelityVis
@@ -986,15 +988,15 @@ func printFiniteKey(r *qkd.FiniteKeyReport) {
 
 // loadedRecording is one recording's events on Alice's clock, drift-filtered if asked
 type loadedRecording struct {
-	dir                    string
-	tsPathA, tsPathB       string
-	report                 coincidenceReport
-	alice, bob             []qkd.DetectionEvent
-	index                  []int64 // two-party, a streamed block: each announced click's index in the whole announcement
-	rawAlice, rawBob       int     // clicks before PruneToCoincidenceRange
-	droppedA, droppedB     int
-	flaggedMPA, flaggedMPB int
-	filter                 *qkd.CoincidenceFilter
+	dir                  string
+	tsPathA, tsPathB     string
+	report               coincidenceReport
+	alice, bob           []qkd.DetectionEvent
+	index                []int64 // two-party, a streamed block: each announced click's index in the whole announcement
+	rawAlice, rawBob     int     // clicks before PruneToCoincidenceRange
+	droppedA, droppedB   int
+	squashedA, squashedB int
+	filter               *qkd.CoincidenceFilter
 }
 
 // eventsCacheName holds one recording's aligned, pruned and filtered events, about 1 MB where the raw
@@ -1002,14 +1004,14 @@ type loadedRecording struct {
 const eventsCacheName = "events.cache"
 
 type recordingCache struct {
-	Key                    string
-	TsPathA, TsPathB       string
-	Report                 coincidenceReport
-	Alice, Bob             []qkd.DetectionEvent
-	RawAlice, RawBob       int
-	DroppedA, DroppedB     int
-	FlaggedMPA, FlaggedMPB int
-	Filter                 *qkd.CoincidenceFilter
+	Key                  string
+	TsPathA, TsPathB     string
+	Report               coincidenceReport
+	Alice, Bob           []qkd.DetectionEvent
+	RawAlice, RawBob     int
+	DroppedA, DroppedB   int
+	SquashedA, SquashedB int
+	Filter               *qkd.CoincidenceFilter
 }
 
 func cacheKey(mpWindowPS, windowPS int64, filter bool, driftCfg qkd.DriftConfig, winCfg qkd.WindowConfig, delays *qkd.DetectorDelays) string {
@@ -1017,7 +1019,7 @@ func cacheKey(mpWindowPS, windowPS int64, filter bool, driftCfg qkd.DriftConfig,
 	if delays != nil {
 		d = *delays
 	}
-	return fmt.Sprintf("v1 mp=%d window=%d filter=%t drift=%+v win=%+v delays=%+v", mpWindowPS, windowPS, filter, driftCfg, winCfg, d)
+	return fmt.Sprintf("v2 squash=%d window=%d filter=%t drift=%+v win=%+v delays=%+v", mpWindowPS, windowPS, filter, driftCfg, winCfg, d)
 }
 
 // loadRecordingCached reads dir's events cache when it was made with these parameters, else loads the
@@ -1032,7 +1034,7 @@ func loadRecordingCached(dir string, mpWindowPS, windowPS int64, filter bool, dr
 		if err == nil && c.Key == key {
 			return loadedRecording{dir: dir, tsPathA: c.TsPathA, tsPathB: c.TsPathB, report: c.Report, alice: c.Alice, bob: c.Bob,
 				rawAlice: c.RawAlice, rawBob: c.RawBob, droppedA: c.DroppedA, droppedB: c.DroppedB,
-				flaggedMPA: c.FlaggedMPA, flaggedMPB: c.FlaggedMPB, filter: c.Filter}, nil
+				squashedA: c.SquashedA, squashedB: c.SquashedB, filter: c.Filter}, nil
 		}
 	}
 	r, err := loadRecording(dir, mpWindowPS, windowPS, filter, driftCfg, winCfg, delays)
@@ -1041,7 +1043,7 @@ func loadRecordingCached(dir string, mpWindowPS, windowPS int64, filter bool, dr
 	}
 	c := recordingCache{Key: key, TsPathA: r.tsPathA, TsPathB: r.tsPathB, Report: r.report, Alice: r.alice, Bob: r.bob,
 		RawAlice: r.rawAlice, RawBob: r.rawBob, DroppedA: r.droppedA, DroppedB: r.droppedB,
-		FlaggedMPA: r.flaggedMPA, FlaggedMPB: r.flaggedMPB, Filter: r.filter}
+		SquashedA: r.squashedA, SquashedB: r.squashedB, Filter: r.filter}
 	// written beside and renamed, so a reader never sees half a cache
 	tmp := path + ".tmp"
 	f, err := os.Create(tmp)
@@ -1107,13 +1109,17 @@ func loadRecording(dir string, mpWindowPS, windowPS int64, filter bool, driftCfg
 		aRel := skew.ReferenceElapsedPS + (bRel-(skew.ReferenceElapsedPS+skew.LagAtReferencePS))/(1+skew.SkewFraction)
 		return a0 + int64(math.Round(aRel))
 	}
-	// own-side timing check, run before any cross-side alignment or shifting, both sides at once
-	var mpA, mpB []bool
+	// each side's double clicks squashed on its own raw timing, both sides at once
+	var sqA, sqB []int8
+	var errA, errB error
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); mpA = detectMultiPhoton(tsA, chA, mpWindowPS) }()
-	go func() { defer wg.Done(); mpB = detectMultiPhoton(tsB, chB, mpWindowPS) }()
+	go func() { defer wg.Done(); sqA, r.squashedA, errA = squashClicks(tsA, chA, mpWindowPS, squashRandom()) }()
+	go func() { defer wg.Done(); sqB, r.squashedB, errB = squashClicks(tsB, chB, mpWindowPS, squashRandom()) }()
 	wg.Wait()
+	if err := errors.Join(errA, errB); err != nil {
+		return r, err
+	}
 
 	// keep only clicks that could coincide, on both sides since either can be the busy one; the margin covers
 	// the detector delays applied later, so the exact prune below sees every click it would have kept
@@ -1125,12 +1131,12 @@ func loadRecording(dir string, mpWindowPS, windowPS int64, filter bool, driftCfg
 	}
 	keepB := nearMask(bOnA, tsA, nil, margin)
 	keepA := nearMask(tsA, bOnA, keepB, margin)
-	r.alice, r.droppedA, r.flaggedMPA, r.rawAlice = buildEvents(tsA, chA, mpA, keepA, func(ts int64) int64 { return ts })
-	r.bob, r.droppedB, r.flaggedMPB, r.rawBob = buildEvents(tsB, chB, mpB, keepB, toAliceClock)
+	var delA, delB *[2][2]float64
 	if delays != nil {
-		r.alice = qkd.ApplyDetectorDelays(r.alice, delays.Alice)
-		r.bob = qkd.ApplyDetectorDelays(r.bob, delays.Bob)
+		delA, delB = &delays.Alice, &delays.Bob
 	}
+	r.alice, r.droppedA, r.rawAlice = buildEvents(tsA, chA, sqA, keepA, func(ts int64) int64 { return ts }, delA)
+	r.bob, r.droppedB, r.rawBob = buildEvents(tsB, chB, sqB, keepB, toAliceClock, delB)
 	r.bob = qkd.PruneToCoincidenceRange(r.alice, r.bob, radius)
 	r.alice = qkd.PruneToCoincidenceRange(r.bob, r.alice, radius)
 

@@ -46,6 +46,13 @@ func BenchmarkToeplitzImpl_4kx2k(b *testing.B) {
 	}
 }
 
+func BenchmarkToeplitzFast_2Mx1M(b *testing.B) {
+	x, seed := benchInputs(2000000, 1000000)
+	for b.Loop() {
+		toeplitzHashFast(x, seed, 1000000)
+	}
+}
+
 func BenchmarkToeplitzImpl_100kx50k(b *testing.B) {
 	x, seed := benchInputs(100000, 50000)
 	for name, impl := range toeplitzImpls {

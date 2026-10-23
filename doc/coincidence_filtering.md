@@ -10,10 +10,10 @@ Within a short time slice the peak is as sharp as the detectors' jitter allows, 
 
 ### Procedure
 
-All inputs are public: each click's timestamp, basis and multi-photon flag, which sifting already exchanges (`PublicEvent`), plus declared constants. Bit values are never read (except in the separate calibration of Per-detector delays and the timing side channel).
+All inputs are public: each detection's timestamp and basis, which sifting already exchanges (`PublicEvent`), plus declared constants. Bit values are never read (except in the separate calibration of Per-detector delays and the timing side channel).
 
 - **Pruning** (`PruneToCoincidenceRange`): Bob records about 50 times as many clicks as Alice, nearly all unpaired. Bob clicks farther than $\max(20\,\text{ns}, 2 \times \text{window})$ from every Alice click can never form a coincidence and are dropped. Results are bit-identical with and without pruning; memory falls from 4.9 GB to 1.6 GB per recording.
-- **Candidate pairs**: after the lag-and-skew alignment, list $\Delta t$ for every basis-matched, non-multi-photon Alice-Bob pair with $|\Delta t| \le R = 3$ ns.
+- **Candidate pairs**: after the lag-and-skew alignment, list $\Delta t$ for every basis-matched Alice-Bob pair with $|\Delta t| \le R = 3$ ns.
 - **Drift tracking** (`EstimateDrift`): split the recording into slices of $T = 250$ ms. In each slice, histogram $\Delta t$ in 25 ps bins, estimate the flat background from $|\Delta t| > 2R/3$, locate the maximum of a 5-bin running sum, and take the background-subtracted centroid near it as the slice's peak centre $c_s$. A slice is trusted if its peak-to-background ratio is at least 5.
 - **Drift removal, iterated** (`ApplyDrift`, `FilterCoincidences`): let $c(t)$ interpolate the trusted $(t_s, c_s)$ linearly and **extrapolate the end segments linearly**, since residual skew keeps drifting past the last trusted slice. Replace every Bob timestamp $t$ by $t - c(t)$. Repeat steps 3-4 on the corrected data until every slice offset is below two bins (at most 5 passes): a correction brings slices whose peak lay beyond $\pm R$ into range.
 - **Window: half width at half maximum of a Gaussian fit** (`fitGaussian`) --> on the drift-corrected histogram (10 ps bins over $\pm R$), fit:
@@ -28,7 +28,7 @@ and the peak is moved to $\mu = 0$. The predicted accidental share inside $\pm w
 
 **Claim**: we introduce no bias into the error statistics of the key and reveal nothing beyond what sifting already reveals.
 
-*Argument*: (a) Every quantity in above steps is a function of public timestamps, bases and multi-photon flags, and of declared constants. `TestFilterCoincidencesNeverReadsBits` checks this directly: flipping every one of Bob's bits leaves the drift model and the window unchanged. (b) The window is fixed before any bit is examined, so it cannot select for low-error pairs; every pair inside it is kept, and the sample, the QBER estimate and privacy amplification see the same population as the key. (c) This is what distinguishes the procedure from choosing time buckets by their measured QBER, which `windowreport.go` only reports and never uses. (d) **Timing side channel**: if detectors have different delays, $\Delta t$ depends on which detector clicked, that is, on the bit. Per-detector delays and the timing side channel measures this on the real recordings and gives the two mitigations.
+*Argument*: (a) Every quantity in above steps is a function of public timestamps and bases, and of declared constants. `TestFilterCoincidencesNeverReadsBits` checks this directly: flipping every one of Bob's bits leaves the drift model and the window unchanged. (b) The window is fixed before any bit is examined, so it cannot select for low-error pairs; every pair inside it is kept, and the sample, the QBER estimate and privacy amplification see the same population as the key. (c) This is what distinguishes the procedure from choosing time buckets by their measured QBER, which `windowreport.go` only reports and never uses. (d) **Timing side channel**: if detectors have different delays, $\Delta t$ depends on which detector clicked, that is, on the bit. Per-detector delays and the timing side channel measures this on the real recordings and gives the two mitigations.
 
 ### Per-detector delays and the timing side channel
 

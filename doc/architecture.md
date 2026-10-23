@@ -77,7 +77,7 @@ Purpose: from each side's clicks, find the basis-matched, unambiguous, single-ph
 | `MatchCoincidences` | `func MatchCoincidences(alice, bob []PublicEvent, windowPS int64) []MatchedPair` | `sifting.go` |
 | `Sift` | `func Sift(aliceEvents, bobEvents []DetectionEvent, windowPS int64) []SiftedBit` | `sifting.go` |
 
-`MatchCoincidences` never needs a bit, only timestamp, basis and multi-photon flag: that is the point of the `PublicEvent`/`DetectionEvent` split. A click flagged `MultiPhoton` is excluded, and a click with more than one candidate partner in the window is dropped on both sides as ambiguous.
+`MatchCoincidences` never needs a bit, only timestamp, basis and multi-photon flag: that is the point of the `PublicEvent`/`DetectionEvent` split. `importtt` squashes double clicks into single detections before any event is built (`doc/security.md`), so it never sets `MultiPhoton`; a click flagged so by another source is excluded, and a click with more than one candidate partner in the window is dropped on both sides as ambiguous.
 
 ### Coincidence filtering
 
@@ -132,13 +132,14 @@ CRC-16 alone bounds correctness only to about 2⁻¹⁶, which is why the univer
 | `FiniteKeySecureKeyLength` | `func FiniteKeySecureKeyLength(n int, phi float64, leakedBits int, epsCor, epsPA float64) int` | `finitekey.go` |
 | `OptimalSampleFraction` | `func OptimalSampleFraction(nSifted int, expectedQBER float64, fk FiniteKeyConfig) float64` | `finitekey.go` |
 | `SecureKeyLength`, `PrivacyAmplify` | asymptotic length and Toeplitz hashing | `privacyamp.go` |
+| `toeplitzHashFast` | Toeplitz hash by CLMUL for short blocks, by number-theoretic transform once cheaper | `toeplitz.go`, `toeplitz_ntt.go` |
 | `UniversalHashTagBits`, `ComputeUniversalHashTag`, `VerifyUniversalHash` | the correctness check, a $\log_2(1/\varepsilon_\text{cor})$-bit tag | `universalhash.go` |
 
 The phase error of each basis's key bits is bounded from the other basis's errors with the exact hypergeometric tail (`HypergeomUpperRate`), plus the chain-rule cost when the errors are counted by correction (`ChainBits`); the strings are checked with the universal hash (no key on mismatch) and hashed to `FiniteKeySecureKeyLength`'s length. `-asymptotic` uses $n(1-h_2(\mathrm{QBER}))$ minus the disclosure instead, for comparison only. A bound at or above ½ yields no key. The Toeplitz hash runs on hardware carry-less multiplication where the CPU has it (`toeplitz_clmul_amd64.go`), else on POPCNT (`toeplitz.go`), both checked against a reference implementation and fixed test vectors.
 
 ### Two-party protocol
 
-`RunAlice` and `RunBob` run the same stages between two sites over a `Conn` (the KMS mailbox in production, `PipeConns` in tests). Alice announces her clicks' timing, basis and multi-photon flag; Bob matches, sends the pair list, runs `CascadeBob` against Alice's answers, and both verify and privacy-amplify with seeds and key_IDs Alice picks. For a block streamed in segments, Alice runs from her bits and flags alone (`RunAliceClicks`) and Bob from the announced clicks that can pair, each with its index in the whole announcement (`TwoPartyConfig.AnnouncementIndex`), so his pair list names the same clicks the whole announcement would.
+`RunAlice` and `RunBob` run the same stages between two sites over a `Conn` (the KMS mailbox in production, `PipeConns` in tests). Alice announces her squashed detections' timing and basis; Bob matches, sends the pair list, runs `CascadeBob` against Alice's answers, and both verify and privacy-amplify with seeds and key_IDs Alice picks. For a block streamed in segments, Alice runs from her bits and flags alone (`RunAliceClicks`) and Bob from the announced clicks that can pair, each with its index in the whole announcement (`TwoPartyConfig.AnnouncementIndex`), so his pair list names the same clicks the whole announcement would.
 
 ### Window reporting
 

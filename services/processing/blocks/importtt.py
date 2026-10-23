@@ -37,6 +37,6 @@ def run(entry, role, folder, peer, session, agreed, streamed=None):
 
 
 def export_public(own, pub):
-    '''Alice's announcement of one segment: timing, bases and multi-photon flags, no bits'''
+    '''Alice's announcement of one segment: timing and bases, no bits; her squashed channels stay beside the segment'''
     subprocess.run([settings.IMPORTTT_BIN, '-role', 'alice', '-dir', str(own), '-export-public', str(pub), '-json'],
                    capture_output=True, text=True, timeout=1800, check=True)

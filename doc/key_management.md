@@ -37,7 +37,7 @@ At start-up a node checks the description (known node IDs, no self-links, no dup
 
 Both ends of a link must store the same keys under the same key_IDs, so post-processing runs as two parties, each node on its own TimeTagger's recording (`qkd/twoparty.go`, `importtt -role alice|bob`):
 
-- Alice's node announces, for every click, its timestamp, basis and multi-photon flag, never its bit; the announcement goes one way only.
+- Alice's node announces, for every detection after double clicks are squashed, its timestamp and basis, never its bit; the announcement goes one way only.
 - Bob's node finds its own recording of the same start time, aligns it to the announcement (offset and clock skew), removes the drift, sets the window from the HWHM of the peak, matches the coincidences and sends back only which of Alice's clicks are paired.
 - Error correction is optimized Cascade: Bob asks Alice for the parities he needs, a whole pass's blocks in one request and then one request per halving step of all the searches under way, about a hundred round trips per block; Alice counts every parity she discloses herself. Nothing is sacrificed: after correction Bob announces, per basis, how many bits he corrected, which bound the other basis's phase errors (Errors counted by correction in `doc/security.md`). Both then exchange CRCs, Alice sends the verification tag, Bob confirms.
 - Both hash their verified bits with the same Toeplitz seed to the certified length, and Alice names one key_ID per 256-bit record. Each node writes the records into the import folder of the link, and its KMS takes them into the pool.

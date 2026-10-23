@@ -1,6 +1,6 @@
 '''
 Continuous two-party QKD streamed per segment: the compact announcement round trips, and the reduction keeps
-every pair the coincidence filter can see, with the multi-photon flags importtt would compute on the full data
+every pair the coincidence filter can see, with the double clicks squashed as importtt would on the full data
 run: python3 -m unittest acquisition/test_two_party_stream.py
 '''
 
@@ -16,17 +16,20 @@ import two_party_stream as st  # noqa: E402
 from test_two_party_blocks import PS, two_sites  # noqa: E402
 
 FILTER_RADIUS_PS = 3_000  # the coincidence filter's search radius in importtt
-MP_WINDOW_PS = 2_000      # importtt's default multi-photon window
+SQUASH_WINDOW_PS = 2_000  # importtt's default squashing window
 
 
-def multiphoton(ts, ch, window=MP_WINDOW_PS):
-    '''importtt's detectMultiPhoton: a click with another on its basis partner channel within window'''
-    flag = np.zeros(ts.size, bool)
-    for c, partner in ((1, 2), (3, 4)):
-        i, j = np.flatnonzero(ch == c), np.flatnonzero(ch == partner)
-        flag[i] |= st.near(ts[i], ts[j], window)
-        flag[j] |= st.near(ts[j], ts[i], window)
-    return flag
+def squash_groups(ts, ch, window=SQUASH_WINDOW_PS):
+    '''importtt's squashClicks without the random outcome: each measurement click's group, as the index of its
+    first click, and the channels each group saw'''
+    first, seen = np.full(ts.size, -1), np.zeros(ts.size, np.uint8)
+    anchor = -1
+    for i in np.flatnonzero((ch >= 1) & (ch <= 4)):
+        if anchor < 0 or not 0 <= ts[i] - ts[anchor] <= window:
+            anchor = i
+        first[i] = anchor
+        seen[anchor] |= 1 << (int(ch[i]) - 1)
+    return first, seen
 
 
 def pairs_within(a, b, radius):
@@ -74,11 +77,15 @@ class StreamTest(unittest.TestCase):
         ia, ib = np.flatnonzero(keep_a), np.flatnonzero(keep_b)
         reduced = {(ia[i], ib[j]) for i, j in pairs_within(a[keep_a], b_on_a[keep_b], FILTER_RADIUS_PS)}
         self.assertEqual(reduced, full)
-        # Bob's multi-photon flags of every click in such a pair are the same on the reduced clicks
-        mp_full = multiphoton(b_on_a, chb[keep])
-        mp_reduced = multiphoton(b_on_a[keep_b], chb[keep][keep_b])
+        # every click of Bob's in such a pair falls in the same squashing group, with the same channels, on the
+        # reduced clicks as on the full ones
+        first_full, seen_full = squash_groups(b_on_a, chb[keep])
+        first_red, seen_red = squash_groups(b_on_a[keep_b], chb[keep][keep_b])
         paired = np.array(sorted({j for _, j in full}))
-        np.testing.assert_array_equal(mp_reduced[np.searchsorted(ib, paired)], mp_full[paired])
+        at = np.searchsorted(ib, paired)
+        np.testing.assert_array_equal(ib[first_red[at]], first_full[paired])
+        np.testing.assert_array_equal(seen_red[first_red[at]], seen_full[first_full[paired]])
+        self.assertGreater(np.count_nonzero(np.bincount(first_full[first_full >= 0]) > 1), 0)
 
     def test_identity_report_leaves_clicks_on_alices_clock(self):
         ts = np.array([10**15 + 5, 10**15 + 7_000, 10**15 + 10**12], np.int64)

@@ -16,6 +16,7 @@ func hasCLMUL() bool
 func init() {
 	if hasCLMUL() {
 		toeplitzImpl = toeplitzHashCLMUL
+		toeplitzImplCost = func(n, l int) int { return (n/64 + 1) * ((n+l)/64 + 1) }
 	}
 }
 

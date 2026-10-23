@@ -13,8 +13,8 @@ import numpy as np
 MAGIC = b'QKDA2'
 PART_BYTES = 48 << 20  # raw bytes per mailbox message: base64 and JSON stay well under its 128 MB
 # Bob keeps an announced click with one of his within ALICE_RADIUS_PS: the coincidence filter looks +-3 ns, the
-# rest is margin for the clock model; and his own within BOB_RADIUS_PS of a kept one, so his multi-photon check
-# (2 ns to the partner detector) sees every neighbor of a click that can pair
+# rest is margin for the clock model; and his own within BOB_RADIUS_PS of a kept one, so his squashing (clicks
+# within 2 ns of a first one) sees every neighbor of a click that can pair
 ALICE_RADIUS_PS = 4_000
 BOB_RADIUS_PS = 6_000
 

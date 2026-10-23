@@ -284,7 +284,7 @@ def write_pair_report(res, work):
               f'| QBER over all sifted pairs | {pct(base.get("qber_vis"))} (H/V {pct(base.get("qber_bs_hv"))}, D/A {pct(base.get("qber_bs_da"))}) |',
               f'| Sample QBER | {pct(base["qber"])} on {base["sifted_bits"] - base["finite_key"]["surviving_bits"]:,} bits |',
               f'| Visibility H/V, D/A | {base.get("visibility_hv", 0):.3f}, {base.get("visibility_da", 0):.3f} |',
-              f'| Multi-photon clicks rejected, A / B | {base.get("a_multiphoton_count", 0):,} / {base.get("b_multiphoton_count", 0):,} |', '']
+              f'| Double clicks squashed, A / B | {base.get("a_squashed_count", 0):,} / {base.get("b_squashed_count", 0):,} |', '']
         if res.get('sweep'):
             rows = res['sweep']['drift tracked']
             L += ['![Window choice](window.png)', '', '| Window | Sifted bits | QBER over all sifted pairs |', '|---|---|---|']
