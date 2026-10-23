@@ -47,6 +47,8 @@ services:
       - -tls-key=/etc/qkd/kms/node.key
       - -tls-ca=/etc/qkd/kms/ca.pem
       - -import-root=/data/import
+      - -audit-max-mb=${AUDIT_MAX_MB:-64}
+      - -audit-keep=${AUDIT_KEEP:-16}
     volumes:
       - ${NODE_DIR:?}/network.json:/etc/qkd/network.json:ro
       - ${NODE_DIR}/pki/kms:/etc/qkd/kms:ro
@@ -104,6 +106,8 @@ services:
       <<: *app-env
       SERVICE: processing
       KEYSTORE_MAX: ${KEYSTORE_MAX:-30000}
+      BLOCKS_LOG_MAX_MB: ${BLOCKS_LOG_MAX_MB:-16}
+      BLOCKS_LOG_KEEP: ${BLOCKS_LOG_KEEP:-4}
     volumes: *data
     expose: ["9102"]
 

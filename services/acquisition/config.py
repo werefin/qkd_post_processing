@@ -1,11 +1,12 @@
 '''
-Acquisition config: sites (TimeTaggers and their settings), links between them, and the recorder's options;
-uploaded once, kept on the data volume, readable only by this node
+Acquisition config: sites (TimeTaggers and their settings), the recorder's options and, optionally, named links;
+every pair of sites is a link (site_links.py); uploaded once, kept on the data volume, readable only by this node
 '''
 
 import json
 import os
 
+import site_links
 from flask import Blueprint, jsonify, request
 
 from ..core import settings
@@ -15,14 +16,9 @@ bp = Blueprint('acquisition_config', __name__)
 
 
 def validate(cfg):
-    if not isinstance(cfg.get('sites'), dict) or not cfg['sites']:
-        return 'missing or empty "sites"'
-    if not isinstance(cfg.get('links'), dict) or not cfg['links']:
-        return 'missing or empty "links"'
-    for name, link in cfg['links'].items():
-        for key in ('site_a', 'site_b'):
-            if link.get(key) not in cfg['sites']:
-                return f'links.{name}.{key} not found in "sites"'
+    err = site_links.check(cfg)
+    if err:
+        return err
     rec = cfg.get('record_dual')
     if not isinstance(rec, dict):
         return 'missing "record_dual"'
@@ -35,7 +31,7 @@ def validate(cfg):
 def summary(cfg):
     return {
         'sites': sorted(cfg.get('sites', {})),
-        'links': [{'name': n, 'site_a': l['site_a'], 'site_b': l['site_b']} for n, l in sorted(cfg.get('links', {}).items())],
+        'links': [{'name': n, **l} for n, l in sorted(site_links.all_links(cfg).items())],
         'default_link': (cfg.get('record_dual') or {}).get('link'),
     }
 

@@ -11,7 +11,7 @@ cd deploy
 ./setup.sh ca
 ./setup.sh node A a.example.org,192.0.2.1          # dashboard on 443, KMS on 8443
 ./setup.sh node B b.example.org,192.0.2.2 9443 9444 # or choose the two ports
-./setup.sh link A B
+./setup.sh link A B                                # or ./setup.sh link all: every pair of nodes, A-B to C-D
 ./setup.sh sae alice A                             # an application of node A
 ./setup.sh bundle A
 ./setup.sh bundle B
@@ -57,12 +57,13 @@ With the controller running and the nodes pointed at it, the operator sets the w
 ./setup.sh ctl PUT /v1/nodes/A '{"site": "A"}'               # the node's site in its own acquisition config
 ./setup.sh ctl PUT /v1/nodes/B '{"site": "B"}'
 ./setup.sh ctl PUT /v1/links/A-B '{"a": "A", "b": "B", "announcer": "A"}'
+./setup.sh ctl PUT /v1/links/A-D '{"a": "A", "b": "D", "announcer": "A"}'   # any pair declared in network.json
 ./setup.sh ctl PUT /v1/settings '{"block_s": 900, "block_auto": true, "segment_s": 10}'
 ./setup.sh ctl GET /v1/network                                  # every node: config, status, up or down
 ./setup.sh ctl PUT /v1/links/A-B '{"a": "A", "b": "B", "announcer": "A", "active": false}'   # pause a link
 ```
 
-Within 10 s each node's agent picks up its config and starts or stops recording and announcing by itself. A managed node's dashboard shows its Live QKD but refuses Start and Stop; disable it at the controller (`"enabled": false`) or delete it there to give it back to its dashboard. The controller only coordinates: if it is down, every node keeps running on the last config it received.
+Any two nodes linked in `network.json` can run Live QKD together, and a node runs it with all its neighbors at once, announcing to some and answering others. Within 10 s each node's agent picks up its config and starts or stops recording and announcing by itself. A managed node's dashboard shows its Live QKD but refuses Start and Stop; disable it at the controller (`"enabled": false`) or delete it there to give it back to its dashboard. The controller only coordinates: if it is down, every node keeps running on the last config it received.
 
 ### Changing network
 
@@ -90,7 +91,7 @@ Everything a node keeps is under `deploy/nodes/<ID>/`:
 |---|---|---|
 | `pki/` | the node's credentials and master key | yes, securely: losing the master key loses every stored key |
 | `network.json`, `.env` | the network description and the node's settings | yes |
-| `data/kms/` | link pools, reserved keys, audit trail, all encrypted except the audit trail | yes, with `pki/kms/master.key` kept apart |
+| `data/kms/` | link pools, reserved keys, audit trail (rotated by size), all encrypted except the audit trail | yes, with `pki/kms/master.key` kept apart |
 | `data/recordings/`, `data/config/` | raw recordings, TimeTagger config with its auth keys, job history | recordings as needed, config yes |
 | `data/import/` | the pipeline's plaintext keys for the few seconds before the KMS imports them | no |
 | `data/sim-keys/`, `data/cache/`, `data/caddy/`, `data/tmp/` | demo keys of the simulator, compiled Numba code, Caddy state, uploads in transit and job scratch space | no |
@@ -104,6 +105,8 @@ Everything a node keeps is under `deploy/nodes/<ID>/`:
 | `UI_USER`, `UI_PASSWORD_HASH` | `admin`, set by `node` | dashboard login; replace the hash with `docker run --rm -i caddy:2.8 caddy hash-password` |
 | `UPLOAD_MAX_MB` | 102400 | largest recording upload; 0 = no limit |
 | `RECORDINGS_MAX_GB` | 0 | when set, the oldest recordings are deleted beyond this size |
+| `AUDIT_MAX_MB`, `AUDIT_KEEP` | 64, 16 | the KMS audit trail moves to `audit.log.1` past this size, older files one up, this many kept (about 1 GB at most); 0 MB never rotates |
+| `BLOCKS_LOG_MAX_MB`, `BLOCKS_LOG_KEEP` | 16, 4 | the same for Live QKD's block log `blocks.jsonl` (80 MB at most, years of blocks) |
 | `APP_UID`, `APP_GID` | set by `install` | the user the containers run as |
 | `TWO_PARTY_AUTO_ACCEPT` | 1 | answer a neighbor's two-party extraction by itself; 0 = ignore them |
 | `SERVICE_TOKEN` | set by `node` | shown by the node's services to each other |

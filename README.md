@@ -105,7 +105,7 @@ cd deploy
 ./setup.sh ca                                   # once, on the administration machine
 ./setup.sh node A a.example.org,192.0.2.1         # credentials, login and settings for node A
 ./setup.sh node B b.example.org,192.0.2.2
-./setup.sh link A B                             # a QKD link between A and B
+./setup.sh link A B                             # a QKD link between A and B, or link all for every pair
 ./setup.sh bundle A                             # nodes/A.tar.gz, to copy to node A
 ./setup.sh controller init ctl.example.org && ./setup.sh controller up   # the network controller
 # on node A, inside a clone of this repository:

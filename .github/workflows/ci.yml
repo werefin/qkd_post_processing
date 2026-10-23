@@ -86,7 +86,7 @@ jobs:
         run: python -m unittest services.tests.test_services -v
       - name: acquisition
         working-directory: acquisition
-        run: python -m unittest test_live_peak test_coincidence_logger test_two_party_blocks test_two_party_stream test_clock_tracker -v
+        run: python -m unittest test_live_peak test_coincidence_logger test_two_party_blocks test_two_party_stream test_clock_tracker test_site_links -v
 
   images:
     runs-on: ubuntu-latest

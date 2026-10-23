@@ -1,6 +1,7 @@
 '''
 Node services: each one's routes match its OpenAPI file, the web proxy reaches every /api route and streams through,
-the service token guards the inner services, and the agent's scheduling and controller settings behave
+the service token guards the inner services, the agent's scheduling and controller settings behave, and the block log
+rotates
 '''
 
 import io
@@ -219,6 +220,30 @@ class TestTagger(unittest.TestCase):
         with mock.patch.dict(tagger._modes, {'x': lambda: True}):
             self.assertEqual(tagger.busy(), 'x')
             self.assertIsNone(tagger.busy('x'))
+
+
+
+class TestBlockLog(unittest.TestCase):
+    def test_rotates_by_size_and_history_reaches_across(self):
+        from services.processing.blocks import store
+        settings.TP_BLOCKS.parent.mkdir(parents=True, exist_ok=True)
+        for p in settings.TP_BLOCKS.parent.glob(settings.TP_BLOCKS.name + '*'):
+            p.unlink()
+        with mock.patch.object(settings, 'BLOCKS_LOG_MAX_MB', 0.004), mock.patch.object(settings, 'BLOCKS_LOG_KEEP', 2):
+            for i in range(120):
+                store.record({'peer': 'B' if i % 2 else 'C', 'block': i, 'ok': True, 'pad': 'x' * 80})
+            files = sorted(p.name for p in settings.TP_BLOCKS.parent.glob(settings.TP_BLOCKS.name + '*'))
+            self.assertEqual(files, ['blocks.jsonl', 'blocks.jsonl.1', 'blocks.jsonl.2'])
+            for p in settings.TP_BLOCKS.parent.glob(settings.TP_BLOCKS.name + '*'):
+                self.assertLess(p.stat().st_size, 0.004 * 2 ** 20 + 200)
+            # just rotated: the current file holds one block, the history still holds the blocks before it
+            with store._lock:
+                store._rotate()
+            store.record({'peer': 'B', 'block': 1000, 'ok': True})
+            blocks = [b['block'] for b in store.history('B', limit=10)]
+            self.assertEqual(blocks[-1], 1000)
+            self.assertEqual(len(blocks), 10)
+            self.assertEqual(blocks, sorted(blocks))
 
 
 if __name__ == '__main__':

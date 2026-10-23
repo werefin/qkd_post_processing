@@ -29,9 +29,10 @@ The catch: two TimeTaggers run on independent local clocks, and there's no wire 
 | `two_party_blocks.py` | Live QKD, the parts that work on whole segments, used by the processing service: segments chosen by UTC start (`segments_in`), Bob's clicks aligned to Alice's announcement from the previous clock model or a full search (`align_arrays`), old segments dropped. |
 | `two_party_stream.py` | The per-segment stream: Alice's announcement in about 3.3 bytes per click (`encode`, `decode`, split into mailbox messages by `parts_of`), her flags packed four to a byte for the block (`pack_flags`), and Bob's own choice of what to keep, never sent (`masks`: the announced clicks with one of his within 4 ns, his within 6 ns of those), put on Alice's clock (`to_alice_clock`) with the identity report the block's importtt reads them with. |
 | `clock_tracker.py` | Real-time clock sync for the stream: a Kalman filter on the delay between the two clocks, the skew and the skew's drift (`ClockTracker`), fed with the coincidence peak's centre every quarter second of each segment (`slice_centres`, background-subtracted, stamped at the mean time of its pairs since the clocks drift by nanoseconds within a slice); it predicts the next segment's alignment, refuses centres more than five standard deviations off, declares the lock lost after eight misses in a row, and reports how well the clocks are held. |
+| `site_links.py` | The links of `config.json`: `all_links` gives every pair of sites, the listed ones under their own names, `link_sites` resolves a name such as `A_D` or `D_A`, `check` validates `"sites"`, `"links"` and `record_dual.link`; the recorder, the coincidence log and the dashboard all use it. |
 | `tt_replay.py` | `ReplayStream`, a stand-in for `TimeTaggerStream` playing a recording back at stream speed, looped; `pair_skew` gives B's loop its skew-scaled period. |
 | `chsh_diagnostic.py` | Standalone CHSH/Bell diagnostic, unrelated to the QKD chain; see "Optional: CHSH self-testing diagnostic" below. |
-| `config.json` | `"sites"` (per-TT connection + detector settings), `"links"` (named site pairs), `"record_dual"` (which link + recording-mode defaults), `"live_coincidence"` (live tracker settings while recording), `"coincidence_peak"` (final-analysis defaults, also reused by the live monitor's algorithm settings). |
+| `config.json` | `"sites"` (per-TT connection + detector settings), `"links"` (optional names for site pairs; every pair of sites is a link), `"record_dual"` (which link + recording-mode defaults), `"live_coincidence"` (live tracker settings while recording), `"coincidence_peak"` (final-analysis defaults, also reused by the live monitor's algorithm settings). |
 
 ### How it actually works
 
@@ -73,16 +74,16 @@ python3 tt_record_dual.py
 All configuration lives in `config.json` (both scripts read it; nothing is hardcoded in the source):
 
 - `"sites"`: one entry per physical TimeTagger endpoint (`tt_ip`/`tt_port`/`auth_key_hex` plus its `channels`/`delays_ps`/`deadtimes_ps`/`triggers_volt`/`loop_period_s`). Add a new site here once, use it in any link.
-- `"links"`: every known pair of sites that's actually been recorded together (e.g. `C_A`, `C_D`), each just `{"site_a": ..., "site_b": ...}`. This is the full set of possibilities that used to live as commented-out `TT_A`/`TT_B` blocks in the script; add a link here once it's been tried, and it stays selectable by name from then on.
-- `"record_dual"`: which single link to record this run (`link`, any name from `"links"`), `stop_mode`/`record_duration_s`/`target_detection_count`, and `output_dir`. Only one link is ever recorded per run; `"links"` just makes every previously-known pair reachable by name instead of by editing the file.
+- Links: every pair of sites is a link, named `X_Y` with site X as A and site Y as B, either way round: with sites A to D that is `A_B`, `A_C`, `A_D`, `B_C`, `B_D` and `C_D`, or `D_A` to make D the A side (`site_links.py`). The optional `"links"` section only names pairs or fixes their direction, each `{"site_a": ..., "site_b": ...}`; a listed pair keeps its name and direction and is not listed again under its sorted name.
+- `"record_dual"`: which single link to record this run (`link`, any link as above), `stop_mode`/`record_duration_s`/`target_detection_count`, and `output_dir`. Only one link is ever recorded per run.
 
 Recording a different link, or a one-off duration, doesn't require editing the file --> every `record_dual` setting has a CLI override:
 
 ```bash
 python3 tt_record_dual.py                                        # config.json's record_dual.link, as-is
 python3 tt_record_dual.py path/to/other-config.json              # a different config file
-python3 tt_record_dual.py --link C_A                             # any named link from "links"
-python3 tt_record_dual.py --site-a C --site-b D                  # an ad hoc pair, bypassing "links"
+python3 tt_record_dual.py --link A_D                             # any two sites, X_Y, or a name from "links"
+python3 tt_record_dual.py --site-a C --site-b D                  # the same as --link C_D
 python3 tt_record_dual.py --stop-mode detection_count --target-count 2000000
 python3 tt_record_dual.py --help                                 # full flag list
 ```

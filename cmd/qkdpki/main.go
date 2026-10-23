@@ -18,6 +18,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -27,7 +28,7 @@ const usage = `usage:
   qkdpki node -ca DIR -id NODE_ID -hosts h1,h2,... -out DIR [-years N]
   qkdpki sae  -ca DIR -id SAE_ID -out DIR [-years N]
   qkdpki controller -ca DIR -hosts h1,h2,... -out DIR [-years N]
-  qkdpki net  -file network.json (add-node ID URL | add-link A B | add-sae SAE_ID NODE | remove-sae SAE_ID | show)
+  qkdpki net  -file network.json (add-node ID URL | add-link A B | add-link all | add-sae SAE_ID NODE | remove-sae SAE_ID | show)
 
 ca writes ca.pem and ca.key; keep ca.key offline, it can mint new nodes and applications
 node writes one node's bundle: kms/ (node.pem, node.key, master.key; role kme, for the KMS only),
@@ -301,6 +302,15 @@ type network struct {
 	SAEs  map[string]string `json:"saes"`
 }
 
+func hasLink(links [][2]string, x, y string) bool {
+	for _, l := range links {
+		if l == [2]string{x, y} || l == [2]string{y, x} {
+			return true
+		}
+	}
+	return false
+}
+
 func cmdNet(args []string) error {
 	fs := flag.NewFlagSet("net", flag.ExitOnError)
 	file := fs.String("file", "network.json", "network description to edit")
@@ -337,20 +347,38 @@ func cmdNet(args []string) error {
 			URL string `json:"kme_url"`
 		}{a[2]}
 	case "add-link":
-		if err := need(2); err != nil {
-			return err
+		// "all" links every pair of nodes; a link already declared, either way round, is kept as it is
+		var pairs [][2]string
+		if len(a) == 2 && a[1] == "all" {
+			ids := make([]string, 0, len(n.Nodes))
+			for id := range n.Nodes {
+				ids = append(ids, id)
+			}
+			sort.Strings(ids)
+			for i, x := range ids {
+				for _, y := range ids[i+1:] {
+					pairs = append(pairs, [2]string{x, y})
+				}
+			}
+		} else {
+			if err := need(2); err != nil {
+				return err
+			}
+			if a[1] == a[2] {
+				return fmt.Errorf("net: a link joins two different nodes, not %s to itself", a[1])
+			}
+			for _, id := range a[1:3] {
+				if _, ok := n.Nodes[id]; !ok {
+					return fmt.Errorf("net: add node %s first", id)
+				}
+			}
+			pairs = [][2]string{{a[1], a[2]}}
 		}
-		for _, id := range a[1:3] {
-			if _, ok := n.Nodes[id]; !ok {
-				return fmt.Errorf("net: add node %s first", id)
+		for _, p := range pairs {
+			if !hasLink(n.Links, p[0], p[1]) {
+				n.Links = append(n.Links, p)
 			}
 		}
-		for _, l := range n.Links {
-			if l == [2]string{a[1], a[2]} || l == [2]string{a[2], a[1]} {
-				return nil
-			}
-		}
-		n.Links = append(n.Links, [2]string{a[1], a[2]})
 	case "add-sae":
 		if err := need(2); err != nil {
 			return err

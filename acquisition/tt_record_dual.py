@@ -15,6 +15,7 @@ from typing import Optional
 
 import numpy as np
 
+import site_links
 from tt_stream_external import TimeTaggerStream
 
 
@@ -26,7 +27,7 @@ _SETTINGS_KEYS = ('tt_serial', 'channels', 'delays_ps', 'deadtimes_ps', 'trigger
 
 
 def load_config(config_path: str) -> dict:
-    '''Loads and validates config.json: every known site, every known link,
+    '''Loads and validates config.json: every known site, the links (every pair of sites is one),
     and the recording-mode defaults, raising SystemExit on anything wrong'''
     try:
         with open(config_path) as f:
@@ -34,24 +35,12 @@ def load_config(config_path: str) -> dict:
     except (OSError, ValueError) as ex:
         raise SystemExit(f'{config_path}: {ex}')
 
-    sites = cfg.get('sites')
-    links = cfg.get('links')
     rec = cfg.get('record_dual')
-    if not isinstance(sites, dict) or not sites:
-        raise SystemExit(f'{config_path}: missing or empty "sites"')
-    if not isinstance(links, dict) or not links:
-        raise SystemExit(f'{config_path}: missing or empty "links"')
     if not isinstance(rec, dict):
         raise SystemExit(f'{config_path}: missing "record_dual" section')
-
-    for link_name, link in links.items():
-        for key in ('site_a', 'site_b'):
-            name = link.get(key)
-            if name not in sites:
-                raise SystemExit(f'{config_path}: links.{link_name}.{key} = {name!r} not found in "sites"')
-
-    if rec.get('link') not in links:
-        raise SystemExit(f'{config_path}: record_dual.link = {rec.get("link")!r} not found in "links"')
+    err = site_links.check(cfg)
+    if err:
+        raise SystemExit(f'{config_path}: {err}')
     if rec.get('stop_mode') not in ('duration', 'detection_count', 'continuous'):
         raise SystemExit(f'{config_path}: record_dual.stop_mode must be "duration", "detection_count" or "continuous"')
 
@@ -71,7 +60,6 @@ def resolve_link(cfg: dict, config_path: str, link_name: Optional[str],
     '''Picks which two sites to record from, --site-a/--site-b takes
     precedence over --link, which takes precedence over config.json'''
     sites = cfg['sites']
-    links = cfg['links']
 
     if site_a or site_b:
         if not (site_a and site_b):
@@ -82,12 +70,14 @@ def resolve_link(cfg: dict, config_path: str, link_name: Optional[str],
                                   f'known sites: {", ".join(sorted(sites))}')
         return site_a, site_b, f'{site_a}+{site_b} (ad hoc pair)'
 
-    name = link_name or cfg['record_dual']['link']
-    if name not in links:
-        raise SystemExit(f'--link {name!r} not found in "links" ({config_path}); '
-                          f'known links: {", ".join(sorted(links))}')
-    link = links[name]
-    return link['site_a'], link['site_b'], name
+    name = link_name or cfg['record_dual'].get('link')
+    if not name:
+        raise SystemExit(f'no link to record: give --link, e.g. A_D, or set record_dual.link ({config_path})')
+    try:
+        a, b = site_links.link_sites(cfg, name)
+    except ValueError as e:
+        raise SystemExit(f'--link: {e} ({config_path})')
+    return a, b, name
 
 
 def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
@@ -97,8 +87,7 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
     parser.add_argument('config', nargs='?', default=DEFAULT_CONFIG_PATH,
                          help='path to config.json (default: %(default)s)')
     parser.add_argument('--link', metavar='NAME',
-                         help='override record_dual.link; any name under "links" '
-                         '(e.g. C_A, C_D)')
+                         help='override record_dual.link; any two sites as X_Y (e.g. A_D, C_B) or a name under "links"')
     parser.add_argument('--site-a', metavar='NAME',
                          help='record an ad hoc pair instead of a named link: any name under "sites". '
                          'Requires --site-b too; takes precedence over --link.')

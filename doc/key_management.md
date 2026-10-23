@@ -88,7 +88,7 @@ Every record is AES-256-GCM under the node's master key and written atomically. 
 
 ### Audit trail
 
-Every node appends one JSON line per key event to `audit.log` in its data directory and keeps the newest thousand in memory for its dashboard: `imported`, `enc_keys`, `reserved`, `dec_keys`, `dec_keys_refused`, `relay_forwarded`, `relay_refused`, `relay_failed`, `burned` and `expired`, each with the time, key_ID, SAE pair, peer and size or count as they apply. The audit trail never holds key material (`TestAuditHoldsNoKeyMaterial`).
+Every node appends one JSON line per key event to `audit.log` in its data directory, rotated by size (`-audit-max-mb`, 64 MB, and `-audit-keep`, 16 files, so about 1 GB at most), and keeps the newest thousand in memory for its dashboard: `imported`, `enc_keys`, `reserved`, `dec_keys`, `dec_keys_refused`, `relay_forwarded`, `relay_refused`, `relay_failed`, `burned` and `expired`, each with the time, key_ID, SAE pair, peer and size or count as they apply. The audit trail never holds key material (`TestAuditHoldsNoKeyMaterial`).
 
 ### Node-to-node and management calls
 

@@ -57,6 +57,9 @@ KEYSTORE_MAX = int(os.environ.get('KEYSTORE_MAX', '30000'))
 UPLOAD_MAX_MB = int(os.environ.get('UPLOAD_MAX_MB', '102400'))
 # raw captures are irreplaceable: never deleted automatically unless a cap is set
 RECORDINGS_MAX_GB = float(os.environ.get('RECORDINGS_MAX_GB', '0'))
+# blocks.jsonl moves to blocks.jsonl.1 past this size, the older ones one up, this many kept
+BLOCKS_LOG_MAX_MB = float(os.environ.get('BLOCKS_LOG_MAX_MB', '16'))
+BLOCKS_LOG_KEEP = max(1, int(os.environ.get('BLOCKS_LOG_KEEP', '4')))
 
 NODE_ID = os.environ.get('NODE_ID', '')
 KMS_URL = os.environ.get('KMS_URL', '').rstrip('/')

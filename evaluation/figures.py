@@ -56,10 +56,15 @@ def peak(report, diag, min_score, path):
     ax = axes[0, 0]
     x, y = np.asarray(diag['coarse_lags_ps']) / 1e9, np.asarray(diag['coarse_scores'])
     lag_ms = report['constant_shift']['relative_lag_ps'] / 1e9
-    ax.plot(x, y, color=CYAN, lw=0.7)
     ax.axhline(min_score, color=RED, ls='--', lw=1, label=f'detection threshold {min_score:g}')
-    ax.annotate(f'peak at {lag_ms:.3f} ms', (lag_ms, y.max()), xytext=(0.55, 0.92), textcoords='axes fraction', color=INK,
-                arrowprops=dict(arrowstyle='->', color=MUTED))
+    if len(y):
+        ax.plot(x, y, color=CYAN, lw=0.7)
+        ax.annotate(f'peak at {lag_ms:.3f} ms', (lag_ms, y.max()), xytext=(0.55, 0.92), textcoords='axes fraction', color=INK,
+                    arrowprops=dict(arrowstyle='->', color=MUTED))
+    else:
+        # no coarse candidate refined: the joint lag and skew search found the peak, so there is no curve to show
+        ax.text(0.5, 0.5, f'no unambiguous coarse peak\njoint lag and skew search: {lag_ms:.3f} ms', transform=ax.transAxes,
+                ha='center', va='center', color=INK)
     ax.set_title('Coarse FFT correlation over every lag')
     ax.set_xlabel('B minus A lag (ms)')
     ax.set_ylabel('robust z-score')

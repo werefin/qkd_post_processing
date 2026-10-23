@@ -102,7 +102,7 @@ func loadMasterKey(path string) ([]byte, error) {
 func main() {
 	nodeID := flag.String("node-id", "", "this node's ID in -network (required)")
 	networkFile := flag.String("network", "", "network description shared by every node: nodes, links, SAEs (required)")
-	dataDir := flag.String("data", "", "data directory: local/ (reserved keys), pools/<neighbor>/, audit.log (required)")
+	dataDir := flag.String("data", "", "data directory: local/ (reserved keys), pools/<neighbor>/, audit.log and its rotations (required)")
 	masterKeyFile := flag.String("master-key-file", "", "file holding the base64 32-byte at-rest encryption key (required; qkdpki node writes one)")
 	generateMasterKey := flag.String("generate-master-key", "", "write a fresh random 32-byte master key (base64) to this path and exit")
 	listen := flag.String("listen", ":8443", "address to listen on")
@@ -113,7 +113,10 @@ func main() {
 	importRoot := flag.String("import-root", "", "pipeline output to import: <root>/<neighbor>/ into that link's pool; each plaintext record is deleted once encrypted")
 	flag.DurationVar(&keyTTL, "key-ttl", keyTTL, "how long imported pool keys stay usable")
 	deliveryTTL := flag.Duration("delivery-ttl", 24*time.Hour, "how long a key reserved for an SAE pair waits for its slave SAE")
+	auditMaxMB := flag.Int64("audit-max-mb", auditMaxBytes>>20, "rotate audit.log past this size, in MB; 0 never rotates")
+	flag.IntVar(&auditKeep, "audit-keep", auditKeep, "rotated audit files kept, audit.log.1 the newest")
 	flag.Parse()
+	auditMaxBytes = *auditMaxMB << 20
 
 	if *generateMasterKey != "" {
 		key := make([]byte, 32)

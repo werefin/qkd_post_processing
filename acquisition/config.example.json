@@ -21,11 +21,29 @@
       "deadtimes_ps": [],
       "triggers_volt": [0.200, 0.200, 0.200, 0.200],
       "loop_period_s": 0.5
+    },
+    "C": {
+      "tt_ip": "192.0.2.3",
+      "tt_port": 40404,
+      "auth_key_hex": "REPLACE_ME",
+      "tt_serial": "any",
+      "channels": [1, 2, 3, 4],
+      "delays_ps": [0, 0, 0, 0],
+      "deadtimes_ps": [],
+      "triggers_volt": [0.200, 0.200, 0.200, 0.200],
+      "loop_period_s": 0.5
+    },
+    "D": {
+      "tt_ip": "192.0.2.4",
+      "tt_port": 40404,
+      "auth_key_hex": "REPLACE_ME",
+      "tt_serial": "any",
+      "channels": [1, 2, 3, 4],
+      "delays_ps": [0, 0, 0, 0],
+      "deadtimes_ps": [],
+      "triggers_volt": [0.200, 0.200, 0.200, 0.200],
+      "loop_period_s": 0.5
     }
-  },
-
-  "links": {
-    "A_B": {"site_a": "A", "site_b": "B"}
   },
 
   "record_dual": {

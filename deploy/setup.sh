@@ -17,6 +17,7 @@ On the administration machine (holds the CA, which never goes to a node):
   ./setup.sh node ID HOST[,HOST...] [UI_PORT] [KMS_PORT]
                                                  credentials, dashboard login and .env for one node
   ./setup.sh link A B                            declare a QKD link between nodes A and B
+  ./setup.sh link all                            declare a QKD link between every pair of nodes (A-B, A-C, ..., C-D)
   ./setup.sh sae SAE_ID NODE_ID                  certificate for an application of NODE_ID
   ./setup.sh bundle ID                           nodes/ID.tar.gz: everything node ID needs
   ./setup.sh controller init HOST[,HOST...]      the network controller's certificate and an operator certificate
@@ -109,8 +110,13 @@ EOF
 	echo "Node $id: dashboard https://$first_host:$ui_port, KMS https://$first_host:$kms_port"
 	;;
 link)
-	net add-link "${1:?node A}" "${2:?node B}"
-	echo "Link $1-$2 declared; bundle and install network.json on every node"
+	if [[ "${1:?node A, or all}" == all ]]; then
+		net add-link all
+		echo "Every pair of nodes linked; bundle and install network.json on every node"
+	else
+		net add-link "$1" "${2:?node B}"
+		echo "Link $1-$2 declared; bundle and install network.json on every node"
+	fi
 	;;
 sae)
 	sae="${1:?SAE ID}"; node="${2:?node ID}"

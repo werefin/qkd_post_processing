@@ -32,7 +32,7 @@ lint:
 
 pytest:
 	python3 -m unittest services.tests.test_services
-	cd acquisition && python3 -m unittest test_live_peak test_coincidence_logger test_two_party_blocks test_two_party_stream test_clock_tracker
+	cd acquisition && python3 -m unittest test_live_peak test_coincidence_logger test_two_party_blocks test_two_party_stream test_clock_tracker test_site_links
 
 # every node service in one process on :9823, from the binaries built at the repository root
 services:

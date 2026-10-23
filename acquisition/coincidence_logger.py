@@ -12,6 +12,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
+import site_links
 from coincidences import CsvLog, FileSource, LiveModel, OneClock, Plan, Run, StatusLines, TaggerSource, merge
 
 DEFAULT_CONFIG = Path(__file__).with_name('config.json')
@@ -78,8 +79,10 @@ def main(argv=None) -> int:
         else:
             names = opts['sites']
             if not names:
-                link = cfg['links'][cfg['record_dual']['link']]
-                names = [link['site_a'], link['site_b']]
+                default = (cfg.get('record_dual') or {}).get('link')
+                if not default:
+                    raise ValueError('choose the sites: no "sites" option and no record_dual.link')
+                names = list(site_links.link_sites(cfg, default))
             missing = [n for n in names if n not in cfg.get('sites', {})]
             if missing:
                 raise ValueError(f'sites {missing} are not in the config')
