@@ -1,13 +1,15 @@
 '''
 Alice's side of one block, streamed: each segment is announced as soon as it closes and its clicks dropped, keeping
-only her bit and flags per click; at the block's end both run their half of importtt, Bob on what he kept, and the
+only her bit and flags per click, and a node announcing to several neighbors makes each segment's announcement once; at the block's end both run their half of importtt, Bob on what he kept, and the
 keys go to the link's import folder, the neighbor's to its own
 '''
 
+import collections
 import hashlib
 import secrets
 import shutil
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -21,6 +23,7 @@ from . import importtt, store
 SEGMENT_WAIT_S = 60  # after a segment should have closed, how long to wait for the recorder to write it
 PACK_CHUNK = 1 << 26  # clicks packed at a time at the block's end, a multiple of 8
 SQUASHED = '_squashed.npy'  # importtt's squashed channel per click, beside the segment, made with the announcement
+CACHE_SEGMENTS = 3  # segments kept announced for the other links, which reach them moments later
 
 
 def wait_segment(start, segment_s):
@@ -35,13 +38,67 @@ def wait_segment(start, segment_s):
 
 def _announce(peer, session, msg, blob):
     for part in stream.parts_of(blob):
-        kms.pp_send(peer, session, 'cont-seg', {**msg, **part})
+        data = part.pop('blob')
+        kms.pp_send(peer, session, 'cont-seg', {**msg, **part}, data=data)
     # Bob's receipt carries nothing but the index: it only keeps the mailbox from filling up
     kind, body = kms.pp_recv(peer, session)
     if kind == 'reject':
         raise RuntimeError(f'{peer} declined: {body.get("reason", kind)}')
     if kind != 'seg-ack' or body.get('index') != msg['index']:
         raise RuntimeError(f'expected {peer}\'s receipt of segment {msg["index"]}, got {kind}')
+
+
+class Announcement:
+    '''One segment as this node announces it, the same to every neighbor: its timing and bases encoded, and for
+    this node alone each announced detection's bit and flag and the singles of the raw clicks'''
+
+    def __init__(self, ch, squashed, pub_ts, flags):
+        announced = squashed[squashed > 0]
+        if announced.size != flags.size:
+            raise ValueError(f'{announced.size} squashed detections for {flags.size} announced')
+        self.blob = stream.encode(pub_ts, flags)
+        self.bits = ((announced - 1) & 1).astype(np.uint8)
+        self.flags = flags.astype(np.uint8)
+        self.counts = np.bincount(ch[(ch >= 1) & (ch <= 4)].astype(np.int64), minlength=5)[1:5]
+        self.seconds = max((int(pub_ts[-1]) - int(pub_ts[0])) / 1e12, 0.0) if pub_ts.size else 0.0
+
+    @classmethod
+    def of_segment(cls, seg):
+        '''importtt squashes and exports the segment; the squashed channels are read and removed with it'''
+        pub = Path(tempfile.mkdtemp(prefix='pub_', dir=settings.TP_WORK))
+        try:
+            importtt.export_public(seg, pub)
+            pub_ts = np.load(next(pub.glob('*_public_timestamp_sequence.npy')))
+            flags = np.load(next(pub.glob('*_public_flags.npy')))
+        finally:
+            shutil.rmtree(pub, ignore_errors=True)
+        base = next(seg.glob('*' + tpb.TS)).name[:-len(tpb.TS)]
+        ch = np.load(seg / (base + tpb.CH))
+        squashed_file = seg / (base + SQUASHED)
+        squashed = np.load(squashed_file)
+        squashed_file.unlink()
+        return cls(ch, squashed, pub_ts, flags)
+
+
+_cache_lock = threading.Lock()
+_cache = collections.OrderedDict()  # segment: {'lock', 'ann'}, the newest last
+
+
+def announcement(seg):
+    '''Segment's announcement, made once for every link this node announces to: the first link to reach it
+    makes it, the others wait for it and take the same one'''
+    with _cache_lock:
+        slot = _cache.get(str(seg))
+        if slot is None:
+            slot = _cache[str(seg)] = {'lock': threading.Lock(), 'ann': None}
+            while len(_cache) > CACHE_SEGMENTS:
+                _cache.popitem(last=False)
+        else:
+            _cache.move_to_end(str(seg))
+    with slot['lock']:
+        if slot['ann'] is None:
+            slot['ann'] = Announcement.of_segment(seg)
+        return slot['ann']
 
 
 class Kept:
@@ -55,16 +112,13 @@ class Kept:
         self.digest = hashlib.sha256()
         self.counts, self.seconds = np.zeros(4), 0.0
 
-    def add(self, ch, squashed, flags, blob):
-        '''Bits of the announced detections, double clicks as importtt squashed them; singles of every raw click'''
-        announced = squashed[squashed > 0]
-        if announced.size != flags.size:
-            raise ValueError(f'{announced.size} squashed detections for {flags.size} announced')
-        self.bits.write(((announced - 1) & 1).astype(np.uint8).tobytes())
-        self.flags.write(flags.astype(np.uint8).tobytes())
-        self.digest.update(blob)
-        self.n += announced.size
-        self.counts += np.bincount(ch[(ch >= 1) & (ch <= 4)].astype(np.int64), minlength=5)[1:5]
+    def add(self, ann):
+        self.bits.write(ann.bits.tobytes())
+        self.flags.write(ann.flags.tobytes())
+        self.digest.update(ann.blob)
+        self.n += ann.bits.size
+        self.counts += ann.counts
+        self.seconds += ann.seconds
 
     def write(self):
         self.bits.close()
@@ -103,23 +157,12 @@ def run(peer, start, block_s, segment_s, expected_qber):
             if seg is None:
                 _announce(peer, session, {**msg, 'empty': True}, b'')
                 continue
-            pub = work / f'pub{k}'
-            importtt.export_public(seg, pub)
-            pub_ts = np.load(next(pub.glob('*_public_timestamp_sequence.npy')))
-            flags = np.load(next(pub.glob('*_public_flags.npy')))
-            shutil.rmtree(pub, ignore_errors=True)
-            blob = stream.encode(pub_ts, flags)
-            _announce(peer, session, {**msg, 'segment': seg.name}, blob)
-            ts_file = next(seg.glob('*' + tpb.TS))
-            ch = np.load(ts_file.with_name(ts_file.name[:-len(tpb.TS)] + tpb.CH))
-            squashed_file = ts_file.with_name(ts_file.name[:-len(tpb.TS)] + SQUASHED)
-            squashed = np.load(squashed_file)
-            squashed_file.unlink()
-            kept.add(ch, squashed, flags, blob)
-            kept.seconds += max((int(pub_ts[-1]) - int(pub_ts[0])) / 1e12, 0.0)
+            ann = announcement(seg)
+            _announce(peer, session, {**msg, 'segment': seg.name}, ann.blob)
+            kept.add(ann)
             entry['segments'] += 1
-            entry['announced_bytes'] += len(blob)
-            del ch, squashed, pub_ts, flags, blob
+            entry['announced_bytes'] += len(ann.blob)
+            del ann
         if not kept.n:
             raise ValueError('no segments recorded in this block')
         entry['singles_local'], entry['seconds'] = kept.singles()

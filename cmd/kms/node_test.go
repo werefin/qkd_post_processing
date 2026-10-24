@@ -167,6 +167,29 @@ func (tn *testNet) call(t *testing.T, role, id, method, node, path string, body,
 	return resp.StatusCode
 }
 
+// raw sends body as contentType and keeps the answer's bytes in out (if non-nil)
+func (tn *testNet) raw(t *testing.T, role, id, method, node, path, contentType string, body []byte, out *[]byte) int {
+	t.Helper()
+	var rd io.Reader
+	if body != nil {
+		rd = bytes.NewReader(body)
+	}
+	req, _ := http.NewRequest(method, tn.urls[node]+path, rd)
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	resp, err := tn.pki.client(tn.pki.issue(t, role, id)).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if out != nil {
+		*out = data
+	}
+	return resp.StatusCode
+}
+
 func keyIDsBody(c etsiKeyContainer) map[string]any {
 	var ids []map[string]string
 	for _, k := range c.Keys {
@@ -445,6 +468,22 @@ func TestPostProcessingMailbox(t *testing.T) {
 	}
 	if code := tn.call(t, "admin", "B", "GET", "B", "/kme/v1/pp/recv?peer=A&session=s1&wait=1", nil, nil); code != 204 {
 		t.Fatalf("empty session: %d", code)
+	}
+	// raw bytes cross both hops as they are and come back in a frame, the JSON body beside them
+	data := make([]byte, 3<<20)
+	rand.Read(data)
+	frame, _ := ppFrame(map[string]any{"peer": "B", "session": "s2", "kind": "cont-seg", "body": map[string]int{"index": 4}}, data)
+	if code := tn.raw(t, "admin", "A", "POST", "A", "/kme/v1/pp/send", ppFrameType, frame, nil); code != 200 {
+		t.Fatalf("send a frame: %d", code)
+	}
+	var got []byte
+	if code := tn.raw(t, "admin", "B", "GET", "B", "/kme/v1/pp/recv?peer=A&session=s2&wait=1", "", nil, &got); code != 200 {
+		t.Fatalf("recv a frame: %d", code)
+	}
+	var hdr ppMessage
+	back, err := readPPFrame(bytes.NewReader(got), &hdr)
+	if err != nil || hdr.Kind != "cont-seg" || string(hdr.Body) != `{"index":4}` || !bytes.Equal(back, data) {
+		t.Fatalf("frame back: %v %+v, %d bytes, equal %v", err, hdr, len(back), bytes.Equal(back, data))
 	}
 	toC := map[string]any{"peer": "C", "session": "s1", "kind": "offer", "body": 1}
 	for _, c := range []struct {

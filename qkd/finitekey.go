@@ -2,7 +2,10 @@
 // doc/security.md and the formula's own doc comment below
 package qkd
 
-import "math"
+import (
+	"math"
+	"math/bits"
+)
 
 // FiniteKeySecureKeyLength: l = n*(1-h2(phi)) - leakedBits - log2(2/epsCor) - 2*log2(1/(2*epsPA)); leakedBits is
 // error correction's disclosure only, since log2(2/epsCor) already covers the ceil(log2(1/epsCor))-bit tag
@@ -63,6 +66,7 @@ type FiniteKeyReport struct {
 	Verified   bool    // both sides' surviving strings hashed equal
 	LeakedBits int     // all classical disclosure charged, tag included
 	ChainBits  int     // the chain rule's cost when errors are counted by correction, 0 otherwise
+	CountBits  int     // what Bob's announced per-basis error counts can disclose, 0 with a sacrificed sample
 	Length     int     // final key length in bits
 }
 
@@ -185,6 +189,12 @@ func correctionBudget(epsPE float64) (tail float64, chainBits int) {
 	return s * s, chainRuleBits(s)
 }
 
+// countBits charges Bob's announcement of the errors per basis at its worst case, two integers in [0, n_b]:
+// Cascade makes the total public but not always its split, since a search's last choice is never asked about
+func countBits(n [2]int) int {
+	return bits.Len(uint(n[0])) + bits.Len(uint(n[1]))
+}
+
 // correctionSample is the sample error correction gives for free: every key bit with Bob's original value where
 // its chunk verified, so its error is known exactly, and counted as an error where the CRC dropped its chunk
 func correctionSample(rem timedBits, correctedBob []byte, chunkSize int) timedBits {
@@ -236,6 +246,13 @@ func distillFiniteKey(alice, bob []byte, sample, rem timedBits, leaked int, fk F
 	tail := estimationTail(budget.EpsPE)
 	if fk.byCorrection {
 		tail, rep.ChainBits = correctionBudget(budget.EpsPE)
+		var nb [2]int
+		for _, b := range rem.Basis {
+			if b <= 1 {
+				nb[b]++
+			}
+		}
+		rep.CountBits = countBits(nb)
 	}
 	rep.Phi, rep.PhiPoint = crossBasisPhaseError(sample, rem, n, tail)
 	rep.TagBits = UniversalHashTagBits(budget.EpsCor)
@@ -254,7 +271,7 @@ func distillFiniteKey(alice, bob []byte, sample, rem timedBits, leaked int, fk F
 	}
 
 	// the report counts every disclosed bit, the tag included; the formula's epsCor term is the tag's cost
-	l := FiniteKeySecureKeyLength(n, rep.Phi, leaked+rep.ChainBits, budget.EpsCor, budget.EpsPA)
+	l := FiniteKeySecureKeyLength(n, rep.Phi, leaked+rep.ChainBits+rep.CountBits, budget.EpsCor, budget.EpsPA)
 	if alignBits > 0 {
 		l -= l % alignBits
 	}

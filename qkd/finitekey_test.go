@@ -221,6 +221,50 @@ func TestHypergeomUpperRateCoverage(t *testing.T) {
 	}
 }
 
+// worstFailure is the exact probability, maximized over every number of errors an adversary can place among
+// the n+k rounds, that a uniformly random k of them show e errors while the other n hold more than the bound
+// from e allows: no sampling, every term summed, so it holds at any eps
+func worstFailure(n, k int, eps float64) float64 {
+	N := n + k
+	lf := make([]float64, N+1) // ln i!
+	for i := 1; i <= N; i++ {
+		lf[i] = lf[i-1] + math.Log(float64(i))
+	}
+	lc := func(a, b int) float64 { return lf[a] - lf[b] - lf[a-b] }
+	allowed := make([]int, k+1) // the most errors the bound lets the n hold, from e seen in the k
+	for e := range allowed {
+		allowed[e] = int(math.Round(HypergeomUpperRate(n, k, e, eps) * float64(n)))
+	}
+	worst := 0.0
+	for T := 0; T <= N; T++ {
+		p := 0.0
+		for e := max(0, k-(N-T)); e <= min(T, k); e++ {
+			if T-e > allowed[e] {
+				p += math.Exp(lc(T, e) + lc(N-T, k-e) - lc(N, k))
+			}
+		}
+		worst = max(worst, p)
+	}
+	return worst
+}
+
+// TestPhaseErrorBoundHoldsForAnyErrors: whatever errors an adversary places, the bound from the other basis's
+// rounds fails with probability at most eps over the random choice of basis, the step errors counted by
+// correction rests on; computed exactly, at sizes from small to a block's and at eps down to 1e-12
+func TestPhaseErrorBoundHoldsForAnyErrors(t *testing.T) {
+	t.Parallel() // the exact sums take a few seconds
+	for _, c := range []struct {
+		n, k int
+		eps  float64
+	}{{40, 35, 0.05}, {300, 280, 1e-3}, {1200, 1100, 1e-6}, {2500, 2400, 1e-12}} {
+		w := worstFailure(c.n, c.k, c.eps)
+		t.Logf("n=%d k=%d: worst failure %.3g at eps %.0e", c.n, c.k, w, c.eps)
+		if w > c.eps {
+			t.Fatalf("n=%d k=%d: the bound fails with probability %.3g > eps %.0e for some placement", c.n, c.k, w, c.eps)
+		}
+	}
+}
+
 // TestHypergeomUpperRateTighterThanSerfling at the sizes the real recordings produce
 func TestHypergeomUpperRateTighterThanSerfling(t *testing.T) {
 	const eps = 1e-10 / 6
@@ -264,7 +308,7 @@ func TestVerificationTagChargedOnce(t *testing.T) {
 	}
 	fk := res.FiniteKey
 	b := SplitSecurityBudget(1e-10, 1e-15)
-	want := FiniteKeySecureKeyLength(len(res.CRCVerify.SurvivingAlice), fk.Phi, res.LeakedBits+fk.ChainBits, b.EpsCor, b.EpsPA)
+	want := FiniteKeySecureKeyLength(len(res.CRCVerify.SurvivingAlice), fk.Phi, res.LeakedBits+fk.ChainBits+fk.CountBits, b.EpsCor, b.EpsPA)
 	if fk.Length != want || fk.LeakedBits != res.LeakedBits+fk.TagBits || fk.TagBits > int(math.Log2(2/b.EpsCor))+1 {
 		t.Fatalf("length %d, want %d; reported leak %d, tag %d", fk.Length, want, fk.LeakedBits, fk.TagBits)
 	}

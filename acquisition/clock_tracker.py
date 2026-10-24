@@ -8,6 +8,7 @@ that do not fit, and says how well the clocks are held
 import math
 
 import numpy as np
+from two_party_stream import near
 
 PS_PER_S = 1_000_000_000_000
 SLICE_PS = 250_000_000_000   # one centre per quarter second of data, as importtt's drift filter
@@ -110,12 +111,17 @@ def slice_centres(a, b_on_a, b_raw, slice_ps=SLICE_PS, radius_ps=PAIR_RADIUS_PS)
     clocks drift by nanoseconds within a slice'''
     if a.size == 0 or b_on_a.size == 0:
         return [], None
+    # only announced clicks with a pair candidate in reach can count, and finding them first spares the rest
+    first, last = int(a[0]), int(a[-1])
+    a = a[near(a, b_on_a, radius_ps)]
+    if a.size == 0:
+        return [], None
     j = np.clip(np.searchsorted(b_on_a, a), 1, b_on_a.size - 1) if b_on_a.size > 1 else np.zeros(a.size, int)
     if b_on_a.size > 1:
         j = np.where(np.abs(b_on_a[j - 1] - a) < np.abs(b_on_a[j] - a), j - 1, j)
     r = b_on_a[j] - a
-    near = np.abs(r) <= radius_ps
-    t, r, d = a[near], r[near].astype(np.float64), (b_raw[j] - a)[near].astype(np.float64)
+    close = np.abs(r) <= radius_ps
+    t, r, d = a[close], r[close].astype(np.float64), (b_raw[j] - a)[close].astype(np.float64)
     mapping = d - r  # Bob's raw time minus his time on Alice's clock: linear in time, the model's own delay
     if t.size < 10:
         return [], None
@@ -124,9 +130,8 @@ def slice_centres(a, b_on_a, b_raw, slice_ps=SLICE_PS, radius_ps=PAIR_RADIUS_PS)
     half = max(3 * sigma, 150.0)
     side_lo = radius_ps / 2
     out = []
-    first = int(a[0])
     # whole slices only: the sliver a segment ends on holds too few pairs and would always count as a miss
-    for k in range(max(int((int(a[-1]) - first) // slice_ps), 1)):
+    for k in range(max(int((last - first) // slice_ps), 1)):
         lo, hi = first + k * slice_ps, first + (k + 1) * slice_ps
         sel = (t >= lo) & (t < hi)
         rs, ms, ts = r[sel], mapping[sel], t[sel]

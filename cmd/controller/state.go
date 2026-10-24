@@ -29,13 +29,21 @@ type Node struct {
 	Enabled bool   `json:"enabled"`
 }
 
-// Link is one QKD link: the announcer sends its public timing to the other node, which aligns and answers
+// Link is one QKD link: the announcer sends its public timing to the other node, which aligns and answers;
+// "auto" lets the controller choose the end whose detectors click less, so the fewer clicks cross the network
 type Link struct {
 	A         string `json:"a"`
 	B         string `json:"b"`
 	Announcer string `json:"announcer"`
 	Active    bool   `json:"active"`
 }
+
+const (
+	announcerAuto = "auto"
+	// an automatic link changes announcer only once the other end clicks this much less: a change costs the
+	// block in flight, so rates that hover near each other must not make it flap
+	autoSwitchRatio = 0.8
+)
 
 // Desired is the whole network as the operator wants it, the only state kept on disk
 type Desired struct {
@@ -85,11 +93,12 @@ type store struct {
 	path     string
 	desired  Desired
 	observed map[string]Observed
+	chosen   map[string]string // each automatic link's announcer as last chosen, in memory
 	subs     map[chan struct{}]struct{}
 }
 
 func openStore(path string) (*store, error) {
-	s := &store{path: path, observed: map[string]Observed{}, subs: map[chan struct{}]struct{}{},
+	s := &store{path: path, observed: map[string]Observed{}, chosen: map[string]string{}, subs: map[chan struct{}]struct{}{},
 		desired: Desired{Settings: defaultSettings, Nodes: map[string]Node{}, Links: map[string]Link{}}}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -159,7 +168,65 @@ func (s *store) heartbeat(id string, status json.RawMessage, now time.Time) (Nod
 	defer s.mu.Unlock()
 	s.observed[id] = Observed{LastSeen: now, Status: status}
 	s.notifyLocked()
-	return s.desired.configFor(id), s.desired.Revision
+	return s.desired.configFor(id, s.announcersLocked()), s.desired.Revision
+}
+
+// clickRate is a node's clicks per second over its four detectors as its last heartbeat reported them, while
+// it records; false when unknown
+func clickRate(status json.RawMessage) (float64, bool) {
+	var s struct {
+		Recording bool      `json:"recording"`
+		Singles   []float64 `json:"singles"`
+	}
+	if json.Unmarshal(status, &s) != nil || !s.Recording {
+		return 0, false
+	}
+	total := 0.0
+	for _, v := range s.Singles {
+		total += v
+	}
+	return total, total > 0
+}
+
+// announcersLocked is every link's announcer: as set, or for an automatic link the end that clicks less,
+// kept until the other clicks autoSwitchRatio as much, and its first end while either rate is unknown; mu held
+func (s *store) announcersLocked() map[string]string {
+	out := map[string]string{}
+	for name, l := range s.desired.Links {
+		if l.Announcer != announcerAuto {
+			out[name] = l.Announcer
+			continue
+		}
+		cur := s.chosen[name]
+		if cur != l.A && cur != l.B {
+			cur = ""
+		}
+		ra, okA := clickRate(s.observed[l.A].Status)
+		rb, okB := clickRate(s.observed[l.B].Status)
+		switch {
+		case !okA || !okB:
+			if cur == "" {
+				cur = l.A
+			}
+		case cur == "":
+			cur = l.A
+			if rb < ra {
+				cur = l.B
+			}
+		case cur == l.A && rb < autoSwitchRatio*ra:
+			cur = l.B
+		case cur == l.B && ra < autoSwitchRatio*rb:
+			cur = l.A
+		}
+		s.chosen[name] = cur
+		out[name] = cur
+	}
+	for name := range s.chosen {
+		if _, ok := out[name]; !ok || s.desired.Links[name].Announcer != announcerAuto {
+			delete(s.chosen, name)
+		}
+	}
+	return out
 }
 
 func (s *store) subscribe() (chan struct{}, func()) {
@@ -175,8 +242,9 @@ func (s *store) subscribe() (chan struct{}, func()) {
 }
 
 // configFor is the config of node id: active while enabled with an active link, announcing on the links it
-// announces to an enabled neighbor; a node the operator never added is not managed
-func (d *Desired) configFor(id string) NodeConfig {
+// announces to an enabled neighbor (announcers: each link's, as announcersLocked chose them; a link missing
+// there announces as set, an automatic one from its first end); a node the operator never added is not managed
+func (d *Desired) configFor(id string, announcers map[string]string) NodeConfig {
 	n, ok := d.Nodes[id]
 	if !ok {
 		return NodeConfig{AnnounceTo: []string{}}
@@ -186,7 +254,7 @@ func (d *Desired) configFor(id string) NodeConfig {
 	if !n.Enabled {
 		return c
 	}
-	for _, l := range d.Links {
+	for name, l := range d.Links {
 		other := l.B
 		if l.B == id {
 			other = l.A
@@ -197,12 +265,22 @@ func (d *Desired) configFor(id string) NodeConfig {
 			continue
 		}
 		c.Active = true
-		if l.Announcer == id {
+		if d.announcer(name, l, announcers) == id {
 			c.AnnounceTo = append(c.AnnounceTo, other)
 		}
 	}
 	sort.Strings(c.AnnounceTo)
 	return c
+}
+
+func (d *Desired) announcer(name string, l Link, announcers map[string]string) string {
+	if a, ok := announcers[name]; ok {
+		return a
+	}
+	if l.Announcer == announcerAuto {
+		return l.A
+	}
+	return l.Announcer
 }
 
 func (d *Desired) putNode(id string, n Node) error {
@@ -241,8 +319,8 @@ func (d *Desired) putLink(name string, l Link) error {
 	if l.A == l.B {
 		return errors.New("a link joins two different nodes")
 	}
-	if l.Announcer != l.A && l.Announcer != l.B {
-		return errors.New("the announcer is one of the link's two nodes")
+	if l.Announcer != l.A && l.Announcer != l.B && l.Announcer != announcerAuto {
+		return errors.New("the announcer is one of the link's two nodes, or auto")
 	}
 	for other, o := range d.Links {
 		if other != name && ((o.A == l.A && o.B == l.B) || (o.A == l.B && o.B == l.A)) {

@@ -397,7 +397,7 @@ func finishTwoParty(conn Conn, alice bool, res TwoPartyResult, cfg TwoPartyConfi
 			}
 			tail, chain := correctionBudget(budget.EpsPE)
 			rep.Phi, rep.PhiPoint = phaseErrorFromCounts(counts.K, counts.K, counts.E, n, tail)
-			rep.ChainBits = chain
+			rep.ChainBits, rep.CountBits = chain, countBits(counts.K)
 			res.BasisChecked, res.BasisErrors = counts.K, counts.E
 		} else {
 			rep.Phi, rep.PhiPoint = crossBasisPhaseError(sampleTB, remTB, n, estimationTail(budget.EpsPE))
@@ -443,7 +443,7 @@ func finishTwoParty(conn Conn, alice bool, res TwoPartyResult, cfg TwoPartyConfi
 		if !rep.Verified {
 			return res, nil
 		}
-		l = FiniteKeySecureKeyLength(n, rep.Phi, res.LeakedBits+rep.ChainBits, budget.EpsCor, budget.EpsPA) // tag in the epsCor term
+		l = FiniteKeySecureKeyLength(n, rep.Phi, res.LeakedBits+rep.ChainBits+rep.CountBits, budget.EpsCor, budget.EpsPA) // tag in the epsCor term
 	}
 	if cfg.KeyAlignBits > 0 {
 		l -= l % cfg.KeyAlignBits

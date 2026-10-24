@@ -249,7 +249,8 @@ func exportPublic(o twoPartyOptions, out twoPartyJSON) (twoPartyJSON, error) {
 		return out, err
 	}
 	h := sha256.New()
-	var rec [10]byte
+	// records hashed 64 KB at a time: one call per 10-byte record costs more than the hashing
+	recs := make([]byte, 0, 6400*10)
 	for _, d := range o.dirs {
 		tsFile, base, err := ownRecording(d)
 		if err != nil {
@@ -281,9 +282,12 @@ func exportPublic(o twoPartyOptions, out twoPartyJSON) (twoPartyJSON, error) {
 			f := int8(basis)
 			ts, flags = append(ts, at), append(flags, f)
 			// the digest Bob checks, as qkd.PublicDigest computes it over the same events
-			binary.LittleEndian.PutUint64(rec[:8], uint64(at))
-			rec[8], rec[9] = byte(basis), byte(f>>1)
-			h.Write(rec[:])
+			recs = binary.LittleEndian.AppendUint64(recs, uint64(at))
+			recs = append(recs, byte(basis), byte(f>>1))
+			if len(recs) == cap(recs) {
+				h.Write(recs)
+				recs = recs[:0]
+			}
 		}
 		tsPath, flagPath := filepath.Join(o.exportDir, base+publicTSSuffix), filepath.Join(o.exportDir, base+publicFlagsSuffix)
 		if err := writeNpyInt64(tsPath, ts); err != nil {
@@ -295,6 +299,7 @@ func exportPublic(o twoPartyOptions, out twoPartyJSON) (twoPartyJSON, error) {
 		out.OwnClicks += len(ts)
 		out.PublicFiles = append(out.PublicFiles, tsPath, flagPath)
 	}
+	h.Write(recs)
 	digest := h.Sum(nil)
 	out.AnnouncementDigest, out.AnnouncementClicks = fmt.Sprintf("%x", digest[:8]), out.OwnClicks
 	return out, nil
@@ -640,10 +645,20 @@ func writeNpy(path, descr string, n int, data []byte) error {
 	// header padded with spaces to a multiple of 64 bytes including the 10-byte preamble, newline last
 	pad := 64 - (10+len(header)+1)%64
 	header += strings.Repeat(" ", pad%64) + "\n"
-	var b bytes.Buffer
-	b.WriteString("\x93NUMPY\x01\x00")
-	binary.Write(&b, binary.LittleEndian, uint16(len(header)))
-	b.WriteString(header)
-	b.Write(data)
-	return os.WriteFile(path, b.Bytes(), 0o644)
+	pre := []byte("\x93NUMPY\x01\x00\x00\x00")
+	binary.LittleEndian.PutUint16(pre[8:], uint16(len(header)))
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	// straight from data, never copied behind the header: a segment's arrays are tens of megabytes
+	if _, err := f.Write(append(pre, header...)); err != nil {
+		f.Close()
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }

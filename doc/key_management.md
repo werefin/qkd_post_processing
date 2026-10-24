@@ -99,7 +99,7 @@ Every node appends one JSON line per key event to `audit.log` in its data direct
 | `GET /kme/v1/node` | any KME of the network, or this node's admin | counts per store and per link (this node's half and the other), routes, local applications; `?probe=1` (admin) also checks that every neighbor answers over mutual TLS, with its round-trip time |
 | `GET /kme/v1/network` | this node's admin | the network description and the computed routes |
 | `GET /kme/v1/audit?n=` | this node's admin | the newest audit events |
-| `POST /kme/v1/pp/send` | this node's admin | sends one post-processing message to a neighbor's dashboard |
+| `POST /kme/v1/pp/send` | this node's admin | sends one post-processing message to a neighbor's dashboard: JSON, or as `application/x-qkd-pp` a frame (4-byte big-endian header length, JSON header, raw bytes) whose bytes cross both hops as they are and come back from `recv` in the same frame |
 | `POST /kme/v1/pp/inbox` | a neighbor's KME | queues a post-processing message for this node's dashboard |
 | `GET /kme/v1/pp/recv`, `/kme/v1/pp/sessions` | this node's admin | the next message of a session (long poll), and the sessions with messages waiting |
 

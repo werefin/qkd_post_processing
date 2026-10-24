@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -54,23 +55,63 @@ func TestConfigFollowsLinks(t *testing.T) {
 	must(d.putLink("C-A", Link{A: "C", B: "A", Announcer: "A", Active: true}))
 	must(d.putLink("B-C", Link{A: "B", B: "C", Announcer: "C", Active: false}))
 
-	if got := d.configFor("A"); !got.Managed || !got.Active || !reflect.DeepEqual(got.AnnounceTo, []string{"B", "C"}) {
+	if got := d.configFor("A", nil); !got.Managed || !got.Active || !reflect.DeepEqual(got.AnnounceTo, []string{"B", "C"}) {
 		t.Fatalf("A: %+v", got)
 	}
-	if got := d.configFor("C"); !got.Active || len(got.AnnounceTo) != 0 {
+	if got := d.configFor("C", nil); !got.Active || len(got.AnnounceTo) != 0 {
 		t.Fatalf("C answers A only, its own link is off: %+v", got)
 	}
 	n := d.Nodes["B"]
 	n.Enabled = false
 	d.Nodes["B"] = n
-	if got := d.configFor("A"); !reflect.DeepEqual(got.AnnounceTo, []string{"C"}) {
+	if got := d.configFor("A", nil); !reflect.DeepEqual(got.AnnounceTo, []string{"C"}) {
 		t.Fatalf("a disabled neighbor gets no blocks: %+v", got)
 	}
-	if got := d.configFor("B"); !got.Managed || got.Active {
+	if got := d.configFor("B", nil); !got.Managed || got.Active {
 		t.Fatalf("a disabled node is managed and off: %+v", got)
 	}
-	if got := d.configFor("Z"); got.Managed {
+	if got := d.configFor("Z", nil); got.Managed {
 		t.Fatalf("a node never added is not managed: %+v", got)
+	}
+}
+
+// TestAutomaticAnnouncer: an automatic link announces from the end whose detectors click less, keeps it while
+// the rates hover near each other and moves only once the other end clicks 20% less
+func TestAutomaticAnnouncer(t *testing.T) {
+	st, err := openStore(filepath.Join(t.TempDir(), "network.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.change(func(d *Desired) error {
+		for _, id := range []string{"A", "B"} {
+			if err := d.putNode(id, Node{Site: id, Enabled: true}); err != nil {
+				return err
+			}
+		}
+		return d.putLink("A-B", Link{A: "A", B: "B", Announcer: announcerAuto, Active: true})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	beat := func(id string, perDetector float64) NodeConfig {
+		status := fmt.Sprintf(`{"recording":true,"singles":[%g,%g,%g,%g]}`, perDetector, perDetector, perDetector, perDetector)
+		cfg, _ := st.heartbeat(id, json.RawMessage(status), time.Now())
+		return cfg
+	}
+	if cfg, _ := st.heartbeat("A", json.RawMessage(`{"recording":false}`), time.Now()); !reflect.DeepEqual(cfg.AnnounceTo, []string{"B"}) {
+		t.Fatalf("with rates unknown the first end announces: %+v", cfg)
+	}
+	beat("A", 300_000) // the source's site, the most clicks
+	if cfg := beat("B", 75_000); !reflect.DeepEqual(cfg.AnnounceTo, []string{"A"}) {
+		t.Fatalf("the quieter end must announce: %+v", cfg)
+	}
+	if cfg := beat("A", 70_000); len(cfg.AnnounceTo) != 0 {
+		t.Fatalf("A barely quieter than B: the choice must hold, got %+v", cfg)
+	}
+	if cfg := beat("A", 55_000); !reflect.DeepEqual(cfg.AnnounceTo, []string{"B"}) {
+		t.Fatalf("A now clicks well under 80%% of B: it must announce, got %+v", cfg)
+	}
+	if v := (&controller{st: st, now: time.Now}).view(); v.Links["A-B"].Announcing != "A" || v.Links["A-B"].Announcer != announcerAuto {
+		t.Fatalf("the view shows the setting and the node announcing: %+v", v.Links["A-B"])
 	}
 }
 

@@ -974,6 +974,7 @@ func printFiniteKey(r *qkd.FiniteKeyReport) {
 	field("Phase error", "point %.4f, bound %.4f (cross-basis, fluctuation and post-selection included)", r.PhiPoint, r.Phi)
 	if r.ChainBits > 0 {
 		field("Chain rule", "%d bits: errors counted by correction, each basis bounded from the other's rounds", r.ChainBits)
+		field("Error counts", "%d bits: Bob's announced errors per basis, charged at their worst case", r.CountBits)
 	}
 	switch {
 	case r.Bits == 0:
@@ -1259,11 +1260,12 @@ type finiteKeyJSON struct {
 	SurvivingBits   int     `json:"surviving_bits"`
 	ChargedBits     int     `json:"charged_bits"`
 	ChainRuleBits   int     `json:"chain_rule_bits"` // errors counted by correction: the chain rule's cost
+	CountBits       int     `json:"count_bits"`      // and what the announced per-basis error counts can disclose
 }
 
 func toFiniteKeyJSON(r *qkd.FiniteKeyReport) *finiteKeyJSON {
 	if r == nil {
 		return nil
 	}
-	return &finiteKeyJSON{PhaseErrorPoint: r.PhiPoint, PhaseErrorBound: r.Phi, TagBits: r.TagBits, Verified: r.Verified, SurvivingBits: r.Bits, ChargedBits: r.LeakedBits, ChainRuleBits: r.ChainBits}
+	return &finiteKeyJSON{PhaseErrorPoint: r.PhiPoint, PhaseErrorBound: r.Phi, TagBits: r.TagBits, Verified: r.Verified, SurvivingBits: r.Bits, ChargedBits: r.LeakedBits, ChainRuleBits: r.ChainBits, CountBits: r.CountBits}
 }

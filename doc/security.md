@@ -73,11 +73,12 @@ Cascade's default sacrifices nothing: after correction and verification Bob anno
 
 *Proof.* Write $K = (K_Z, K_X)$ for Alice's surviving bits of the two bases, $Y$ for Bob's and $E$ for Eve's information.
 
-- **Chain rule** (Vitanov, Dupuis, Tomamichel and Renner, arXiv:1205.5231, Theorem 13): $H_\mathrm{min}^{4\bar\varepsilon}(K_Z K_X \mid E) \ge H_\mathrm{min}^{\bar\varepsilon}(K_Z \mid K_X E) + H_\mathrm{min}^{\bar\varepsilon}(K_X \mid E) - f(\bar\varepsilon)$.
+- **Chain rule** (Vitanov, Dupuis, Tomamichel and Renner, arXiv:1205.5231, Theorem 13): $H_\mathrm{min}^{4\bar\varepsilon}(K_Z K_X \mid E) \ge H_\mathrm{min}^{\bar\varepsilon}(K_Z \mid K_X E) + H_\mathrm{min}^{\bar\varepsilon}(K_X \mid E) - f(\bar\varepsilon)$; the theorem's own term is $\log_2(1/(1-\sqrt{1-\bar\varepsilon^2}))$, one bit less than the $f$ charged here.
 - **Each term is the standard protocol**: conditioning on more lowers min-entropy, so $H_\mathrm{min}^{\bar\varepsilon}(K_Z \mid K_X E) \ge H_\mathrm{min}^{\bar\varepsilon}(K_Z \mid K_X Y_X E)$, the Z key with every X round given to Eve: Tomamichel and Leverrier's protocol with the X rounds as its test set, giving $n_Z(1 - h_2(\varphi_Z))$; symmetrically for X. No bit is both key and test.
 - **Joining**: $h_2$ is concave, so the two terms are at least $n(1 - h_2(\varphi))$ with the weighted $\varphi$ above; disclosure, tag and the leftover hash then follow as in the finite-key theorem.
 - **The counts are the true errors** whenever Bob's corrected string equals Alice's; otherwise the tag passed unequal strings, probability at most $\varepsilon_\mathrm{cor}$, which is added to the secrecy. A dropped chunk's bits all count as errors.
-- **The counts disclose nothing new**: Cascade's corrected positions follow from the public parities already charged.
+- **The counts are charged**: Cascade's transcript makes the total number of corrections public, one per search, but not always its split between the bases, since no message reveals a search's last choice between two bits; Bob's announced counts, two integers in $[0, n_Z]$ and $[0, n_X]$, are therefore charged at $\lceil\log_2(n_Z+1)\rceil + \lceil\log_2(n_X+1)\rceil$ bits (`countBits`, `count_bits` in `importtt -json`), about 28 bits a block.
+- **The sampling step is checked exactly**: for every number of errors an adversary can place among the rounds, the probability that the bound from the other basis fails is summed term by term, with no simulation, and never exceeds its tail (`TestPhaseErrorBoundHoldsForAnyErrors`, down to $10^{-12}$; at block sizes of $1.2 \cdot 10^4$ bits per basis and the tail $6.9 \cdot 10^{-23}$ the worst case is $6.9 \cdot 10^{-23}$).
 
 **What it buys**: 1.2 to 2.3 times the key of a sacrificed sample, and a key where a sample leaves none (`TestCorrectionBeatsSampleAcrossSizes`).
 
@@ -168,7 +169,7 @@ Every record is AES-256-GCM under a key derived from the node's master key by HK
 | Double clicks | `squashClicks`, `ownSquashed`, `delayOf` (`cmd/importtt`) |
 | Sifting | `MatchCoincidences`, `FilterCoincidences`, `Sift` |
 | Sacrificed sample | `OptimalSampleFraction`, `siftSample` |
-| Errors counted by correction | `correctionSample`, `CascadeRunConfig.SacrificeSample`, `chainRuleBits`, `chain_rule_bits` in `importtt -json` |
+| Errors counted by correction | `correctionSample`, `CascadeRunConfig.SacrificeSample`, `chainRuleBits`, `countBits`, `chain_rule_bits` and `count_bits` in `importtt -json` |
 | Error correction, $\mathrm{leak}_\mathrm{EC}$ | `RunCascade`, `CascadeBob`, `CRCVerify` |
 | Verification | `distillFiniteKey`, `UniversalHashTagBits`, `VerifyUniversalHash` |
 | $\bar q$, $\varphi$ | `HypergeomUpperRate`, `crossBasisPhaseError`, `estimationTail` |

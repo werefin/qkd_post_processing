@@ -3,7 +3,10 @@
 package main
 
 import (
+	"encoding/binary"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"regexp"
 	"sort"
@@ -16,13 +19,61 @@ const (
 	ppMaxMessage = 128 << 20 // an announcement of one recording's timing fits comfortably
 	ppMaxQueued  = 512 << 20
 	ppIdleExpiry = time.Hour
+	// a message with raw bytes: a 4-byte big-endian header length, the JSON header, then the bytes as they are,
+	// so a segment's announcement crosses both hops without base64 or JSON around it
+	ppFrameType      = "application/x-qkd-pp"
+	ppMaxFrameHeader = 1 << 20
 )
 
 var ppName = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
 
 type ppMessage struct {
-	Kind string          `json:"kind"`
-	Body json.RawMessage `json:"body"`
+	Kind   string          `json:"kind"`
+	Body   json.RawMessage `json:"body"`
+	Data   []byte          `json:"-"` // raw bytes beside the body, carried in a frame
+	Binary bool            `json:"-"`
+}
+
+func (m ppMessage) size() int { return len(m.Body) + len(m.Data) }
+
+// readPPFrame reads a frame's JSON header into hdr and returns the bytes after it
+func readPPFrame(r io.Reader, hdr any) ([]byte, error) {
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) < 4 {
+		return nil, errors.New("frame too short")
+	}
+	n := binary.BigEndian.Uint32(raw)
+	if n > ppMaxFrameHeader || int(n) > len(raw)-4 {
+		return nil, errors.New("frame header of the wrong size")
+	}
+	if err := json.Unmarshal(raw[4:4+n], hdr); err != nil {
+		return nil, err
+	}
+	return raw[4+n:], nil
+}
+
+// ppFrame is hdr and data as one frame
+func ppFrame(hdr any, data []byte) ([]byte, error) {
+	h, err := json.Marshal(hdr)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 4, 4+len(h)+len(data))
+	binary.BigEndian.PutUint32(out, uint32(len(h)))
+	return append(append(out, h...), data...), nil
+}
+
+// readPPRequest reads a JSON body or a frame into hdr; for a frame, msg gets its bytes
+func readPPRequest(r *http.Request, hdr any, msg *ppMessage) error {
+	if r.Header.Get("Content-Type") != ppFrameType {
+		return json.NewDecoder(r.Body).Decode(hdr)
+	}
+	data, err := readPPFrame(r.Body, hdr)
+	msg.Data, msg.Binary = data, true
+	return err
 }
 
 type ppQueue struct {
@@ -47,7 +98,7 @@ func (m *mailbox) put(from, session string, msg ppMessage) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.expire()
-	if m.bytes+len(msg.Body) > ppMaxQueued {
+	if m.bytes+msg.size() > ppMaxQueued {
 		return false
 	}
 	k := [2]string{from, session}
@@ -57,7 +108,7 @@ func (m *mailbox) put(from, session string, msg ppMessage) bool {
 		m.queues[k] = q
 	}
 	q.msgs, q.last = append(q.msgs, msg), time.Now()
-	m.bytes += len(msg.Body)
+	m.bytes += msg.size()
 	close(m.notify)
 	m.notify = make(chan struct{})
 	return true
@@ -71,7 +122,7 @@ func (m *mailbox) take(from, session string, wait time.Duration) (ppMessage, boo
 		if q := m.queues[[2]string{from, session}]; q != nil && len(q.msgs) > 0 {
 			msg := q.msgs[0]
 			q.msgs, q.last = q.msgs[1:], time.Now()
-			m.bytes -= len(msg.Body)
+			m.bytes -= msg.size()
 			m.mu.Unlock()
 			return msg, true
 		}
@@ -93,7 +144,7 @@ func (m *mailbox) expire() {
 	for k, q := range m.queues {
 		if time.Since(q.last) > ppIdleExpiry {
 			for _, msg := range q.msgs {
-				m.bytes -= len(msg.Body)
+				m.bytes -= msg.size()
 			}
 			delete(m.queues, k)
 		}
@@ -133,7 +184,7 @@ func (s *server) handlePPSend(w http.ResponseWriter, r *http.Request) {
 		Peer, Session string
 		ppMessage
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readPPRequest(r, &req, &req.ppMessage); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid message: "+err.Error())
 		return
 	}
@@ -145,7 +196,16 @@ func (s *server) handlePPSend(w http.ResponseWriter, r *http.Request) {
 		Session string `json:"session"`
 		ppMessage
 	}{req.Session, req.ppMessage}
-	if err := s.kmePost(req.Peer, "/kme/v1/pp/inbox", fwd, nil); err != nil {
+	var err error
+	if req.Binary {
+		var frame []byte
+		if frame, err = ppFrame(fwd, req.Data); err == nil {
+			err = s.kmePostRaw(req.Peer, "/kme/v1/pp/inbox", ppFrameType, frame, nil)
+		}
+	} else {
+		err = s.kmePost(req.Peer, "/kme/v1/pp/inbox", fwd, nil)
+	}
+	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -163,7 +223,7 @@ func (s *server) handlePPInbox(w http.ResponseWriter, r *http.Request) {
 		Session string `json:"session"`
 		ppMessage
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || !ppName.MatchString(req.Session) || !ppName.MatchString(req.Kind) {
+	if err := readPPRequest(r, &req, &req.ppMessage); err != nil || !ppName.MatchString(req.Session) || !ppName.MatchString(req.Kind) {
 		writeError(w, http.StatusBadRequest, "invalid message")
 		return
 	}
@@ -185,6 +245,16 @@ func (s *server) handlePPRecv(w http.ResponseWriter, r *http.Request) {
 	msg, ok := s.mail.take(r.URL.Query().Get("peer"), r.URL.Query().Get("session"), time.Duration(wait)*time.Second)
 	if !ok {
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if msg.Binary {
+		frame, err := ppFrame(msg, msg.Data)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", ppFrameType)
+		w.Write(frame)
 		return
 	}
 	writeJSON(w, http.StatusOK, msg)

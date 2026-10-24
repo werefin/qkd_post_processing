@@ -15,6 +15,8 @@ import urllib.request
 from . import settings
 
 PP_WAIT_S = 900  # how long one side waits for the other's next step
+# a mailbox message with raw bytes: a 4-byte big-endian header length, the JSON header, the bytes as they are
+FRAME_TYPE = 'application/x-qkd-pp'
 
 
 class KMSError(Exception):
@@ -36,14 +38,34 @@ def _context(identity):
     return _ssl_contexts[identity]
 
 
-def call(identity, method, path, body=None, timeout=20):
-    '''One call to this node's KMS as the admin or SAE identity; returns (status, json)'''
+def frame(header, data):
+    h = json.dumps(header).encode()
+    return len(h).to_bytes(4, 'big') + h + data
+
+
+def unframe(raw):
+    '''(header, bytes) back from frame'''
+    n = int.from_bytes(raw[:4], 'big')
+    if len(raw) < 4 or n > len(raw) - 4:
+        raise KMSError('mailbox frame of the wrong size')
+    return json.loads(raw[4:4 + n]), raw[4 + n:]
+
+
+def call(identity, method, path, body=None, timeout=20, data=None):
+    '''One call to this node's KMS as the admin or SAE identity; returns (status, json). With data, body and data
+    go as one frame; a frame answered comes back as its header with its bytes under the key blob'''
     ctx = _context(identity)
-    data = None if body is None else json.dumps(body).encode()
-    req = urllib.request.Request(settings.KMS_URL + path, data=data, method=method, headers={'Content-Type': 'application/json'})
+    payload, ctype = (None, 'application/json') if body is None else (json.dumps(body).encode(), 'application/json')
+    if data is not None:
+        payload, ctype = frame(body, data), FRAME_TYPE
+    req = urllib.request.Request(settings.KMS_URL + path, data=payload, method=method, headers={'Content-Type': ctype})
     try:
         with urllib.request.urlopen(req, context=ctx, timeout=timeout) as r:
-            return r.status, json.loads(r.read() or b'{}')
+            raw = r.read()
+            if r.headers.get('Content-Type') == FRAME_TYPE:
+                header, blob = unframe(raw)
+                return r.status, {**header, 'blob': blob}
+            return r.status, json.loads(raw or b'{}')
     except urllib.error.HTTPError as e:
         try:
             return e.code, json.loads(e.read() or b'{}')
@@ -76,8 +98,10 @@ def neighbors():
         return []
 
 
-def pp_send(peer, session, kind, body):
-    status, data = call('admin', 'POST', '/kme/v1/pp/send', {'peer': peer, 'session': session, 'kind': kind, 'body': body}, timeout=300)
+def pp_send(peer, session, kind, body, data=None):
+    '''One message to peer; data, raw bytes, crosses both KMS hops as it is and arrives in the body under blob'''
+    status, data = call('admin', 'POST', '/kme/v1/pp/send', {'peer': peer, 'session': session, 'kind': kind, 'body': body},
+                        timeout=300, data=data)
     if status != 200:
         raise RuntimeError(f'sending {kind} to {peer}: {data.get("message") or status}')
 
@@ -89,7 +113,10 @@ def pp_recv(peer, session, timeout=PP_WAIT_S):
     while time.time() < deadline:
         status, data = call('admin', 'GET', f'/kme/v1/pp/recv?{q}', timeout=60)
         if status == 200:
-            return data['kind'], data['body']
+            body = data['body']
+            if 'blob' in data:
+                body = {**(body or {}), 'blob': data['blob']}
+            return data['kind'], body
         if status != 204:
             raise RuntimeError(f'receiving from {peer}: {data.get("message") or status}')
     raise RuntimeError(f'{peer} did not answer within {timeout} s')

@@ -104,19 +104,24 @@ func (s *server) deliverDirect(master, slave, home string, number, size int) ([]
 
 // kmePost sends body to peer over mutual TLS and checks the answer came from that very node
 func (s *server) kmePost(peer, path string, body, out any) error {
-	node, ok := s.net.Nodes[peer]
-	if !ok {
-		return fmt.Errorf("unknown node %s", peer)
-	}
 	data, err := json.Marshal(body)
 	if err != nil {
 		return err
+	}
+	return s.kmePostRaw(peer, path, "application/json", data, out)
+}
+
+// kmePostRaw is kmePost with a body already encoded as contentType
+func (s *server) kmePostRaw(peer, path, contentType string, data []byte, out any) error {
+	node, ok := s.net.Nodes[peer]
+	if !ok {
+		return fmt.Errorf("unknown node %s", peer)
 	}
 	req, err := http.NewRequest(http.MethodPost, node.URL+path, bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", contentType)
 	if s.dev {
 		req.Header.Set("X-Dev-Role", "kme")
 		req.Header.Set("X-Dev-ID", s.id)

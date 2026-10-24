@@ -72,7 +72,7 @@ paths:
         default: { $ref: '#/components/responses/Error' }
   /v1/links/{name}:
     put:
-      summary: 'Adds or changes a link; announcer defaults to a, active to true; operator only'
+      summary: 'Adds or changes a link; announcer defaults to auto, active to true; operator only'
       parameters: [{ name: name, in: path, required: true, schema: { type: string, pattern: '^[A-Za-z0-9_-]{1,64}$' } }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/Link' } } } }
       responses:
@@ -112,8 +112,9 @@ components:
       properties:
         a: { type: string }
         b: { type: string }
-        announcer: { type: string, description: 'a or b: the node that announces its public timing' }
+        announcer: { type: string, description: 'a, b or auto: the node that announces its public timing; auto is the end whose detectors click less, changed only once the other clicks 20% less' }
         active: { type: boolean }
+        announcing: { type: string, readOnly: true, description: 'in the network view: the node announcing now' }
     NodeConfig:
       type: object
       properties:

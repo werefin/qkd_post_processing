@@ -246,6 +246,17 @@ class TestBlockLog(unittest.TestCase):
             self.assertEqual(blocks, sorted(blocks))
 
 
+class TestMailboxFrame(unittest.TestCase):
+    def test_raw_bytes_round_trip_beside_their_header(self):
+        from services.core import kms
+        data = os.urandom(70_000)
+        header, back = kms.unframe(kms.frame({'kind': 'cont-seg', 'body': {'index': 2}}, data))
+        self.assertEqual(header, {'kind': 'cont-seg', 'body': {'index': 2}})
+        self.assertEqual(back, data)
+        with self.assertRaises(kms.KMSError):
+            kms.unframe(kms.frame({'a': 1}, b'')[:6])
+
+
 class TestAliceKept(unittest.TestCase):
     def test_bits_follow_the_squashed_detections(self):
         import pathlib
@@ -256,17 +267,45 @@ class TestAliceKept(unittest.TestCase):
         # H and V within the window squashed to V, D alone, an invalid channel, A and H squashed to H
         ch = np.array([1, 2, 3, 0, 4, 1], np.int8)
         squashed = np.array([2, 0, 3, 0, 1, 0], np.int8)
-        flags = np.array([0, 1, 0], np.int8)
+        pub_ts, flags = np.array([10, 20, 2 * 10**12 + 10], np.int64), np.array([0, 1, 0], np.int8)
+        with self.assertRaises(ValueError):
+            alice.Announcement(ch, squashed, pub_ts[:2], flags[:2])
+        ann = alice.Announcement(ch, squashed, pub_ts, flags)
+        self.assertEqual(ann.seconds, 2.0)
         with tempfile.TemporaryDirectory() as d:
             kept = alice.Kept(pathlib.Path(d) / 'kept')
-            kept.add(ch, squashed, flags, b'segment')
-            with self.assertRaises(ValueError):
-                kept.add(ch, squashed, flags[:2], b'segment')
-            self.assertEqual(kept.n, 3)
-            self.assertEqual(kept.counts.tolist(), [2, 1, 1, 1])
+            kept.add(ann)
+            kept.add(ann)
+            self.assertEqual(kept.n, 6)
+            self.assertEqual(kept.counts.tolist(), [4, 2, 2, 2])
             own = kept.write()
-            bits = np.unpackbits(np.load(own / 'block_alice_bits.npy').view(np.uint8))[:3]
-            self.assertEqual(bits.tolist(), [1, 0, 0])
+            bits = np.unpackbits(np.load(own / 'block_alice_bits.npy').view(np.uint8))[:6]
+            self.assertEqual(bits.tolist(), [1, 0, 0, 1, 0, 0])
+
+    def test_each_segment_is_announced_once_for_every_link(self):
+        from services.processing.blocks import alice
+        made = []
+
+        def make(seg):
+            made.append(seg)
+            time.sleep(0.2)  # the other links arrive while the first one is still making it
+            return object()
+
+        alice._cache.clear()
+        with mock.patch.object(alice.Announcement, 'of_segment', side_effect=make):
+            got = []
+            links = [threading.Thread(target=lambda: got.append(alice.announcement('seg1'))) for _ in range(3)]
+            for t in links:
+                t.start()
+            for t in links:
+                t.join()
+            self.assertEqual(made, ['seg1'])
+            self.assertTrue(got[0] is got[1] is got[2])
+            for i in range(2, 2 + alice.CACHE_SEGMENTS):
+                alice.announcement(f'seg{i}')
+            alice.announcement('seg1')  # pushed out by newer segments: made again
+            self.assertEqual(made.count('seg1'), 2)
+        alice._cache.clear()
 
 
 if __name__ == '__main__':

@@ -56,11 +56,11 @@ With the controller running and the nodes pointed at it, the operator sets the w
 ```bash
 ./setup.sh ctl PUT /v1/nodes/A '{"site": "A"}'               # the node's site in its own acquisition config
 ./setup.sh ctl PUT /v1/nodes/B '{"site": "B"}'
-./setup.sh ctl PUT /v1/links/A-B '{"a": "A", "b": "B", "announcer": "A"}'
-./setup.sh ctl PUT /v1/links/A-D '{"a": "A", "b": "D", "announcer": "A"}'   # any pair declared in network.json
+./setup.sh ctl PUT /v1/links/A-B '{"a": "A", "b": "B"}'                     # announcer auto: the end that clicks less
+./setup.sh ctl PUT /v1/links/A-D '{"a": "A", "b": "D", "announcer": "D"}'   # any pair declared in network.json, announcer fixed
 ./setup.sh ctl PUT /v1/settings '{"block_s": 900, "block_auto": true, "segment_s": 10}'
 ./setup.sh ctl GET /v1/network                                  # every node: config, status, up or down
-./setup.sh ctl PUT /v1/links/A-B '{"a": "A", "b": "B", "announcer": "A", "active": false}'   # pause a link
+./setup.sh ctl PUT /v1/links/A-B '{"a": "A", "b": "B", "active": false}'   # pause a link
 ```
 
 Any two nodes linked in `network.json` can run Live QKD together, and a node runs it with all its neighbors at once, announcing to some and answering others. Within 10 s each node's agent picks up its config and starts or stops recording and announcing by itself. A managed node's dashboard shows its Live QKD but refuses Start and Stop; disable it at the controller (`"enabled": false`) or delete it there to give it back to its dashboard. The controller only coordinates: if it is down, every node keeps running on the last config it received.
@@ -128,7 +128,7 @@ With the nodes deployed, each link fills its pools by itself, at both ends, with
 
 **TimeTagger config**: on each node's dashboard, home page, load the acquisition `config.json` (same shape as `acquisition/config.example.json`) with the sites and their TimeTagger addresses; the node's recorder reads its own site's TimeTagger from it and refuses to start without it. Any TimeTagger whose timestamps `tt_record_dual.py` reads works: everything after the timestamps is this software's.
 
-**Start**: with the controller, add the nodes and links there (Controlling the network); the announcer of each link should be the end whose detectors click less. Without it, on each node open Live QKD, choose this node's TimeTagger under Two-party, production, and press Start; on one end of each link also tick the neighbor under Announce to: that node offers every block, the other answers by itself. Block length is planned per link by default, the shortest within 5% of the best key rate up to the longest block (15 minutes), from the link's QBER, pair rate and failed blocks (Automatic block length in `doc/security.md`); untick Automatic for every block at the longest.
+**Start**: with the controller, add the nodes and links there (Controlling the network); leave each link's announcer at auto, so the controller makes the end whose detectors click less announce (the site of the source should answer on all its links) and moves it only once the other end clicks 20% less. Without it, on each node open Live QKD, choose this node's TimeTagger under Two-party, production, and press Start; on one end of each link also tick the neighbor under Announce to: that node offers every block, the other answers by itself. Block length is planned per link by default, the shortest within 5% of the best key rate up to the longest block (15 minutes), from the link's QBER, pair rate and failed blocks (Automatic block length in `doc/security.md`); untick Automatic for every block at the longest.
 
 **What happens**: as soon as a segment closes, the announcing node sends its timing, never a bit, to the neighbor in about 3.3 bytes per click; the neighbor aligns its own segment of the same time from the previous clock model and answers with a bare receipt. The announcing node keeps only its bit and flags per click; the neighbor keeps, for itself, the announced clicks that can pair, a few percent at MHz rates, with their indices. Nothing else is disclosed, memory stays bounded by one segment and nothing piles up. When the block closes, both run the usual protocol (sifting by the neighbor's pair list, optimized Cascade, verification and finite-key privacy amplification) on what they kept, which takes seconds, and the key lands in the link's pool at both ends. Both nodes list every block with its QBER, phase-error bound, disclosure, round trips and key.
 

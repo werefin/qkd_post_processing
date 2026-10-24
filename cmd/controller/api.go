@@ -119,11 +119,17 @@ type nodeView struct {
 	Status   json.RawMessage `json:"status,omitempty"`
 }
 
+// linkView is a link as set and the node announcing on it now, which differs from the setting when it is auto
+type linkView struct {
+	Link
+	Announcing string `json:"announcing"`
+}
+
 type networkView struct {
 	Revision int64               `json:"revision"`
 	Settings Settings            `json:"settings"`
 	Nodes    map[string]nodeView `json:"nodes"`
-	Links    map[string]Link     `json:"links"`
+	Links    map[string]linkView `json:"links"`
 	Time     time.Time           `json:"time"`
 }
 
@@ -132,12 +138,13 @@ func (c *controller) view() networkView {
 	c.st.mu.Lock()
 	defer c.st.mu.Unlock()
 	now := c.now()
-	v := networkView{Revision: c.st.desired.Revision, Settings: c.st.desired.Settings, Nodes: map[string]nodeView{}, Links: map[string]Link{}, Time: now}
+	v := networkView{Revision: c.st.desired.Revision, Settings: c.st.desired.Settings, Nodes: map[string]nodeView{}, Links: map[string]linkView{}, Time: now}
+	announcers := c.st.announcersLocked()
 	for name, l := range c.st.desired.Links {
-		v.Links[name] = l
+		v.Links[name] = linkView{Link: l, Announcing: announcers[name]}
 	}
 	for id, n := range c.st.desired.Nodes {
-		v.Nodes[id] = nodeView{Node: n, Known: true, Config: c.st.desired.configFor(id)}
+		v.Nodes[id] = nodeView{Node: n, Known: true, Config: c.st.desired.configFor(id, announcers)}
 	}
 	for id, o := range c.st.observed {
 		nv := v.Nodes[id]
@@ -225,11 +232,11 @@ func (c *controller) stats() map[string]float64 {
 		active += b(l.Active)
 		out["link_active_"+name] = b(l.Active)
 		var s statusSummary
-		if json.Unmarshal(v.Nodes[l.Announcer].Status, &s) != nil {
+		if json.Unmarshal(v.Nodes[l.Announcing].Status, &s) != nil {
 			continue
 		}
 		other := l.B
-		if l.Announcer == l.B {
+		if l.Announcing == l.B {
 			other = l.A
 		}
 		if blk, ok := s.Blocks[other]; ok {
@@ -304,7 +311,7 @@ func (c *controller) handlePutLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if l.Announcer == "" {
-		l.Announcer = l.A
+		l.Announcer = announcerAuto
 	}
 	c.answer(w, c.st.change(func(d *Desired) error { return d.putLink(r.PathValue("name"), l) }))
 }

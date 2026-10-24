@@ -5,13 +5,12 @@ announced clicks that can pair and their indices. Neither discloses anything the
 at the block's end the usual protocol runs on what they kept, and Bob's pair list names the same clicks
 '''
 
-import base64
 import struct
 
 import numpy as np
 
 MAGIC = b'QKDA2'
-PART_BYTES = 48 << 20  # raw bytes per mailbox message: base64 and JSON stay well under its 128 MB
+PART_BYTES = 96 << 20  # bytes per mailbox message, sent raw: under its 128 MB
 # Bob keeps an announced click with one of his within ALICE_RADIUS_PS: the coincidence filter looks +-3 ns, the
 # rest is margin for the clock model; and his own within BOB_RADIUS_PS of a kept one, so his squashing (clicks
 # within 2 ns of a first one) sees every neighbor of a click that can pair
@@ -80,10 +79,16 @@ def decode(blob: bytes):
 
 
 def near(x, ref, radius):
-    '''Which of x have some ref within radius; ref need not be sorted'''
+    '''Which of x have some ref within radius; ref need not be sorted. Many x around few ref, as an announcement
+    against what can pair with it: each ref marks the run of x it covers, so only ref is searched'''
     ref = np.sort(ref) if ref.size > 1 and np.any(np.diff(ref) < 0) else ref
     if ref.size == 0:
         return np.zeros(x.size, bool)
+    if 4 * ref.size < x.size and not np.any(x[1:] < x[:-1]):
+        cover = np.zeros(x.size + 1, np.int32)
+        np.add.at(cover, np.searchsorted(x, ref - radius, side='left'), 1)
+        np.add.at(cover, np.searchsorted(x, ref + radius, side='right'), -1)
+        return np.cumsum(cover[:-1], dtype=np.int32) > 0
     i = np.searchsorted(ref, x - radius, side='left')
     return (i < ref.size) & (ref[np.minimum(i, ref.size - 1)] <= x + radius)
 
@@ -120,9 +125,9 @@ def pack_flags(flags):
 
 
 def parts_of(blob: bytes) -> list:
-    '''One segment's announcement as mailbox messages of at most PART_BYTES each'''
+    '''One segment's announcement as mailbox messages of at most PART_BYTES each, the bytes under 'blob' to go raw'''
     chunks = [blob[i:i + PART_BYTES] for i in range(0, max(len(blob), 1), PART_BYTES)]
-    return [{'part': i, 'parts': len(chunks), 'size': len(blob), 'data': base64.b64encode(c).decode()} for i, c in enumerate(chunks)]
+    return [{'part': i, 'parts': len(chunks), 'size': len(blob), 'blob': c} for i, c in enumerate(chunks)]
 
 
 def join_parts(parts: list) -> bytes:
@@ -130,7 +135,7 @@ def join_parts(parts: list) -> bytes:
     parts = sorted(parts, key=lambda p: p['part'])
     if not parts or [p['part'] for p in parts] != list(range(parts[0]['parts'])):
         raise ValueError('announcement parts missing or repeated')
-    blob = b''.join(base64.b64decode(p['data']) for p in parts)
+    blob = b''.join(p['blob'] for p in parts)
     if len(blob) != parts[0]['size']:
         raise ValueError(f'announcement of {len(blob)} bytes, {parts[0]["size"]} announced')
     return blob
